@@ -29,35 +29,7 @@ jobs:
       - name: Offline regression tests (no audio device needed)
         env:
           QT_QPA_PLATFORM: offscreen
-        shell: python
-        run: |
-          import subprocess, sys
-          # VAD 边界与队列丢弃单测
-          code = r'''
-          import sys
-          sys.path.insert(0, ".")
-          import numpy as np
-          from app.audio.capture import Segmenter
-          s = Segmenter()
-          out = [x for ch in [np.zeros(480, dtype=np.float32)]*40 if (x := s.feed(ch)) is not None]
-          assert not out, "pure silence should not trigger"
-          sp = np.random.uniform(-0.3, 0.3, 3200).astype(np.float32)
-          silo = np.zeros(16000, dtype=np.float32)
-          out = [x for ch in list(np.array_split(sp, 6)) + list(np.array_split(silo, 10)) if (x := s.feed(ch)) is not None]
-          assert not out, "too short speech should be dropped"
-          speech = np.random.uniform(-0.3, 0.3, 16000*20).astype(np.float32)
-          out = [x for ch in np.array_split(speech, 333) if (x := s.feed(ch)) is not None]
-          assert out and all(o.shape[0]/16000 <= 14.5 for o in out), "long speech should be force-split"
-          print("UNIT PASS")
-          '''
-          r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-          print(r.stdout, r.stderr)
-          assert r.returncode == 0, "unit tests failed"
-          from app.translate.translator import TranslationCache, _cache
-          _cache.put("ci:zh-CN:hello world", ("你好世界", "en"))
-          c2 = TranslationCache()
-          assert c2.get("ci:zh-CN:hello world") == ("你好世界", "en"), "cache persist failed"
-          print("CACHE PASS")
+        run: python tests/test_units.py
 
       - name: End-to-end smoke test (real Whisper + real translation engines)
         env:
