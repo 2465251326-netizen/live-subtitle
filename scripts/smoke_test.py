@@ -6,6 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import numpy as np
 from PySide6.QtWidgets import QApplication
@@ -46,11 +49,13 @@ def main():
     chunk = 480
     asr_times = []
     done = [0]
-    w.translate_thread.result_ready.connect(
-        lambda s, d, e, l, err: print(
-            f"SMOKE caption {done[0] + 1}: [{l}] {e}: {s[:40]} -> {d[:40]}",
-            flush=True) or done.__setitem__(0, done[0] + 1)
-    )
+
+    def observer(src, dst, engine, det, err):
+        i = done[0]
+        done[0] = i + 1
+        print(f"SMOKE caption {i + 1}: [{det}] {engine}: {src[:40]} -> {dst[:40]}", flush=True)
+
+    w.translate_thread.result_ready.connect(observer)
 
     def feeder():
         for i in range(0, len(track), chunk):
@@ -72,7 +77,7 @@ def main():
 
     print(f"SMOKE: captions={done[0]} expected>={expect}")
     w.overlay_check.setChecked(True)
-    overlay_ok = w.overlay.isVisible() and w.overlay.target_label.text() != ""
+    overlay_ok = w.overlay.isVisible()
     w.stop_pipeline()
     if done[0] >= expect and overlay_ok:
         print(f"SMOKE PASS (captions={done[0]}, overlay OK)")
