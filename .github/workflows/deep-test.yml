@@ -1,0 +1,87 @@
+name: Deep Test (Windows real install)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deep-test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build EXE and installer
+        run: |
+          pyinstaller livesubtitle.spec --noconfirm
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
+          & $iscc setup.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+        shell: pwsh
+
+      - name: Silent install the produced setup.exe
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "dist\installer\LiveSubtitle-Setup-*.exe" | Select-Object -First 1
+          Write-Host "Installing: $($setup.FullName)"
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          Write-Host "Installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+          $appExe = "C:\Program Files\LiveSubtitle\LiveSubtitle.exe"
+          if (-not (Test-Path $appExe)) { Write-Error "installed EXE not found at $appExe"; exit 1 }
+          Write-Host "Installed OK: $appExe ($((Get-Item $appExe).Length) bytes)"
+          $sm = Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\LiveSubtitle\LiveSubtitle.lnk"
+          Write-Host "Start menu shortcut: $sm"
+
+      - name: Launch installed EXE and verify alive 30s
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "C:\Program Files\LiveSubtitle\LiveSubtitle.exe" -PassThru
+          Start-Sleep -Seconds 30
+          if ($proc.HasExited) { Write-Host "EXE exited early, code $($proc.ExitCode)"; exit 1 }
+          Write-Host "Installed EXE alive after 30s (PID $($proc.Id), mem $([math]::Round($proc.WorkingSet64/1MB)) MB)"
+          Stop-Process -Id $proc.Id -Force
+
+      - name: Deep functional test (3x track, real ASR + translation, config persistence)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python tests/deep_windows.py
+
+      - name: Uninstall and verify cleanup
+        shell: pwsh
+        run: |
+          $unins = "C:\Program Files\LiveSubtitle\unins000.exe"
+          if (-not (Test-Path $unins)) { Write-Error "uninstaller not found"; exit 1 }
+          $p = Start-Process -FilePath $unins -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          Write-Host "Uninstaller exit code: $($p.ExitCode)"
+          Start-Sleep -Seconds 5
+          if (Test-Path "C:\Program Files\LiveSubtitle\LiveSubtitle.exe") {
+            Write-Host "FAIL: EXE still present after uninstall"; exit 1
+          }
+          $userData = Test-Path "$env:USERPROFILE\.live_subtitle"
+          Write-Host "Uninstall OK. User data (models/config) preserved: $userData"
+
+      - name: Upload deep test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-test-logs
+          path: |
+            $env:USERPROFILE\.live_subtitle\logs\
+          if-no-files-found: ignore
+          retention-days: 14
