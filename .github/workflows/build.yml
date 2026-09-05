@@ -38,9 +38,12 @@ jobs:
         run: python scripts/smoke_test.py
 
       - name: ASR speed benchmark (small int8, real CPU RTF)
+        shell: bash
         env:
           PYTHONIOENCODING: utf-8
-        run: python tests/bench_asr.py small en
+        run: |
+          python tests/bench_asr.py small en 2
+          python tests/bench_asr.py small en 1
 
       - name: Build EXE with PyInstaller
         run: pyinstaller livesubtitle.spec --noconfirm
