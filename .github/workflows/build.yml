@@ -40,7 +40,7 @@ jobs:
       - name: ASR speed benchmark (small int8, real CPU RTF)
         env:
           PYTHONIOENCODING: utf-8
-        run: python tests/bench_asr.py small
+        run: python tests/bench_asr.py small en
 
       - name: Build EXE with PyInstaller
         run: pyinstaller livesubtitle.spec --noconfirm
