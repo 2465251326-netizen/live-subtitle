@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.audio.capture import Segmenter
 
 
-def bench(model_size, beam, lang=None):
+def bench(model_size, beam, lang=None, cpu_threads=0):
     from faster_whisper import WhisperModel
 
     track = np.load(Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "video_track.npy")
@@ -22,7 +22,8 @@ def bench(model_size, beam, lang=None):
             chunks.append(got)
 
     t0 = time.time()
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    model = WhisperModel(model_size, device="cpu", compute_type="int8",
+                         cpu_threads=cpu_threads)
     load_s = time.time() - t0
 
     audio_warm = np.zeros(16000, dtype=np.float32)
@@ -46,8 +47,9 @@ def bench(model_size, beam, lang=None):
         n_words += len(text.split())
         print(f"    seg {dur:5.1f}s -> {dt:5.2f}s (RTF {dt/dur:.2f}) {text[:44]}")
     rtf = total_proc / total_audio if total_audio else 0
-    print(f"BENCH model={model_size} beam={beam} lang={tag}: load={load_s:.1f}s, "
-          f"audio={total_audio:.1f}s, proc={total_proc:.1f}s, RTF={rtf:.2f}, words={n_words}")
+    print(f"BENCH model={model_size} beam={beam} lang={tag} threads={cpu_threads}: "
+          f"load={load_s:.1f}s, audio={total_audio:.1f}s, proc={total_proc:.1f}s, "
+          f"RTF={rtf:.2f}, words={n_words}")
     return rtf
 
 
@@ -56,5 +58,6 @@ if __name__ == "__main__":
     lang = sys.argv[2] if len(sys.argv) > 2 else None
     if lang == "none":
         lang = None
+    threads = int(sys.argv[3]) if len(sys.argv) > 3 else 0
     for beam in (2, 1):
-        bench(size, beam, lang)
+        bench(size, beam, lang, threads)
