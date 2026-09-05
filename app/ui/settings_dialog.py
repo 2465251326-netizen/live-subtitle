@@ -168,6 +168,9 @@ class SettingsDialog(QDialog):
         device_row.addWidget(self.refresh_button)
         wrap = QWidget()
         wrap.setLayout(device_row)
+        # 只连接一次；_load_devices 会被反复调用，在其中连接会累积重复信号
+        self.device_combo.currentIndexChanged.connect(
+            lambda _i: self._save_combo("device_index", self.device_combo))
         self._row(page, "输入设备",
                   "选择具体设备；更换耳机等设备后点「刷新」重新加载。蓝牙耳机的部分虚拟输出不支持抓取系统声音。",
                   wrap)
@@ -318,15 +321,21 @@ class SettingsDialog(QDialog):
         self.outline_check = QCheckBox()
         grid.addWidget(self._gl("字体描边"), 4, 0)
         grid.addWidget(self.outline_check, 4, 1)
-        grid.addWidget(self._gl("描边颜色"), 5, 0)
+        grid.addWidget(self._gl("描边宽度"), 5, 0)
+        self.outline_width_spin = QSpinBox()
+        self.outline_width_spin.setRange(1, 6)
+        self.outline_width_spin.setSuffix(" px")
+        grid.addWidget(self.outline_width_spin, 5, 1)
+        grid.addWidget(self._gl("描边颜色"), 6, 0)
         self.outline_color_button = QPushButton("选择")
         self.outline_color_button.setObjectName("ColorPickButton")
-        grid.addWidget(self.outline_color_button, 5, 1)
+        grid.addWidget(self.outline_color_button, 6, 1)
         page._inner_layout.addLayout(grid)
 
         self.overlay_check.toggled.connect(self._on_overlay_toggle)
         self.show_source_check.toggled.connect(lambda v: self._save("show_source", bool(v)))
         self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
+        self.outline_width_spin.valueChanged.connect(self._apply_overlay_style)
         self.bg_opacity_slider.valueChanged.connect(
             lambda v: (self.bg_opacity_label.setText(f"{v}%"), self._apply_overlay_style()))
         self.outline_check.toggled.connect(self._apply_overlay_style)
@@ -412,6 +421,7 @@ class SettingsDialog(QDialog):
         self._save("overlay_bg_color", self._bg_color.name())
         self._save("overlay_bg_opacity", int(self.bg_opacity_slider.value()))
         self._save("overlay_outline", bool(self.outline_check.isChecked()))
+        self._save("overlay_outline_width", int(self.outline_width_spin.value()))
         self._save("overlay_outline_color", self._outline_color.name())
         self.main.apply_overlay_from_config()
 
@@ -458,8 +468,6 @@ class SettingsDialog(QDialog):
         idx = self.device_combo.findData(self.c.get("device_index"))
         if idx >= 0:
             self.device_combo.setCurrentIndex(idx)
-        self.device_combo.currentIndexChanged.connect(
-            lambda _i: self._save_combo("device_index", self.device_combo))
         self.device_combo.blockSignals(False)
 
     def _refresh_argos_section(self):
@@ -542,7 +550,9 @@ class SettingsDialog(QDialog):
             if idx >= 0:
                 combo.setCurrentIndex(idx)
 
+        self.source_combo.blockSignals(True)
         set_combo(self.source_combo, "source_type")
+        self.source_combo.blockSignals(False)
         self._load_devices()
         set_combo(self.model_combo, "asr_model")
         set_combo(self.asr_lang_combo, "asr_language")
@@ -564,6 +574,9 @@ class SettingsDialog(QDialog):
         self.outline_check.blockSignals(True)
         self.outline_check.setChecked(bool(c.get("overlay_outline")))
         self.outline_check.blockSignals(False)
+        self.outline_width_spin.blockSignals(True)
+        self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
+        self.outline_width_spin.blockSignals(False)
         self._text_color = QColor(c.get("overlay_text_color"))
         self._bg_color = QColor(c.get("overlay_bg_color"))
         self._outline_color = QColor(c.get("overlay_outline_color"))

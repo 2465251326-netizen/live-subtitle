@@ -1,9 +1,9 @@
 ; Inno Setup 6 script for LiveSubtitle
-; Build: build_installer.bat  ->  dist\installer\LiveSubtitle-Setup-1.4.2.exe
+; Build: build_installer.bat  ->  dist\installer\LiveSubtitle-Setup-1.6.0.exe
 
 #define MyAppName "LiveSubtitle"
 #define MyAppNameZh "LiveSubtitle 实时字幕翻译"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.6.0"
 #define MyAppExeName "LiveSubtitle.exe"
 
 [Setup]

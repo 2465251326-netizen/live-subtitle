@@ -144,6 +144,8 @@ class ArgosEngine:
         from .offline_pack import translate as pack_translate
 
         source = WHISPER_LANG_MAP.get(source, source)
+        if not source:
+            raise RuntimeError("缺少源语言信息，无法定位离线语言包，请锁定识别语言或改用在线引擎")
         if source.startswith("zh"):
             source = "zh"
         target = "zh" if target.startswith("zh") else target

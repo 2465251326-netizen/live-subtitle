@@ -188,8 +188,16 @@ def install_pack(pack: PackInfo, progress_cb=None):
     )
     tmp_path.unlink(missing_ok=True)
     with _lock:
-        for key in [k for k in _translator_cache if k[0] == pack.from_code]:
+        # _translator_cache 与 _cache_order 必须同步清理，
+        # 只清前者会残留失效键，导致新翻译器被错误挤出、模型反复重载
+        stale = [k for k in _translator_cache if k[0] == pack.from_code]
+        for key in stale:
             _translator_cache.pop(key, None)
+        for key in stale:
+            try:
+                _cache_order.remove(key)
+            except ValueError:
+                pass
     return dest
 
 

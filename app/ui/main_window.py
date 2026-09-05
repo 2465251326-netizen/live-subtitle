@@ -226,14 +226,13 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self):
         c = self.config
-        if self.overlay.isVisible():
-            c.set("overlay_x", self.overlay.x())
-            c.set("overlay_y", self.overlay.y())
+        c.set("overlay_x", self.overlay.x())
+        c.set("overlay_y", self.overlay.y())
 
     def _open_settings(self):
         from app.ui.settings_dialog import SettingsDialog
         dlg = getattr(self, "_settings_dlg", None)
-        if dlg is None or not dlg.isVisible():
+        if dlg is None:
             dlg = SettingsDialog(self)
             dlg.load_from_config()
             self._settings_dlg = dlg
@@ -279,13 +278,14 @@ class MainWindow(QMainWindow):
             bg_color=c.get("overlay_bg_color"),
             bg_opacity=int(c.get("overlay_bg_opacity")),
             outline=bool(c.get("overlay_outline")),
-            outline_width=2,
+            outline_width=int(c.get("overlay_outline_width")),
             outline_color=c.get("overlay_outline_color"),
         )
 
     def on_overlay_closed(self):
         if getattr(self, "_quitting", False):
             return
+        self._save_settings()
         self.config.set("overlay_enabled", False)
 
 
@@ -306,6 +306,8 @@ class MainWindow(QMainWindow):
             self.start_pipeline()
 
     def start_pipeline(self):
+        if self.running:
+            return
         self.running = True
         self.toggle_button.setText("停止翻译")
         self.toggle_button.setObjectName("StopButton")
@@ -349,7 +351,23 @@ class MainWindow(QMainWindow):
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
 
+    @staticmethod
+    def _detach_thread(t):
+        """停止超时的残留线程必须与界面断开信号，避免再向 UI 发送过期字幕。"""
+        if t is None:
+            return
+        for name in ("segment_ready", "level_changed", "error_occurred",
+                     "text_ready", "status_changed", "result_ready", "model_ready"):
+            sig = getattr(t, name, None)
+            if sig is not None:
+                try:
+                    sig.disconnect()
+                except Exception:
+                    pass
+
     def stop_pipeline(self):
+        if not self.running:
+            return
         self.running = False
         self.toggle_button.setText("开始翻译")
         self.toggle_button.setObjectName("PrimaryButton")
@@ -360,14 +378,18 @@ class MainWindow(QMainWindow):
         self.level_bar.setValue(0)
         self.stack.setCurrentIndex(0)
 
-        for t in (self.capture_thread, self.asr_thread, self.translate_thread):
+        threads = (self.capture_thread, self.asr_thread, self.translate_thread)
+        for t in threads:
             if t:
                 t.stop()
-        if self.capture_thread:
-            self.capture_thread.wait(2000)
-        for t in (self.asr_thread, self.translate_thread):
+        if threads[0]:
+            threads[0].wait(2000)
+        for t in threads[1:]:
             if t:
                 t.wait(15000)
+        for t in threads:
+            if t and t.isRunning():
+                self._detach_thread(t)
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
@@ -415,6 +437,7 @@ class MainWindow(QMainWindow):
             if getattr(self, "tray", None):
                 self.tray.hide()
             event.accept()
+            QApplication.quit()
             return
         action = self.config.get("close_action")
         if action == "tray":
@@ -451,6 +474,7 @@ class MainWindow(QMainWindow):
             self.close()
 
     def _hide_to_tray(self):
+        self._save_settings()
         self.hide()
         if getattr(self, "tray", None):
             self.tray.showMessage(
@@ -464,6 +488,10 @@ def run_app():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName("LiveSubtitle")
+    app.setWindowIcon(QIcon(str(icon_path())))
+    # 主窗口会隐藏到托盘继续工作，不能因"最后一个窗口关闭"而自动退出；
+    # 退出统一由 closeEvent 的 quitting 分支显式调用 QApplication.quit()
+    app.setQuitOnLastWindowClosed(False)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

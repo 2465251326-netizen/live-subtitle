@@ -72,7 +72,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LiveSubtitle-Setup-1.5.0
+          name: LiveSubtitle-Setup
           path: dist/installer/*.exe
           retention-days: 30
 

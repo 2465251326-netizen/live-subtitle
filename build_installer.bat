@@ -2,7 +2,7 @@
 chcp 65001 >nul
 echo ==================================================
 echo   LiveSubtitle - EXE 安装程序一键构建
-echo   输出: dist\installer\LiveSubtitle-Setup-1.0.0.exe
+echo   输出: dist\installer\LiveSubtitle-Setup-版本号.exe（版本号见 setup.iss）
 echo ==================================================
 
 where python >nul 2>nul
@@ -69,7 +69,7 @@ if errorlevel 1 (
 
 echo.
 echo ==================================================
-echo   完成！安装程序: dist\installer\LiveSubtitle-Setup-1.0.0.exe
+echo   完成！安装程序: dist\installer\LiveSubtitle-Setup-版本号.exe（版本号见 setup.iss）
 echo   绿色版程序:     dist\LiveSubtitle\LiveSubtitle.exe
 echo ==================================================
 pause

@@ -277,7 +277,7 @@ set HF_ENDPOINT=https://hf-mirror.com
 | 语音识别 | 本地 Whisper 模型 | 否 |
 | 待翻译文本 | 内存 + 本地缓存 | 仅在用在线引擎时发送给对应翻译服务（Google / MyMemory）；离线包模式完全不联网 |
 | 配置文件 | `~\.live_subtitle\config.json` | 否 |
-| 识别缓存 | `~\.live_subtitle\cache.json` | 否 |
+| 识别缓存 | `~\.live_subtitle\trans_cache.json` | 否 |
 | 运行日志 | `~\.live_subtitle\logs\app.log` | 否 |
 
 使用在线翻译引擎时，待翻译的文本片段会发送给对应翻译服务商（这是在线翻译的工作原理）；对隐私有要求的场景请使用 Argos 离线语言包。
