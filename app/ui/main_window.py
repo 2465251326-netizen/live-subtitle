@@ -16,8 +16,10 @@ from app.translate.translator import TranslateThread, ArgosEngine
 from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
 
-MODELS = [("tiny", "tiny  最快 / 75MB"), ("base", "base  均衡 / 145MB"),
-          ("small", "small  推荐 / 480MB"), ("medium", "medium  高精度 / 1.5GB")]
+MODELS = [("tiny", "tiny  最快 · 字幕延迟约 2s / 75MB"),
+          ("base", "base  流畅 · 延迟约 2.5s · 中文较弱 / 145MB"),
+          ("small", "small  推荐 · 延迟约 3s（4 核以上 CPU） / 480MB"),
+          ("medium", "medium  高精度 · 需较新多核 CPU / 1.5GB")]
 
 
 class ArgosWorker(QThread):
