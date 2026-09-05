@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import requests
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
@@ -20,6 +20,8 @@ from app.asr.engine import AsrThread
 from app.translate.translator import TranslateThread, ArgosEngine
 from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
+
+DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
 
 MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
           ("base", "base · 流畅 · 中文较弱"),
@@ -132,10 +134,17 @@ class MainWindow(QMainWindow):
         root.setSpacing(12)
 
         header = QHBoxLayout()
+        self.drawer_button = QPushButton("设置")
+        self.drawer_button.setObjectName("GhostButton")
+        self.drawer_button.setCursor(Qt.PointingHandCursor)
+        self.drawer_button.setFixedWidth(64)
+        self.drawer_button.setToolTip("展开 / 收起设置面板")
+        self.drawer_button.clicked.connect(self._toggle_drawer)
+        header.addWidget(self.drawer_button)
         title_box = QVBoxLayout()
         title = QLabel("LiveSubtitle")
         title.setObjectName("HeaderTitle")
-        subtitle = QLabel("实时语音识别 · 自动语言检测 · 中文翻译（在线 / 离线）")
+        subtitle = QLabel("实时语音识别 · 自动语言检测 · 多语翻译（在线 / 离线）")
         subtitle.setObjectName("HeaderSub")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -150,6 +159,13 @@ class MainWindow(QMainWindow):
         self.status_text.setObjectName("HeaderSub")
         header.addWidget(self.status_dot)
         header.addWidget(self.status_text)
+
+        self.help_button = QPushButton("使用说明")
+        self.help_button.setObjectName("GhostButton")
+        self.help_button.setCursor(Qt.PointingHandCursor)
+        self.help_button.setToolTip("打开浏览器查看详细使用说明")
+        self.help_button.clicked.connect(self._open_docs)
+        header.addWidget(self.help_button)
 
         self.toggle_button = QPushButton("开始翻译")
         self.toggle_button.setObjectName("PrimaryButton")
@@ -337,10 +353,12 @@ class MainWindow(QMainWindow):
 
         side_scroll = QScrollArea()
         side_scroll.setWidgetResizable(True)
-        side_scroll.setFixedWidth(300)
+        side_scroll.setMinimumWidth(0)
+        side_scroll.setMaximumWidth(300)
         side_scroll.setFrameShape(QFrame.NoFrame)
         side_scroll.setWidget(side)
         body.addWidget(side_scroll)
+        self.side_scroll = side_scroll
 
         captions_column = QVBoxLayout()
         self.scroll = QScrollArea()
@@ -408,14 +426,54 @@ class MainWindow(QMainWindow):
             if r == QSystemTrayIcon.Trigger or r == QSystemTrayIcon.DoubleClick else None)
         self.tray.show()
 
+    def _toggle_drawer(self):
+        target = self.config.get("panel_open")
+        self._set_drawer(not target)
+        self.config.set("panel_open", not target)
+
+    def _set_drawer(self, open_it, animate=True):
+        w = self.side_scroll
+        if getattr(self, "_drawer_anim", None) and self._drawer_anim.state() == QPropertyAnimation.Running:
+            self._drawer_anim.stop()
+        if open_it:
+            w.setVisible(True)
+            if animate:
+                anim = QPropertyAnimation(w, b"maximumWidth", self)
+                anim.setDuration(180)
+                anim.setStartValue(w.maximumWidth())
+                anim.setEndValue(300)
+                anim.setEasingCurve(QEasingCurve.OutCubic)
+                self._drawer_anim = anim
+                anim.start()
+            else:
+                w.setMaximumWidth(300)
+        else:
+            if animate:
+                anim = QPropertyAnimation(w, b"maximumWidth", self)
+                anim.setDuration(180)
+                anim.setStartValue(w.maximumWidth())
+                anim.setEndValue(0)
+                anim.setEasingCurve(QEasingCurve.OutCubic)
+                anim.finished.connect(lambda: w.setVisible(False) if w.maximumWidth() == 0 else None)
+                self._drawer_anim = anim
+                anim.start()
+            else:
+                w.setMaximumWidth(0)
+                w.setVisible(False)
+        self.drawer_button.setText("设置" if open_it else "设置")
+
+    def _open_docs(self):
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl(DOCS_URL))
+
     def _restore_window(self):
         self.showNormal()
         self.raise_()
         self.activateWindow()
 
     def _quit_app(self):
-        self.overlay.close()
-        self.tray.hide()
+        self._quitting = True
         self.close()
 
     def _load_devices(self):
@@ -436,6 +494,7 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self):
         c = self.config
+        self._set_drawer(bool(c.get("panel_open")), animate=False)
         idx = self.source_combo.findData(c.get("source_type"))
         if idx >= 0:
             self.source_combo.setCurrentIndex(idx)
@@ -739,12 +798,55 @@ class MainWindow(QMainWindow):
                 item.widget().deleteLater()
 
     def closeEvent(self, event):
-        self._save_settings()
-        self.stop_pipeline()
-        self.overlay.close()
+        if getattr(self, "_quitting", False):
+            self._save_settings()
+            self.stop_pipeline()
+            self.overlay.close()
+            if getattr(self, "tray", None):
+                self.tray.hide()
+            event.accept()
+            return
+        action = self.config.get("close_action")
+        if action == "tray":
+            event.ignore()
+            self._hide_to_tray()
+            return
+        if action == "exit":
+            self._quitting = True
+            self.close()
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("关闭 LiveSubtitle")
+        box.setText("关闭软件后要做什么？")
+        box.setInformativeText("隐藏到托盘后，字幕悬浮窗继续显示，可从右下角托盘图标重新打开主窗口。")
+        tray_btn = box.addButton("隐藏到托盘", QMessageBox.AcceptRole)
+        exit_btn = box.addButton("退出程序", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
+        box.setCheckBox(QCheckBox("记住我的选择，下次不再询问"))
+        box.exec()
+        remember = box.checkBox().isChecked()
+        clicked = box.clickedButton()
+        if clicked == cancel_btn:
+            event.ignore()
+            return
+        if clicked == tray_btn:
+            if remember:
+                self.config.set("close_action", "tray")
+            event.ignore()
+            self._hide_to_tray()
+        else:
+            if remember:
+                self.config.set("close_action", "exit")
+            self._quitting = True
+            self.close()
+
+    def _hide_to_tray(self):
+        self.hide()
         if getattr(self, "tray", None):
-            self.tray.hide()
-        event.accept()
+            self.tray.showMessage(
+                "LiveSubtitle 仍在运行",
+                "字幕悬浮窗继续工作。点击托盘图标可重新打开主窗口。",
+                QSystemTrayIcon.Information, 2500)
 
 
 def run_app():

@@ -22,6 +22,13 @@ w.show()
 app.processEvents()
 w.grab().save(str(out / "ui_empty.png"))
 
+# 抽屉收起状态
+w._set_drawer(False, animate=False)
+app.processEvents()
+w.grab().save(str(out / "ui_drawer_closed.png"))
+w._set_drawer(True, animate=False)
+app.processEvents()
+
 # Argos 分组展开
 idx = w.engine_combo.findData("argos")
 w.engine_combo.setCurrentIndex(idx)

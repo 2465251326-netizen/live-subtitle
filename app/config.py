@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -33,6 +33,8 @@ DEFAULTS = {
     "overlay_outline_width": 2,
     "overlay_outline_color": "#000000",
     "translate_zh_from_zh": False,
+    "close_action": "ask",             # ask / tray / exit
+    "panel_open": True,
 }
 
 LANGUAGES = {

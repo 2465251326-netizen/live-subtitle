@@ -78,6 +78,17 @@ QPushButton#PrimaryButton {
     padding: 10px 18px;
     border-radius: 10px;
 }
+QPushButton#GhostButton {
+    background-color: transparent;
+    border: 1px solid #2a3040;
+    color: #9aa3b8;
+    padding: 6px 12px;
+}
+QPushButton#GhostButton:hover {
+    background-color: #232936;
+    color: #dfe3ee;
+    border-color: #3d4656;
+}
 QPushButton#PrimaryButton:hover {
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #619aff, stop:1 #8d74ff);
 }
