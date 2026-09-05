@@ -65,6 +65,28 @@ def test_argos_code_map():
     assert src == "zh", "Argos 源码应归一为 zh 以匹配 en_zh 等包目录名"
 
 
+def test_resolve_pack_dir(tmp_path=None):
+    import tempfile
+    from pathlib import Path
+    from app.translate import offline_pack as op
+    old = op.PACKS_DIR
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            op.PACKS_DIR = Path(td)
+            # 直连命名 en_ko
+            (op.PACKS_DIR / "en_ko" / "model").mkdir(parents=True)
+            (op.PACKS_DIR / "en_ko" / "sentencepiece.model").write_bytes(b"x")
+            assert op._resolve_pack_dir("en", "ko").name == "en_ko"
+            # 旧版 translate- 前缀命名回退
+            (op.PACKS_DIR / "translate-en_ja").mkdir(parents=True)
+            (op.PACKS_DIR / "translate-en_ja" / "sentencepiece.model").write_bytes(b"x")
+            assert op._resolve_pack_dir("en", "ja").name == "translate-en_ja"
+            # 都不存在时返回直连命名
+            assert op._resolve_pack_dir("fr", "zh").name == "fr_zh"
+    finally:
+        op.PACKS_DIR = old
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

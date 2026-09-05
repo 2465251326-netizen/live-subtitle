@@ -82,6 +82,17 @@ def _pack_dir(pair_code):
     return PACKS_DIR / pair_code
 
 
+def _resolve_pack_dir(source, target):
+    """按方向码定位包目录；兼容旧版本以 pack.code 命名的目录。"""
+    direct = _pack_dir(f"{source}_{target}")
+    if (direct / "sentencepiece.model").exists():
+        return direct
+    legacy = _pack_dir(f"translate-{source}_{target}")
+    if (legacy / "sentencepiece.model").exists():
+        return legacy
+    return direct
+
+
 def list_installed():
     out = []
     if not PACKS_DIR.exists():
@@ -144,7 +155,8 @@ def _download_stream(url, tmp_path, progress_cb=None):
 
 def install_pack(pack: PackInfo, progress_cb=None):
     PACKS_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = PACKS_DIR / f"{pack.code}.argosmodel"
+    pair = f"{pack.from_code}_{pack.to_code}"
+    model_path = PACKS_DIR / f"{pair}.argosmodel"
     tmp_path = model_path.with_suffix(".tmp")
 
     mirror_url = MIRROR_RELEASE + pack.url.rsplit("/", 1)[-1]
@@ -162,7 +174,7 @@ def install_pack(pack: PackInfo, progress_cb=None):
     if last_err:
         raise last_err
 
-    dest = _pack_dir(pack.code)
+    dest = _pack_dir(pair)
     _extract_pack(tmp_path, dest)
     meta = {
         "from_code": pack.from_code,
@@ -262,7 +274,7 @@ def _get_translator(source, target):
             _cache_order.remove(key)
             _cache_order.append(key)
             return _translator_cache[key]
-        pack_dir = _pack_dir(f"{source}_{target}")
+        pack_dir = _resolve_pack_dir(source, target)
         if not (pack_dir / "sentencepiece.model").exists():
             return None
         tr = PackTranslator(pack_dir)
