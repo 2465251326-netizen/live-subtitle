@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[('app/icon.ico', 'app')],
     hiddenimports=[
         'faster_whisper',
         'faster_whisper.transcribe',

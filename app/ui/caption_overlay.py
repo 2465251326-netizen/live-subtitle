@@ -76,8 +76,8 @@ class OutlinedLabel(QLabel):
 
 
 class CaptionOverlay(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, on_closed=None):
+        super().__init__(None)
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -88,6 +88,7 @@ class CaptionOverlay(QWidget):
         self.setStyleSheet(OVERLAY_QSS)
         self.setFixedWidth(460)
         self._drag_pos = None
+        self._on_closed = on_closed
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 12, 22, 14)
@@ -170,5 +171,5 @@ class CaptionOverlay(QWidget):
         chosen = menu.exec(event.globalPos())
         if chosen == act_close:
             self.hide()
-            if self.parent() and hasattr(self.parent(), "on_overlay_closed"):
-                self.parent().on_overlay_closed()
+            if self._on_closed:
+                self._on_closed()

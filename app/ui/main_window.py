@@ -1,14 +1,17 @@
 import time
 from datetime import datetime
 
+import sys
+from pathlib import Path
+
 import requests
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QFrame, QScrollArea, QGridLayout, QProgressBar,
     QStatusBar, QSizePolicy, QMessageBox, QApplication, QStackedWidget,
-    QSpinBox, QSlider, QColorDialog,
+    QSpinBox, QSlider, QColorDialog, QSystemTrayIcon, QMenu,
 )
 
 from app.config import Config, LANGUAGES
@@ -22,6 +25,12 @@ MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
           ("base", "base · 流畅 · 中文较弱"),
           ("small", "small · 推荐（4 核以上）"),
           ("medium", "medium · 高精度 · 需好 CPU")]
+
+
+def icon_path():
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "app" / "icon.ico"
+    return Path(__file__).resolve().parents[2] / "app" / "icon.ico"
 
 
 class ArgosWorker(QThread):
@@ -152,14 +161,15 @@ class MainWindow(QMainWindow):
 
         side = QFrame()
         side.setObjectName("SidePanel")
-        side.setFixedWidth(290)
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(16, 14, 16, 14)
         side_layout.setSpacing(10)
 
-        def panel_title(text):
+        def panel_title(text, tip=""):
             lab = QLabel(text)
             lab.setObjectName("PanelTitle")
+            if tip:
+                lab.setToolTip(tip)
             return lab
 
         side_layout.addWidget(panel_title("音频输入"))
@@ -170,10 +180,15 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.source_combo)
 
         self.device_combo = QComboBox()
-        side_layout.addWidget(self.device_combo)
-        self.refresh_button = QPushButton("刷新设备列表")
+        device_row = QHBoxLayout()
+        device_row.setSpacing(6)
+        device_row.addWidget(self.device_combo, 1)
+        self.refresh_button = QPushButton("↻")
+        self.refresh_button.setFixedWidth(40)
+        self.refresh_button.setToolTip("刷新设备列表")
         self.refresh_button.clicked.connect(self._load_devices)
-        side_layout.addWidget(self.refresh_button)
+        device_row.addWidget(self.refresh_button)
+        side_layout.addLayout(device_row)
 
         self.level_bar = QProgressBar()
         self.level_bar.setObjectName("LevelBar")
@@ -183,13 +198,23 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.level_bar)
 
         side_layout.addSpacing(6)
-        side_layout.addWidget(panel_title("语音识别（本地）"))
+        side_layout.addWidget(panel_title(
+            "语音识别（本地）", "本地 Whisper 模型，语音不出电脑。越小越快，中文建议 small"))
         self.model_combo = QComboBox()
+        model_tips = {
+            "tiny": "75MB · 延迟约 2s · 中文易误判，适合纯英文+老电脑",
+            "base": "145MB · 延迟约 2.5s · 中文较弱",
+            "small": "480MB · 延迟约 3s · 中文良好，推荐 4 核以上 CPU",
+            "medium": "1.5GB · 高精度 · 需较新多核 CPU 或 GPU",
+        }
         for code, label in MODELS:
             self.model_combo.addItem(label, code)
+            self.model_combo.setItemData(self.model_combo.count() - 1, model_tips[code], Qt.ToolTipRole)
+        self.model_combo.setToolTip("首次选择后自动下载，之后永久离线可用")
         side_layout.addWidget(self.model_combo)
 
         self.asr_lang_combo = QComboBox()
+        self.asr_lang_combo.setToolTip("自动检测：第一句后自动锁定语言；锁定语言识别更快更稳")
         for code, name in LANGUAGES.items():
             if code in ("zh-CN", "zh-TW"):
                 continue
@@ -199,15 +224,21 @@ class MainWindow(QMainWindow):
         self.compute_combo = QComboBox()
         self.compute_combo.addItem("CPU 模式（通用）", "cpu")
         self.compute_combo.addItem("自动（优先 GPU）", "auto")
+        self.compute_combo.setToolTip("有 NVIDIA 显卡时选「自动」可用 GPU 加速")
         side_layout.addWidget(self.compute_combo)
 
         side_layout.addSpacing(6)
-        side_layout.addWidget(panel_title("翻译引擎"))
+        side_layout.addWidget(panel_title(
+            "翻译引擎", "全部免费无需密钥。自动模式先探测 Google，不通自动切换 MyMemory"))
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("自动探测（推荐）", "auto")
+        self.engine_combo.setItemData(0, "启动时探测在线接口，自动选择可用者", Qt.ToolTipRole)
         self.engine_combo.addItem("Google 免费接口（在线）", "google")
+        self.engine_combo.setItemData(1, "质量最好，国内网络可能不可达", Qt.ToolTipRole)
         self.engine_combo.addItem("MyMemory（在线备援）", "mymemory")
+        self.engine_combo.setItemData(2, "国内可达，有小额免费额度", Qt.ToolTipRole)
         self.engine_combo.addItem("Argos 离线语言包", "argos")
+        self.engine_combo.setItemData(3, "完全断网可用，需先在下方下载语言包", Qt.ToolTipRole)
         self.engine_combo.currentIndexChanged.connect(self._refresh_argos_section)
         side_layout.addWidget(self.engine_combo)
 
@@ -300,7 +331,12 @@ class MainWindow(QMainWindow):
         self.clear_button.clicked.connect(self._clear_captions)
         side_layout.addWidget(self.clear_button)
 
-        body.addWidget(side)
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFixedWidth(300)
+        side_scroll.setFrameShape(QFrame.NoFrame)
+        side_scroll.setWidget(side)
+        body.addWidget(side_scroll)
 
         captions_column = QVBoxLayout()
         self.scroll = QScrollArea()
@@ -344,8 +380,39 @@ class MainWindow(QMainWindow):
         self.session_label = QLabel("本次会话：0 条")
         status.addPermanentWidget(self.session_label)
 
-        self.overlay = CaptionOverlay(self)
+        self.overlay = CaptionOverlay(on_closed=self.on_overlay_closed)
         self.overlay.hide()
+        self._build_tray()
+
+    def _build_tray(self):
+        self.tray = QSystemTrayIcon(QIcon(str(icon_path())), self)
+        self.tray.setToolTip("LiveSubtitle · 实时字幕翻译")
+        menu = QMenu(self)
+        act_show = QAction("显示主窗口", self)
+        act_show.triggered.connect(self._restore_window)
+        act_toggle = QAction("开始 / 停止翻译", self)
+        act_toggle.triggered.connect(self.toggle_running)
+        act_quit = QAction("退出", self)
+        act_quit.triggered.connect(self._quit_app)
+        menu.addAction(act_show)
+        menu.addAction(act_toggle)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(
+            lambda r: self._restore_window()
+            if r == QSystemTrayIcon.Trigger or r == QSystemTrayIcon.DoubleClick else None)
+        self.tray.show()
+
+    def _restore_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self):
+        self.overlay.close()
+        self.tray.hide()
+        self.close()
 
     def _load_devices(self):
         self.device_combo.clear()
@@ -661,6 +728,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._save_settings()
         self.stop_pipeline()
+        self.overlay.close()
+        if getattr(self, "tray", None):
+            self.tray.hide()
         event.accept()
 
 
