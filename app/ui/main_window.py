@@ -3,10 +3,12 @@ from datetime import datetime
 
 import requests
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QFrame, QScrollArea, QGridLayout, QProgressBar,
     QStatusBar, QSizePolicy, QMessageBox, QApplication, QStackedWidget,
+    QSpinBox, QSlider, QColorDialog,
 )
 
 from app.config import Config, LANGUAGES
@@ -237,6 +239,62 @@ class MainWindow(QMainWindow):
         self.show_source_check = QCheckBox("同时显示原文")
         side_layout.addWidget(self.show_source_check)
 
+        side_layout.addWidget(panel_title("悬浮字幕样式"))
+        style_grid = QGridLayout()
+        style_grid.setHorizontalSpacing(8)
+        style_grid.setVerticalSpacing(6)
+
+        style_grid.addWidget(QLabel("字号"), 0, 0)
+        self.overlay_font_spin = QSpinBox()
+        self.overlay_font_spin.setRange(12, 48)
+        self.overlay_font_spin.setValue(18)
+        style_grid.addWidget(self.overlay_font_spin, 0, 1)
+
+        style_grid.addWidget(QLabel("文字颜色"), 1, 0)
+        self.text_color_button = QPushButton("选择")
+        self.text_color_button.setObjectName("ColorPickButton")
+        self._text_color = QColor("#ffffff")
+        self._update_color_button(self.text_color_button, self._text_color)
+        self.text_color_button.clicked.connect(
+            lambda: self._pick_color("text"))
+        style_grid.addWidget(self.text_color_button, 1, 1)
+
+        style_grid.addWidget(QLabel("背景颜色"), 2, 0)
+        self.bg_color_button = QPushButton("选择")
+        self.bg_color_button.setObjectName("ColorPickButton")
+        self._bg_color = QColor("#0c0e14")
+        self._update_color_button(self.bg_color_button, self._bg_color)
+        self.bg_color_button.clicked.connect(
+            lambda: self._pick_color("bg"))
+        style_grid.addWidget(self.bg_color_button, 2, 1)
+
+        style_grid.addWidget(QLabel("背景透明度"), 3, 0)
+        self.bg_opacity_slider = QSlider(Qt.Horizontal)
+        self.bg_opacity_slider.setRange(0, 95)
+        self.bg_opacity_slider.setValue(78)
+        self.bg_opacity_label = QLabel("78%")
+        self.bg_opacity_label.setObjectName("CaptionMeta")
+        self.bg_opacity_slider.valueChanged.connect(
+            lambda v: (self.bg_opacity_label.setText(f"{v}%"),
+                       self._apply_overlay_style()))
+        style_grid.addWidget(self.bg_opacity_slider, 3, 1)
+        style_grid.addWidget(self.bg_opacity_label, 3, 2)
+
+        self.outline_check = QCheckBox("字体描边")
+        self.outline_check.setChecked(True)
+        self.outline_check.toggled.connect(self._apply_overlay_style)
+        style_grid.addWidget(self.outline_check, 4, 0)
+        self.outline_color_button = QPushButton("描边色")
+        self.outline_color_button.setObjectName("ColorPickButton")
+        self._outline_color = QColor("#000000")
+        self._update_color_button(self.outline_color_button, self._outline_color)
+        self.outline_color_button.clicked.connect(
+            lambda: self._pick_color("outline"))
+        style_grid.addWidget(self.outline_color_button, 4, 1)
+
+        side_layout.addLayout(style_grid)
+        self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
+
         side_layout.addStretch()
         self.clear_button = QPushButton("清空字幕记录")
         self.clear_button.clicked.connect(self._clear_captions)
@@ -330,6 +388,16 @@ class MainWindow(QMainWindow):
             self.target_combo.setCurrentIndex(tgt_idx)
         self.overlay_check.setChecked(bool(c.get("overlay_enabled")))
         self.show_source_check.setChecked(bool(c.get("show_source")))
+        self.overlay_font_spin.setValue(int(c.get("overlay_font_size")))
+        self._text_color = QColor(c.get("overlay_text_color"))
+        self._bg_color = QColor(c.get("overlay_bg_color"))
+        self._update_color_button(self.text_color_button, self._text_color)
+        self._update_color_button(self.bg_color_button, self._bg_color)
+        self.bg_opacity_slider.setValue(int(c.get("overlay_bg_opacity")))
+        self.outline_check.setChecked(bool(c.get("overlay_outline")))
+        self._outline_color = QColor(c.get("overlay_outline_color"))
+        self._update_color_button(self.outline_color_button, self._outline_color)
+        self._apply_overlay_style()
 
     def _save_settings(self):
         c = self.config
@@ -344,6 +412,12 @@ class MainWindow(QMainWindow):
         c.set("show_source", self.show_source_check.isChecked())
         c.set("overlay_x", self.overlay.x())
         c.set("overlay_y", self.overlay.y())
+        c.set("overlay_font_size", self.overlay_font_spin.value())
+        c.set("overlay_text_color", self._text_color.name())
+        c.set("overlay_bg_color", self._bg_color.name())
+        c.set("overlay_bg_opacity", self.bg_opacity_slider.value())
+        c.set("overlay_outline", self.outline_check.isChecked())
+        c.set("overlay_outline_color", self._outline_color.name())
 
     def _refresh_argos_section(self):
         is_argos = self.engine_combo.currentData() == "argos"
@@ -422,6 +496,45 @@ class MainWindow(QMainWindow):
             self.overlay.show()
         else:
             self.overlay.hide()
+
+    def _update_color_button(self, button, color):
+        button.setText(color.name().upper())
+        luminance = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+        fg = "#000000" if luminance > 140 else "#ffffff"
+        button.setStyleSheet(
+            f"QPushButton#ColorPickButton {{ background-color: {color.name()}; "
+            f"color: {fg}; border: 1px solid #2a3040; }}")
+
+    def _pick_color(self, which):
+        current = {
+            "text": self._text_color,
+            "bg": self._bg_color,
+            "outline": self._outline_color,
+        }[which]
+        color = QColorDialog.getColor(current, self, "选择颜色")
+        if not color.isValid():
+            return
+        if which == "text":
+            self._text_color = color
+            self._update_color_button(self.text_color_button, color)
+        elif which == "bg":
+            self._bg_color = color
+            self._update_color_button(self.bg_color_button, color)
+        else:
+            self._outline_color = color
+            self._update_color_button(self.outline_color_button, color)
+        self._apply_overlay_style()
+
+    def _apply_overlay_style(self, *args):
+        self.overlay.apply_style(
+            font_size=self.overlay_font_spin.value(),
+            text_color=self._text_color.name(),
+            bg_color=self._bg_color.name(),
+            bg_opacity=self.bg_opacity_slider.value(),
+            outline=self.outline_check.isChecked(),
+            outline_width=2,
+            outline_color=self._outline_color.name(),
+        )
 
     def on_overlay_closed(self):
         self.overlay_check.blockSignals(True)

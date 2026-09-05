@@ -42,8 +42,20 @@ w.grab().save(str(out / "ui_captions.png"))
 
 ov = CaptionOverlay()
 ov.show_caption("The quick brown fox jumps over the lazy dog.", "敏捷的棕色狐狸跳过了懒狗。", True)
+ov.apply_style(
+    font_size=24, text_color="#ffe066", bg_color="#1a2b4a", bg_opacity=60,
+    outline=True, outline_width=2, outline_color="#000000")
 ov.show()
 app.processEvents()
 ov.grab().save(str(out / "ui_overlay.png"))
+ov2 = CaptionOverlay()
+ov2.show_caption("Styled overlay", "无描边 · 半透明背景", True)
+ov2.apply_style(
+    font_size=16, text_color="#7dffce", bg_color="#2d1b3d", bg_opacity=35,
+    outline=False, outline_width=0, outline_color="#000000")
+ov2.show()
+ov2.move(0, 200)
+app.processEvents()
+ov2.grab().save(str(out / "ui_overlay2.png"))
 
 print("saved:", [p.name for p in sorted(out.glob("ui_*.png"))])

@@ -1,7 +1,78 @@
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import (
+    QPainter, QPainterPath, QPen, QBrush, QColor, QTextOption,
+    QTextLayout,
+)
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QMenu
 
 from app.ui.styles import OVERLAY_QSS
+
+
+class OutlinedLabel(QLabel):
+    """支持描边的 QLabel：描边宽度 > 0 时走自绘路径，否则走原生绘制。"""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._outline_w = 0
+        self._outline_color = QColor("#000000")
+        self._text_color = QColor("#ffffff")
+
+    def set_outline(self, width, color):
+        self._outline_w = int(width)
+        self._outline_color = QColor(color)
+        self.update()
+
+    def set_fill_color(self, color):
+        self._text_color = QColor(color)
+        self.update()
+
+    def _paint_outline(self, painter):
+        painter.setRenderHint(QPainter.Antialiasing)
+        layout = QTextLayout(self.text(), self.font())
+        opt = QTextOption()
+        opt.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        opt.setAlignment(self.alignment())
+        layout.setTextOption(opt)
+        line_width = max(1.0, float(self.width()))
+        layout.beginLayout()
+        y = 0.0
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(line_width)
+            line.setPosition(QPointF(0.0, y))
+            y += line.height()
+        layout.endLayout()
+
+        for i in range(layout.lineCount()):
+            line = layout.lineAt(i)
+            start = line.textStart()
+            length = line.textLength()
+            if length <= 0:
+                continue
+            text = self.text()[start:start + length]
+            x = line.position().x()
+            if self.alignment() & Qt.AlignHCenter:
+                x += (line_width - line.naturalTextWidth()) / 2.0
+            y = line.position().y() + line.ascent()
+            path = QPainterPath()
+            path.addText(QPointF(x, y), self.font(), text)
+            pen = QPen(
+                self._outline_color,
+                max(1.0, float(self._outline_w)),
+                Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin,
+            )
+            painter.strokePath(path, pen)
+            painter.fillPath(path, QBrush(self._text_color))
+        painter.end()
+
+    def paintEvent(self, event):
+        if self._outline_w <= 0:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        self._paint_outline(painter)
 
 
 class CaptionOverlay(QWidget):
@@ -22,18 +93,50 @@ class CaptionOverlay(QWidget):
         layout.setContentsMargins(22, 12, 22, 14)
         layout.setSpacing(4)
 
-        self.source_label = QLabel("")
+        self.source_label = OutlinedLabel("")
         self.source_label.setObjectName("OverlaySource")
         self.source_label.setWordWrap(True)
         self.source_label.setAlignment(Qt.AlignCenter)
 
-        self.target_label = QLabel("悬浮字幕已开启")
+        self.target_label = OutlinedLabel("悬浮字幕已开启")
         self.target_label.setObjectName("OverlayTarget")
         self.target_label.setWordWrap(True)
         self.target_label.setAlignment(Qt.AlignCenter)
 
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
+        self.adjustSize()
+
+    def apply_style(self, font_size, text_color, bg_color, bg_opacity,
+                    outline, outline_width, outline_color):
+        """按配置应用外观：字号/颜色/背景/描边。"""
+        opacity = max(0, min(100, int(bg_opacity)))
+        r, g, b = QColor(bg_color).red(), QColor(bg_color).green(), QColor(bg_color).blue()
+        qss = f"""
+        QWidget#OverlayRoot {{
+            background-color: rgba({r}, {g}, {b}, {int(opacity * 2.55)});
+            border-radius: 14px;
+            border: 1px solid rgba(255, 255, 255, 24);
+        }}
+        QLabel#OverlaySource {{
+            color: rgba(255, 255, 255, 150);
+            font-size: {max(10, int(font_size * 0.72))}px;
+            background: transparent;
+        }}
+        QLabel#OverlayTarget {{
+            color: {text_color};
+            font-size: {font_size}px;
+            font-weight: 700;
+            background: transparent;
+        }}
+        """
+        self.setStyleSheet(qss)
+        outline_w = outline_width if outline else 0
+        self.source_label.set_outline(outline_w, outline_color)
+        self.target_label.set_outline(outline_w, outline_color)
+        self.target_label.set_fill_color(text_color)
+        self.source_label.set_fill_color(QColor(255, 255, 255, 150))
+        self.updateGeometry()
         self.adjustSize()
 
     def show_caption(self, source_text, target_text, show_source=True):

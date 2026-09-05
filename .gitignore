@@ -1,0 +1,4 @@
+
+# release artifacts stay out of git (downloads from Releases instead)
+dist/downloads/*.zip
+dist/downloads/**/*.exe
