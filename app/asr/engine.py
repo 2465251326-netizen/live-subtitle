@@ -1,6 +1,7 @@
 import queue
 import threading
 
+import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 
@@ -76,6 +77,7 @@ class AsrThread(QThread):
             return
         self.model_ready.emit()
         self.status_changed.emit("就绪，正在聆听...")
+        self._warmup()
         while not self._stop:
             try:
                 audio = self.queue_in.get(timeout=0.5)
@@ -88,11 +90,18 @@ class AsrThread(QThread):
             except Exception as e:
                 self.status_changed.emit(f"识别异常: {e}")
 
+    def _warmup(self):
+        try:
+            audio = np.zeros(8000, dtype=np.float32)
+            list(self._model.transcribe(audio, beam_size=1)[0])
+        except Exception:
+            pass
+
     def _transcribe(self, audio):
         duration = len(audio) / 16000.0
         kwargs = dict(
-            beam_size=2,
-            best_of=2,
+            beam_size=1,
+            best_of=1,
             condition_on_previous_text=False,
             vad_filter=False,
             no_speech_threshold=0.6,
