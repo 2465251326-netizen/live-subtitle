@@ -76,7 +76,7 @@ def main():
             break
 
     print(f"SMOKE: captions={done[0]} expected>={expect}")
-    w.overlay_check.setChecked(True)
+    w.set_overlay_enabled(True)
     overlay_ok = w.overlay.isVisible()
     w.stop_pipeline()
     if done[0] >= expect and overlay_ok:

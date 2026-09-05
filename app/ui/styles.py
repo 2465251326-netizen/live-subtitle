@@ -195,3 +195,84 @@ QLabel#OverlayTarget {
     background: transparent;
 }
 """
+
+SETTING_QSS = """
+QDialog {
+    background-color: #0f1115;
+}
+QListWidget#NavList {
+    background-color: #12151c;
+    border: none;
+    border-right: 1px solid #1e2330;
+    color: #c9cfdd;
+    font-size: 13px;
+    outline: none;
+    padding-top: 8px;
+}
+QListWidget#NavList::item {
+    color: #c9cfdd;
+    padding-left: 18px;
+    border-left: 3px solid transparent;
+}
+QListWidget#NavList::item:selected {
+    background-color: #2b3a5e;
+    color: #ffffff;
+    border-left: 3px solid #4f8cff;
+}
+QListWidget#NavList::item:hover:!selected {
+    background-color: #1a1f2a;
+}
+QWidget#SettingInner, QScrollArea#SettingScroll {
+    background-color: #0f1115;
+}
+QLabel#SettingTitle {
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+    background: transparent;
+}
+QLabel#SettingDesc {
+    font-size: 11px;
+    color: #8a91a5;
+    background: transparent;
+}
+QLabel#SettingGroup {
+    font-size: 12px;
+    font-weight: 700;
+    color: #9aa3b8;
+    letter-spacing: 1px;
+    background: transparent;
+}
+QFrame#SettingSep {
+    border: none;
+    border-top: 1px solid #1e2330;
+    background: transparent;
+}
+QCheckBox, QSlider, QSpinBox {
+    background: transparent;
+}
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #2a3040;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #4f8cff;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+    background: #e8eaf0;
+}
+QSlider::handle:horizontal:hover {
+    background: #ffffff;
+}
+QPushButton#ColorPickButton {
+    min-height: 26px;
+    font-weight: 600;
+    font-size: 12px;
+}
+"""

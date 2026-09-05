@@ -1,72 +1,30 @@
-import time
-from datetime import datetime
-
 import sys
+from datetime import datetime
 from pathlib import Path
 
-import requests
-from PySide6.QtCore import Qt, QThread, Signal, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QIcon, QAction
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtGui import QIcon, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
-    QComboBox, QCheckBox, QFrame, QScrollArea, QGridLayout, QProgressBar,
-    QStatusBar, QSizePolicy, QMessageBox, QApplication, QStackedWidget,
-    QSpinBox, QSlider, QColorDialog, QSystemTrayIcon, QMenu,
+    QCheckBox, QFrame, QScrollArea, QProgressBar, QSizePolicy,
+    QStatusBar, QMessageBox, QApplication, QStackedWidget,
+    QSystemTrayIcon, QMenu,
 )
 
-from app.config import Config, LANGUAGES, TARGET_LANGS
-from app.audio.capture import CaptureThread, list_input_devices, list_output_devices
+from app.config import Config
+from app.audio.capture import CaptureThread
 from app.asr.engine import AsrThread
-from app.translate.translator import TranslateThread, ArgosEngine
+from app.translate.translator import TranslateThread
 from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
 
 DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
-DRAWER_HEIGHT = 420
-
-MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
-          ("base", "base · 流畅 · 中文较弱"),
-          ("small", "small · 推荐（4 核以上）"),
-          ("medium", "medium · 高精度 · 需好 CPU")]
 
 
 def icon_path():
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS) / "app" / "icon.ico"
     return Path(__file__).resolve().parents[2] / "app" / "icon.ico"
-
-
-class ArgosWorker(QThread):
-    progress_text = Signal(str)
-    progress_pct = Signal(int)
-    finished_ok = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, from_code, to_code, parent=None):
-        super().__init__(parent)
-        self.from_code = from_code
-        self.to_code = to_code
-
-    def run(self):
-        try:
-            self.progress_text.emit("正在获取语言包索引...")
-            packs = ArgosEngine.available_packages()
-            match = [p for p in packs if p.from_code == self.from_code and p.to_code == self.to_code]
-            if not match:
-                self.failed.emit(
-                    f"未找到 {self.from_code} -> {self.to_code} 的离线语言包（该方向暂无离线包，可改用在线引擎）")
-                return
-            pkg = match[0]
-
-            def cb(pct):
-                self.progress_pct.emit(pct)
-
-            self.progress_text.emit(f"正在下载语言包 {pkg.from_name} -> {pkg.to_name}（约 70MB）...")
-            ArgosEngine.install(pkg, progress_cb=cb)
-            self.progress_pct.emit(100)
-            self.finished_ok.emit(f"语言包 {pkg.from_name} -> {pkg.to_name} 安装成功，可离线使用")
-        except Exception as e:
-            self.failed.emit(f"语言包安装失败: {e}")
 
 
 class CaptionCard(QFrame):
@@ -116,16 +74,15 @@ class MainWindow(QMainWindow):
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
-        self.argos_worker = None
         self.running = False
-        self.device_map = {}
         self.session_count = 0
         self.setWindowTitle("LiveSubtitle · 实时字幕翻译")
         self.resize(1150, 760)
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
-        self._load_devices()
         self._load_settings()
+        if self.config.get("auto_start"):
+            QTimer.singleShot(800, self.start_pipeline)
 
     def _build_ui(self):
         central = QWidget()
@@ -161,13 +118,13 @@ class MainWindow(QMainWindow):
         self.help_button.clicked.connect(self._open_docs)
         header.addWidget(self.help_button)
 
-        self.drawer_button = QPushButton("设置")
-        self.drawer_button.setObjectName("GhostButton")
-        self.drawer_button.setCursor(Qt.PointingHandCursor)
-        self.drawer_button.setFixedWidth(64)
-        self.drawer_button.setToolTip("展开 / 收起设置面板")
-        self.drawer_button.clicked.connect(self._toggle_drawer)
-        header.addWidget(self.drawer_button)
+        self.settings_button = QPushButton("设置")
+        self.settings_button.setObjectName("GhostButton")
+        self.settings_button.setCursor(Qt.PointingHandCursor)
+        self.settings_button.setFixedWidth(64)
+        self.settings_button.setToolTip("打开设置窗口")
+        self.settings_button.clicked.connect(self._open_settings)
+        header.addWidget(self.settings_button)
 
         self.toggle_button = QPushButton("开始翻译")
         self.toggle_button.setObjectName("PrimaryButton")
@@ -176,223 +133,9 @@ class MainWindow(QMainWindow):
         header.addWidget(self.toggle_button)
         root.addLayout(header)
 
-        side = QFrame()
-        side.setObjectName("SidePanel")
-        side_wrap = QVBoxLayout(side)
-        side_wrap.setContentsMargins(18, 14, 18, 12)
-        side_wrap.setSpacing(10)
-        side_row = QHBoxLayout()
-        side_row.setSpacing(24)
-        side_wrap.addLayout(side_row)
-
-        def panel_title(text, tip=""):
-            lab = QLabel(text)
-            lab.setObjectName("PanelTitle")
-            if tip:
-                lab.setToolTip(tip)
-            return lab
-
-        def column(stretch=1):
-            v = QVBoxLayout()
-            v.setSpacing(10)
-            side_row.addLayout(v, stretch)
-            return v
-
-        col_audio = column(12)
-        col_audio.addWidget(panel_title("音频输入"))
-        self.source_combo = QComboBox()
-        self.source_combo.addItem("系统声音（正在播放的内容）", "system")
-        self.source_combo.addItem("麦克风", "microphone")
-        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        col_audio.addWidget(self.source_combo)
-
-        self.device_combo = QComboBox()
-        device_row = QHBoxLayout()
-        device_row.setSpacing(6)
-        device_row.addWidget(self.device_combo, 1)
-        self.refresh_button = QPushButton("↻")
-        self.refresh_button.setFixedWidth(40)
-        self.refresh_button.setToolTip("刷新设备列表")
-        self.refresh_button.clicked.connect(self._load_devices)
-        device_row.addWidget(self.refresh_button)
-        col_audio.addLayout(device_row)
-
-        self.level_bar = QProgressBar()
-        self.level_bar.setObjectName("LevelBar")
-        self.level_bar.setRange(0, 100)
-        self.level_bar.setTextVisible(False)
-        self.level_bar.setFixedHeight(10)
-        col_audio.addWidget(self.level_bar)
-
-        col_asr = column(10)
-        col_asr.addWidget(panel_title(
-            "语音识别（本地）", "本地 Whisper 模型，语音不出电脑。越小越快，中文建议 small"))
-        self.model_combo = QComboBox()
-        model_tips = {
-            "tiny": "75MB · 延迟约 2s · 中文易误判，适合纯英文+老电脑",
-            "base": "145MB · 延迟约 2.5s · 中文较弱",
-            "small": "480MB · 延迟约 3s · 中文良好，推荐 4 核以上 CPU",
-            "medium": "1.5GB · 高精度 · 需较新多核 CPU 或 GPU",
-        }
-        for code, label in MODELS:
-            self.model_combo.addItem(label, code)
-            self.model_combo.setItemData(self.model_combo.count() - 1, model_tips[code], Qt.ToolTipRole)
-        self.model_combo.setToolTip("首次选择后自动下载，之后永久离线可用")
-        col_asr.addWidget(self.model_combo)
-
-        self.asr_lang_combo = QComboBox()
-        self.asr_lang_combo.setToolTip("自动检测：第一句后自动锁定语言；锁定语言识别更快更稳")
-        for code, name in LANGUAGES.items():
-            if code in ("zh-CN", "zh-TW"):
-                continue
-            self.asr_lang_combo.addItem(name, code)
-        col_asr.addWidget(self.asr_lang_combo)
-
-        self.compute_combo = QComboBox()
-        self.compute_combo.addItem("CPU 模式（通用）", "cpu")
-        self.compute_combo.addItem("自动（优先 GPU）", "auto")
-        self.compute_combo.setToolTip("有 NVIDIA 显卡时选「自动」可用 GPU 加速")
-        col_asr.addWidget(self.compute_combo)
-
-        col_translate = column(12)
-        col_translate.addWidget(panel_title(
-            "翻译引擎", "全部免费无需密钥。自动模式先探测 Google，不通自动切换 MyMemory"))
-        self.engine_combo = QComboBox()
-        self.engine_combo.addItem("自动探测（推荐）", "auto")
-        self.engine_combo.setItemData(0, "启动时探测在线接口，自动选择可用者", Qt.ToolTipRole)
-        self.engine_combo.addItem("Google 免费接口（在线）", "google")
-        self.engine_combo.setItemData(1, "质量最好，国内网络可能不可达", Qt.ToolTipRole)
-        self.engine_combo.addItem("MyMemory（在线备援）", "mymemory")
-        self.engine_combo.setItemData(2, "国内可达，有小额免费额度", Qt.ToolTipRole)
-        self.engine_combo.addItem("Argos 离线语言包", "argos")
-        self.engine_combo.setItemData(3, "完全断网可用，需先在下方下载语言包", Qt.ToolTipRole)
-        self.engine_combo.currentIndexChanged.connect(self._refresh_argos_section)
-        col_translate.addWidget(self.engine_combo)
-
-        self.target_combo = QComboBox()
-        for code in TARGET_LANGS:
-            self.target_combo.addItem(LANGUAGES.get(code, code), code)
-        self.target_combo.setToolTip("字幕将翻译为此语言；Argos 离线包按此处选择的方向下载")
-        self.target_combo.currentIndexChanged.connect(self._refresh_argos_section)
-        col_translate.addWidget(self.target_combo)
-
-        self.argos_hint = QLabel("选择 Argos 引擎后，请先下载所需语言包（下载一次即可永久离线使用）")
-        self.argos_hint.setObjectName("CaptionMeta")
-        self.argos_hint.setWordWrap(True)
-        self.argos_combo = QComboBox()
-        self.argos_download_button = QPushButton("下载语言包")
-        self.argos_download_button.clicked.connect(self._download_argos)
-        self.argos_progress = QProgressBar()
-        self.argos_progress.setRange(0, 100)
-        self.argos_progress.setVisible(False)
-        for w in (self.argos_combo, self.argos_download_button, self.argos_progress):
-            w.setVisible(False)
-            col_translate.addWidget(w)
-        col_translate.addWidget(self.argos_hint)
-        self._refresh_argos_section()
-
-        col_display = column(10)
-        col_display.addWidget(panel_title("显示"))
-        self.overlay_check = QCheckBox("启用悬浮字幕条（置顶）")
-        self.overlay_check.toggled.connect(self._on_overlay_toggle)
-        col_display.addWidget(self.overlay_check)
-        self.show_source_check = QCheckBox("同时显示原文")
-        col_display.addWidget(self.show_source_check)
-
-        col_display.addSpacing(6)
-        col_display.addWidget(panel_title(
-            "关闭行为", "点击主窗口关闭按钮时执行的动作"))
-        self.close_combo = QComboBox()
-        self.close_combo.addItem("每次询问", "ask")
-        self.close_combo.setItemData(0, "关闭时弹出选择：隐藏到托盘或退出", Qt.ToolTipRole)
-        self.close_combo.addItem("隐藏到托盘（字幕继续）", "tray")
-        self.close_combo.setItemData(1, "主窗口消失，后台继续出字幕，可从托盘恢复", Qt.ToolTipRole)
-        self.close_combo.addItem("直接退出程序", "exit")
-        self.close_combo.setItemData(2, "关闭窗口即完全退出", Qt.ToolTipRole)
-        self.close_combo.setToolTip("点击主窗口关闭按钮时执行的动作")
-        col_display.addWidget(self.close_combo)
-
-        col_style = column(14)
-        col_style.addWidget(panel_title("悬浮字幕样式"))
-        style_grid = QGridLayout()
-        style_grid.setHorizontalSpacing(8)
-        style_grid.setVerticalSpacing(6)
-
-        style_grid.addWidget(QLabel("字号"), 0, 0)
-        self.overlay_font_spin = QSpinBox()
-        self.overlay_font_spin.setRange(12, 48)
-        self.overlay_font_spin.setValue(18)
-        style_grid.addWidget(self.overlay_font_spin, 0, 1)
-
-        style_grid.addWidget(QLabel("文字颜色"), 1, 0)
-        self.text_color_button = QPushButton("选择")
-        self.text_color_button.setObjectName("ColorPickButton")
-        self._text_color = QColor("#ffffff")
-        self._update_color_button(self.text_color_button, self._text_color)
-        self.text_color_button.clicked.connect(
-            lambda: self._pick_color("text"))
-        style_grid.addWidget(self.text_color_button, 1, 1)
-
-        style_grid.addWidget(QLabel("背景颜色"), 2, 0)
-        self.bg_color_button = QPushButton("选择")
-        self.bg_color_button.setObjectName("ColorPickButton")
-        self._bg_color = QColor("#0c0e14")
-        self._update_color_button(self.bg_color_button, self._bg_color)
-        self.bg_color_button.clicked.connect(
-            lambda: self._pick_color("bg"))
-        style_grid.addWidget(self.bg_color_button, 2, 1)
-
-        style_grid.addWidget(QLabel("背景透明度"), 3, 0)
-        self.bg_opacity_slider = QSlider(Qt.Horizontal)
-        self.bg_opacity_slider.setRange(0, 95)
-        self.bg_opacity_slider.setValue(78)
-        self.bg_opacity_label = QLabel("78%")
-        self.bg_opacity_label.setObjectName("CaptionMeta")
-        self.bg_opacity_slider.valueChanged.connect(
-            lambda v: (self.bg_opacity_label.setText(f"{v}%"),
-                       self._apply_overlay_style()))
-        style_grid.addWidget(self.bg_opacity_slider, 3, 1)
-        style_grid.addWidget(self.bg_opacity_label, 3, 2)
-
-        self.outline_check = QCheckBox("字体描边")
-        self.outline_check.setChecked(True)
-        self.outline_check.toggled.connect(self._apply_overlay_style)
-        style_grid.addWidget(self.outline_check, 4, 0)
-        self.outline_color_button = QPushButton("描边色")
-        self.outline_color_button.setObjectName("ColorPickButton")
-        self._outline_color = QColor("#000000")
-        self._update_color_button(self.outline_color_button, self._outline_color)
-        self.outline_color_button.clicked.connect(
-            lambda: self._pick_color("outline"))
-        style_grid.addWidget(self.outline_color_button, 4, 1)
-
-        col_style.addLayout(style_grid)
-        self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
-
-        for col in (col_audio, col_asr, col_translate, col_display, col_style):
-            col.addStretch()
-
-        bottom_row = QHBoxLayout()
-        bottom_row.addStretch()
-        self.clear_button = QPushButton("清空字幕记录")
-        self.clear_button.clicked.connect(self._clear_captions)
-        bottom_row.addWidget(self.clear_button)
-        side_wrap.addLayout(bottom_row)
-
-        side_scroll = QScrollArea()
-        side_scroll.setWidgetResizable(True)
-        side_scroll.setMinimumHeight(0)
-        side_scroll.setMaximumHeight(0)
-        side_scroll.setFrameShape(QFrame.NoFrame)
-        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        side_scroll.setWidget(side)
-        root.addWidget(side_scroll)
-        self.side_scroll = side_scroll
-
         body = QHBoxLayout()
         body.setSpacing(14)
 
-        captions_column = QVBoxLayout()
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll_container = QWidget()
@@ -423,14 +166,30 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(empty_page)
         self.stack.addWidget(list_page)
         self.stack.setCurrentIndex(0)
-        captions_column.addWidget(self.stack)
-        body.addLayout(captions_column, 1)
+        body.addWidget(self.stack, 1)
         root.addLayout(body)
 
         status = QStatusBar()
         self.setStatusBar(status)
         self.engine_status_label = QLabel("引擎：待启动")
         status.addWidget(self.engine_status_label)
+
+        self.level_bar = QProgressBar()
+        self.level_bar.setRange(0, 100)
+        self.level_bar.setTextVisible(False)
+        self.level_bar.setFixedSize(140, 10)
+        self.level_bar.setStyleSheet(
+            "QProgressBar { background: #262c38; border: none; border-radius: 5px; }"
+            "QProgressBar::chunk { background: #34d399; border-radius: 5px; }")
+        status.addPermanentWidget(self.level_bar)
+
+        self.clear_button = QPushButton("清空")
+        self.clear_button.setObjectName("GhostButton")
+        self.clear_button.setCursor(Qt.PointingHandCursor)
+        self.clear_button.setToolTip("清空当前会话的字幕记录")
+        self.clear_button.clicked.connect(self._clear_captions)
+        status.addPermanentWidget(self.clear_button)
+
         self.session_label = QLabel("本次会话：0 条")
         status.addPermanentWidget(self.session_label)
 
@@ -458,41 +217,29 @@ class MainWindow(QMainWindow):
             if r == QSystemTrayIcon.Trigger or r == QSystemTrayIcon.DoubleClick else None)
         self.tray.show()
 
-    def _toggle_drawer(self):
-        target = self.config.get("panel_open")
-        self._set_drawer(not target)
-        self.config.set("panel_open", not target)
+    def _load_settings(self):
+        c = self.config
+        self.overlay.move(c.get("overlay_x"), c.get("overlay_y"))
+        self.apply_overlay_from_config()
+        if c.get("overlay_enabled"):
+            self.overlay.show()
 
-    def _set_drawer(self, open_it, animate=True):
-        w = self.side_scroll
-        if getattr(self, "_drawer_anim", None) and self._drawer_anim.state() == QPropertyAnimation.Running:
-            self._drawer_anim.stop()
-        if open_it:
-            w.setVisible(True)
-            if animate:
-                anim = QPropertyAnimation(w, b"maximumHeight", self)
-                anim.setDuration(180)
-                anim.setStartValue(w.maximumHeight())
-                anim.setEndValue(DRAWER_HEIGHT)
-                anim.setEasingCurve(QEasingCurve.OutCubic)
-                self._drawer_anim = anim
-                anim.start()
-            else:
-                w.setMaximumHeight(DRAWER_HEIGHT)
-        else:
-            if animate:
-                anim = QPropertyAnimation(w, b"maximumHeight", self)
-                anim.setDuration(180)
-                anim.setStartValue(w.maximumHeight())
-                anim.setEndValue(0)
-                anim.setEasingCurve(QEasingCurve.OutCubic)
-                anim.finished.connect(lambda: w.setVisible(False) if w.maximumHeight() == 0 else None)
-                self._drawer_anim = anim
-                anim.start()
-            else:
-                w.setMaximumHeight(0)
-                w.setVisible(False)
-        self.drawer_button.setText("设置")
+    def _save_settings(self):
+        c = self.config
+        if self.overlay.isVisible():
+            c.set("overlay_x", self.overlay.x())
+            c.set("overlay_y", self.overlay.y())
+
+    def _open_settings(self):
+        from app.ui.settings_dialog import SettingsDialog
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is None or not dlg.isVisible():
+            dlg = SettingsDialog(self)
+            dlg.load_from_config()
+            self._settings_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _open_docs(self):
         from PySide6.QtGui import QDesktopServices
@@ -508,155 +255,6 @@ class MainWindow(QMainWindow):
         self._quitting = True
         self.close()
 
-    def _load_devices(self):
-        self.device_combo.clear()
-        self.device_map = {}
-        source_type = self.source_combo.currentData()
-        devices = list_output_devices() if source_type == "system" else list_input_devices()
-        for d in devices:
-            tag = " [系统声音]" if d.get("loopback") else ""
-            label = f"{d['name']}{tag}"
-            self.device_map[label] = d["index"]
-            self.device_combo.addItem(label, d["index"])
-        if not devices and source_type == "system":
-            self.device_combo.addItem("默认输出设备（自动）", -1)
-
-    def _on_source_changed(self):
-        self._load_devices()
-
-    def _load_settings(self):
-        c = self.config
-        self._set_drawer(bool(c.get("panel_open")), animate=False)
-        idx = self.source_combo.findData(c.get("source_type"))
-        if idx >= 0:
-            self.source_combo.setCurrentIndex(idx)
-        dev_idx = self.device_combo.findData(c.get("device_index"))
-        if dev_idx >= 0:
-            self.device_combo.setCurrentIndex(dev_idx)
-        model_idx = self.model_combo.findData(c.get("asr_model"))
-        if model_idx >= 0:
-            self.model_combo.setCurrentIndex(model_idx)
-        lang_idx = self.asr_lang_combo.findData(c.get("asr_language"))
-        if lang_idx >= 0:
-            self.asr_lang_combo.setCurrentIndex(lang_idx)
-        dev_idx = self.compute_combo.findData(c.get("asr_device"))
-        if dev_idx >= 0:
-            self.compute_combo.setCurrentIndex(dev_idx)
-        eng_idx = self.engine_combo.findData(c.get("engine"))
-        if eng_idx >= 0:
-            self.engine_combo.setCurrentIndex(eng_idx)
-        tgt_idx = self.target_combo.findData(c.get("target_lang"))
-        if tgt_idx >= 0:
-            self.target_combo.setCurrentIndex(tgt_idx)
-        self.overlay_check.setChecked(bool(c.get("overlay_enabled")))
-        self.show_source_check.setChecked(bool(c.get("show_source")))
-        self.overlay_font_spin.setValue(int(c.get("overlay_font_size")))
-        self._text_color = QColor(c.get("overlay_text_color"))
-        self._bg_color = QColor(c.get("overlay_bg_color"))
-        self._update_color_button(self.text_color_button, self._text_color)
-        self._update_color_button(self.bg_color_button, self._bg_color)
-        self.bg_opacity_slider.setValue(int(c.get("overlay_bg_opacity")))
-        self.outline_check.setChecked(bool(c.get("overlay_outline")))
-        self._outline_color = QColor(c.get("overlay_outline_color"))
-        self._update_color_button(self.outline_color_button, self._outline_color)
-        self._apply_overlay_style()
-        close_idx = self.close_combo.findData(c.get("close_action"))
-        if close_idx >= 0:
-            self.close_combo.setCurrentIndex(close_idx)
-
-    def _save_settings(self):
-        c = self.config
-        c.set("source_type", self.source_combo.currentData())
-        c.set("device_index", self.device_combo.currentData())
-        c.set("asr_model", self.model_combo.currentData())
-        c.set("asr_language", self.asr_lang_combo.currentData())
-        c.set("asr_device", self.compute_combo.currentData())
-        c.set("engine", self.engine_combo.currentData())
-        c.set("target_lang", self.target_combo.currentData())
-        c.set("overlay_enabled", self.overlay_check.isChecked())
-        c.set("show_source", self.show_source_check.isChecked())
-        c.set("overlay_x", self.overlay.x())
-        c.set("overlay_y", self.overlay.y())
-        c.set("overlay_font_size", self.overlay_font_spin.value())
-        c.set("overlay_text_color", self._text_color.name())
-        c.set("overlay_bg_color", self._bg_color.name())
-        c.set("overlay_bg_opacity", self.bg_opacity_slider.value())
-        c.set("overlay_outline", self.outline_check.isChecked())
-        c.set("overlay_outline_color", self._outline_color.name())
-        c.set("close_action", self.close_combo.currentData())
-
-    def _refresh_argos_section(self):
-        is_argos = self.engine_combo.currentData() == "argos"
-        for w in (self.argos_combo, self.argos_download_button):
-            w.setVisible(is_argos)
-        self.argos_hint.setVisible(is_argos)
-        downloading = bool(self.argos_worker and self.argos_worker.isRunning())
-        self.argos_progress.setVisible(is_argos and downloading)
-        if is_argos:
-            self._populate_argos_langs()
-
-    def _argos_target_code(self):
-        t = self.target_combo.currentData() or "zh-CN"
-        return "zh" if t.startswith("zh") else t
-
-    def _populate_argos_langs(self):
-        self.argos_combo.clear()
-        common = ["en", "ja", "ko", "ru", "fr", "de", "es", "pt", "it", "th", "vi", "ar", "id", "hi"]
-        tgt = self._argos_target_code()
-        tgt_name = LANGUAGES.get(self.target_combo.currentData() or "zh-CN", tgt)
-        installed = set(ArgosEngine.installed_pairs())
-        for code in common:
-            name = LANGUAGES.get(code, code)
-            if (code, tgt) in installed:
-                name += "（已安装）"
-            self.argos_combo.addItem(name, code)
-        self.argos_download_button.setText(f"下载所选 → {tgt_name} 语言包")
-        if installed:
-            self.argos_hint.setText(
-                f"已安装 {len(installed)} 个语言包；选择与「识别语言 → 翻译目标」一致的方向下载，下载一次永久离线使用。")
-        else:
-            self.argos_hint.setText(
-                "请下载与「识别语言 → 翻译目标」一致的语言包（约 70MB，一次下载永久离线使用），下载期间请勿切换引擎。")
-
-    def _download_argos(self):
-        code = self.argos_combo.currentData()
-        if not code:
-            return
-        if self.argos_worker and self.argos_worker.isRunning():
-            return
-        tgt = self._argos_target_code()
-        tgt_name = LANGUAGES.get(self.target_combo.currentData() or "zh-CN", tgt)
-        self.argos_download_button.setEnabled(False)
-        self.argos_combo.setEnabled(False)
-        self.engine_combo.setEnabled(False)
-        self.argos_progress.setValue(0)
-        self.argos_progress.setVisible(True)
-        self.engine_status_label.setText(f"正在安装离线语言包: {code} -> {tgt_name}")
-        self.argos_worker = ArgosWorker(code, tgt, self)
-        self.argos_worker.progress_text.connect(
-            lambda m: self.engine_status_label.setText(m))
-        self.argos_worker.progress_pct.connect(self.argos_progress.setValue)
-        self.argos_worker.finished_ok.connect(self._on_argos_done)
-        self.argos_worker.failed.connect(self._on_argos_failed)
-        self.argos_worker.start()
-
-    def _on_argos_done(self, msg):
-        self.argos_download_button.setEnabled(True)
-        self.argos_combo.setEnabled(True)
-        self.engine_combo.setEnabled(True)
-        self.argos_progress.setVisible(False)
-        self.engine_status_label.setText(msg)
-        self._populate_argos_langs()
-        self._show_info("完成", msg)
-
-    def _on_argos_failed(self, msg):
-        self.argos_download_button.setEnabled(True)
-        self.argos_combo.setEnabled(True)
-        self.engine_combo.setEnabled(True)
-        self.argos_progress.setVisible(False)
-        self.engine_status_label.setText(msg)
-        self._show_info("失败", f"{msg}\n\n请检查网络，或改用在线翻译引擎。")
-
     def _show_info(self, title, text):
         box = QMessageBox(self)
         box.setWindowTitle(title)
@@ -665,56 +263,31 @@ class MainWindow(QMainWindow):
         box.setAttribute(Qt.WA_DeleteOnClose, True)
         box.show()
 
-    def _on_overlay_toggle(self, checked):
+    def set_overlay_enabled(self, checked):
         if checked:
             self.overlay.move(self.config.get("overlay_x"), self.config.get("overlay_y"))
             self.overlay.show()
         else:
             self.overlay.hide()
+        self.config.set("overlay_enabled", bool(checked))
 
-    def _update_color_button(self, button, color):
-        button.setText(color.name().upper())
-        luminance = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
-        fg = "#000000" if luminance > 140 else "#ffffff"
-        button.setStyleSheet(
-            f"QPushButton#ColorPickButton {{ background-color: {color.name()}; "
-            f"color: {fg}; border: 1px solid #2a3040; }}")
-
-    def _pick_color(self, which):
-        current = {
-            "text": self._text_color,
-            "bg": self._bg_color,
-            "outline": self._outline_color,
-        }[which]
-        color = QColorDialog.getColor(current, self, "选择颜色")
-        if not color.isValid():
-            return
-        if which == "text":
-            self._text_color = color
-            self._update_color_button(self.text_color_button, color)
-        elif which == "bg":
-            self._bg_color = color
-            self._update_color_button(self.bg_color_button, color)
-        else:
-            self._outline_color = color
-            self._update_color_button(self.outline_color_button, color)
-        self._apply_overlay_style()
-
-    def _apply_overlay_style(self, *args):
+    def apply_overlay_from_config(self):
+        c = self.config
         self.overlay.apply_style(
-            font_size=self.overlay_font_spin.value(),
-            text_color=self._text_color.name(),
-            bg_color=self._bg_color.name(),
-            bg_opacity=self.bg_opacity_slider.value(),
-            outline=self.outline_check.isChecked(),
+            font_size=int(c.get("overlay_font_size")),
+            text_color=c.get("overlay_text_color"),
+            bg_color=c.get("overlay_bg_color"),
+            bg_opacity=int(c.get("overlay_bg_opacity")),
+            outline=bool(c.get("overlay_outline")),
             outline_width=2,
-            outline_color=self._outline_color.name(),
+            outline_color=c.get("overlay_outline_color"),
         )
 
     def on_overlay_closed(self):
-        self.overlay_check.blockSignals(True)
-        self.overlay_check.setChecked(False)
-        self.overlay_check.blockSignals(False)
+        if getattr(self, "_quitting", False):
+            return
+        self.config.set("overlay_enabled", False)
+
 
     def _clear_captions(self):
         while self.scroll_layout.count() > 1:
@@ -733,7 +306,6 @@ class MainWindow(QMainWindow):
             self.start_pipeline()
 
     def start_pipeline(self):
-        self._save_settings()
         self.running = True
         self.toggle_button.setText("停止翻译")
         self.toggle_button.setObjectName("StopButton")
@@ -744,17 +316,18 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(1)
         self.session_count = 0
 
-        engine = self.engine_combo.currentData()
-        self.translate_thread = TranslateThread(engine, self.target_combo.currentData(), self)
+        c = self.config
+        engine = c.get("engine")
+        self.translate_thread = TranslateThread(engine, c.get("target_lang"), self)
         self.translate_thread.result_ready.connect(self._on_translated)
         self.translate_thread.status_changed.connect(
             lambda m: self.engine_status_label.setText(f"翻译: {m}"))
         self.translate_thread.start()
 
         self.asr_thread = AsrThread(
-            self.model_combo.currentData(),
-            self.compute_combo.currentData(),
-            self.asr_lang_combo.currentData(),
+            c.get("asr_model"),
+            c.get("asr_device"),
+            c.get("asr_language"),
             self,
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
@@ -764,8 +337,8 @@ class MainWindow(QMainWindow):
         self.asr_thread.start()
 
         self.capture_thread = CaptureThread(
-            self.source_combo.currentData(),
-            self.device_combo.currentData() or -1,
+            c.get("source_type"),
+            int(c.get("device_index") or -1),
             self,
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
@@ -773,8 +346,8 @@ class MainWindow(QMainWindow):
         self.capture_thread.error_occurred.connect(self._on_pipeline_error)
         self.capture_thread.start()
 
-        if self.overlay_check.isChecked() and not self.overlay.isVisible():
-            self._on_overlay_toggle(True)
+        if c.get("overlay_enabled") and not self.overlay.isVisible():
+            self.set_overlay_enabled(True)
 
     def stop_pipeline(self):
         self.running = False
@@ -812,6 +385,7 @@ class MainWindow(QMainWindow):
             self.translate_thread.submit(text, detected)
 
     def _on_translated(self, source_text, translated, engine, detected, error):
+        show_source = bool(self.config.get("show_source"))
         card = CaptionCard(source_text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
         if self.stack.currentIndex() == 0:
@@ -819,7 +393,7 @@ class MainWindow(QMainWindow):
         if error:
             card.set_failed(error)
         else:
-            card.set_result(translated, engine, detected, self.show_source_check.isChecked())
+            card.set_result(translated, engine, detected, show_source)
         self.session_count = getattr(self, "session_count", 0) + 1
         self.session_label.setText(f"本次会话：{self.session_count} 条")
         self.engine_status_label.setText(f"引擎：{engine} · 源语言: {detected or '?'}")
@@ -827,7 +401,7 @@ class MainWindow(QMainWindow):
         sb.setValue(sb.maximum())
         if self.overlay.isVisible():
             self.overlay.show_caption(source_text, translated or ("[" + engine + " 翻译失败]"),
-                                      self.show_source_check.isChecked())
+                                      show_source)
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
             item = self.scroll_layout.takeAt(0)
             if item.widget():

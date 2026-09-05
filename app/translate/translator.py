@@ -53,6 +53,15 @@ class TranslationCache:
                 self._data.pop(next(iter(self._data)))
         self.save()
 
+    def clear(self):
+        with self._lock:
+            self._data.clear()
+        try:
+            if CACHE_FILE.exists():
+                CACHE_FILE.unlink()
+        except Exception:
+            pass
+
 
 _cache = TranslationCache()
 

@@ -22,21 +22,24 @@ w.show()
 app.processEvents()
 w.grab().save(str(out / "ui_empty.png"))
 
-# 抽屉收起状态
-w._set_drawer(False, animate=False)
-app.processEvents()
-w.grab().save(str(out / "ui_drawer_closed.png"))
-w._set_drawer(True, animate=False)
-app.processEvents()
+# 设置窗口各页
+w._open_settings()
+dlg = getattr(w, "_settings_dlg", None)
+for i, name in enumerate(["ui_settings_audio", "ui_settings_asr",
+                          "ui_settings_translate", "ui_settings_display",
+                          "ui_settings_general"]):
+    dlg.nav.setCurrentRow(i)
+    app.processEvents()
+    dlg.grab().save(str(out / f"{name}.png"))
 
-# Argos 分组展开
-idx = w.engine_combo.findData("argos")
-w.engine_combo.setCurrentIndex(idx)
+# Argos 分组展开（翻译页）
+dlg.nav.setCurrentRow(2)
+for k in range(dlg.pages.count()):
+    pass
 app.processEvents()
-w.grab().save(str(out / "ui_argos.png"))
+dlg.grab().save(str(out / "ui_settings_translate.png"))
 
 # 字幕列表状态（模拟 3 条卡片）
-w.engine_combo.setCurrentIndex(max(0, w.engine_combo.findData("auto")))
 w.stack.setCurrentIndex(1)
 for src, tgt, det, eng in [
     ("Welcome back to the channel.", "大家好，欢迎回到频道", "en", "google"),
