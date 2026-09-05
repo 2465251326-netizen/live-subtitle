@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -113,7 +113,8 @@ class Config:
     def load(self):
         if CONFIG_FILE.exists():
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                # utf-8-sig 兼容手工编辑（如记事本）可能带入的 BOM
+                with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     saved = json.load(f)
                 for k in self._data:
                     if k in saved:
@@ -123,8 +124,11 @@ class Config:
 
     def save(self):
         try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            # 先写临时文件再原子替换，避免写一半崩溃/断电导致配置损坏
+            tmp = CONFIG_FILE.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, CONFIG_FILE)
         except Exception:
             pass
 

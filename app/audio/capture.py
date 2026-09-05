@@ -49,6 +49,19 @@ def list_output_devices():
     return [d for d in list_input_devices() if d.get("loopback")]
 
 
+def friendly_audio_error(e: Exception) -> str:
+    """把 pyaudio 的英文错误码翻译成用户能执行的下一步动作。"""
+    s = str(e)
+    if "-9996" in s or "Invalid device" in s:
+        return ("无法打开所选音频设备（该设备可能不支持当前采集模式）。"
+                "请到「设置 - 音频输入」重新选择设备，或点「刷新」后重试。")
+    if "-9985" in s or "Device unavailable" in s:
+        return "音频设备被其他程序占用或暂时不可用，请关闭占用它的程序后重试。"
+    if "-9984" in s or "unanticipated host error" in s.lower():
+        return "音频驱动异常，请尝试更换音频设备或重启程序。"
+    return s
+
+
 def resample_to_16k(data: np.ndarray, orig_sr: int) -> np.ndarray:
     if data.ndim == 1:
         mono = data
@@ -136,6 +149,10 @@ class CaptureThread(QThread):
     segment_ready = Signal(object)
     level_changed = Signal(float)
     error_occurred = Signal(str)
+    low_input = Signal(bool)  # True=输入信号持续过弱（可能音量过低/抓错设备）
+
+    QUIET_WARN_S = 12.0
+    QUIET_LEVEL = 0.012
 
     def __init__(self, source_type: str, device_index: int, parent=None):
         super().__init__(parent)
@@ -143,6 +160,7 @@ class CaptureThread(QThread):
         self.device_index = device_index
         self._stop = False
         self.segmenter = Segmenter()
+        self._warned_quiet = False
 
     def stop(self):
         self._stop = True
@@ -207,7 +225,7 @@ class CaptureThread(QThread):
                 try:
                     raw = stream.read(frames_per_buffer, exception_on_overflow=False)
                 except OSError as e:
-                    self.error_occurred.emit(f"音频读取中断: {e}")
+                    self.error_occurred.emit(f"音频读取中断: {friendly_audio_error(e)}")
                     break
                 data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
                 data = data.reshape(-1, channels) if channels > 1 else data.reshape(-1, 1)
@@ -216,11 +234,22 @@ class CaptureThread(QThread):
                     continue
                 level = float(np.max(np.abs(mono16)))
                 self.level_changed.emit(min(1.0, level * 8))
+                # 长时间近乎无声时提醒用户：低音量/抓错设备会让字幕静默失效
+                if level < self.QUIET_LEVEL:
+                    self._quiet_s = getattr(self, "_quiet_s", 0.0) + CHUNK_MS / 1000.0
+                else:
+                    self._quiet_s = 0.0
+                    if self._warned_quiet:
+                        self._warned_quiet = False
+                        self.low_input.emit(False)
+                if self._quiet_s >= self.QUIET_WARN_S and not self._warned_quiet:
+                    self._warned_quiet = True
+                    self.low_input.emit(True)
                 seg = self.segmenter.feed(mono16)
                 if seg is not None:
                     self.segment_ready.emit(seg)
         except Exception as e:
-            self.error_occurred.emit(f"音频采集失败: {e}")
+            self.error_occurred.emit(f"音频采集失败: {friendly_audio_error(e)}")
         finally:
             if stream:
                 try:

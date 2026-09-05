@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from app.config import LANGUAGES, TARGET_LANGS
 from app.translate.translator import ArgosEngine, _cache
+from app.translate.offline_pack import cleanup_temp_files
 from app.audio.capture import list_input_devices, list_output_devices
 from app.ui.styles import SETTING_QSS
 
@@ -249,6 +250,10 @@ class SettingsDialog(QDialog):
                   self.target_combo)
 
         self._section(page, "离线语言包")
+        try:
+            cleanup_temp_files()
+        except Exception:
+            pass
         self.argos_hint = QLabel("选择 Argos 引擎后在此下载语言包（约 70MB / 包，一次下载永久离线使用）。")
         self.argos_hint.setObjectName("SettingDesc")
         self.argos_hint.setWordWrap(True)
@@ -404,6 +409,8 @@ class SettingsDialog(QDialog):
 
     def _on_source_changed(self):
         self._save_combo("source_type", self.source_combo)
+        # 切换采集来源时重置设备，避免把系统声音的回环设备索引带进麦克风模式（反之亦然）
+        self.c.set("device_index", -1)
         self._load_devices()
 
     def _on_engine_changed(self):
@@ -452,29 +459,56 @@ class SettingsDialog(QDialog):
         _cache.clear()
         QMessageBox.information(self, "完成", "翻译缓存已清空。")
 
+    def sync_overlay_check(self, checked):
+        """悬浮字幕在设置窗口之外被开关（如右键关闭字幕条）时，同步本页复选框。"""
+        self.overlay_check.blockSignals(True)
+        self.overlay_check.setChecked(bool(checked))
+        self.overlay_check.blockSignals(False)
+
     def _load_devices(self):
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
         source_type = self.source_combo.currentData()
-        devices = list_output_devices() if source_type == "system" else list_input_devices()
+        if source_type == "system":
+            devices = list_output_devices()
+        else:
+            # 麦克风模式只列真实输入设备，回环设备混进来会被误选导致采集失败
+            devices = [d for d in list_input_devices() if not d.get("loopback")]
         self._device_map = {}
         for d in devices:
             tag = " [系统声音]" if d.get("loopback") else ""
             label = f"{d['name']}{tag}"
             self._device_map[label] = d["index"]
             self.device_combo.addItem(label, d["index"])
-        if not devices and source_type == "system":
-            self.device_combo.addItem("默认输出设备（自动）", -1)
+        if source_type == "system":
+            if not devices:
+                self.device_combo.addItem("默认输出设备（自动）", -1)
+        else:
+            self.device_combo.addItem("默认麦克风（自动）", -1)
+            # 去重：不同 Host API 会暴露同名设备，只保留首个（倒序删除避免索引跳动）
+            seen = set()
+            for i in range(self.device_combo.count() - 1, -1, -1):
+                label = self.device_combo.itemText(i)
+                if label in seen:
+                    self.device_combo.removeItem(i)
+                else:
+                    seen.add(label)
         idx = self.device_combo.findData(self.c.get("device_index"))
         if idx >= 0:
             self.device_combo.setCurrentIndex(idx)
+        else:
+            # 找不到已存设备（如麦克风索引混入了系统声音列表）时落到安全的默认项
+            if source_type == "system":
+                self.device_combo.setCurrentIndex(0)
+            else:
+                self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+            self.c.set("device_index", self.device_combo.currentData())
         self.device_combo.blockSignals(False)
 
     def _refresh_argos_section(self):
         is_argos = self.engine_combo.currentData() == "argos"
-        for w in (self.argos_combo, self.argos_download_button):
+        for w in (self.argos_combo, self.argos_download_button, self.argos_hint):
             w.setVisible(is_argos)
-        self.argos_hint.setVisible(True)
         downloading = bool(getattr(self, "argos_worker", None) and self.argos_worker.isRunning())
         self.argos_progress.setVisible(is_argos and downloading)
         if not is_argos:
