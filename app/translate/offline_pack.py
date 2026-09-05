@@ -110,12 +110,14 @@ def _extract_pack(model_path: Path, dest: Path):
     tmp.rename(dest)
 
 
-def install_pack(pack: PackInfo, progress_cb=None):
-    PACKS_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = PACKS_DIR / f"{pack.code}.argosmodel"
-    tmp_path = model_path.with_suffix(".tmp")
+MIRROR_RELEASE = (
+    "https://github.com/2465251326-netizen/live-subtitle"
+    "/releases/download/offline-packs/"
+)
 
-    with requests.get(pack.url, headers=HEADERS, stream=True, timeout=30) as r:
+
+def _download_stream(url, tmp_path, progress_cb=None):
+    with requests.get(url, headers=HEADERS, stream=True, timeout=30) as r:
         r.raise_for_status()
         total = int(r.headers.get("Content-Length", 0))
         done = 0
@@ -128,6 +130,27 @@ def install_pack(pack: PackInfo, progress_cb=None):
                     progress_cb(min(pct, 100))
     if total and tmp_path.stat().st_size != total:
         raise RuntimeError("下载不完整，请重试")
+
+
+def install_pack(pack: PackInfo, progress_cb=None):
+    PACKS_DIR.mkdir(parents=True, exist_ok=True)
+    model_path = PACKS_DIR / f"{pack.code}.argosmodel"
+    tmp_path = model_path.with_suffix(".tmp")
+
+    mirror_url = MIRROR_RELEASE + pack.url.rsplit("/", 1)[-1]
+    last_err = None
+    for url in [mirror_url, pack.url]:
+        try:
+            _download_stream(url, tmp_path, progress_cb)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            tmp_path.unlink(missing_ok=True)
+            if progress_cb:
+                progress_cb(0)
+    if last_err:
+        raise last_err
 
     dest = _pack_dir(pack.code)
     _extract_pack(tmp_path, dest)
