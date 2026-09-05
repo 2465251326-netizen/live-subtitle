@@ -1,14 +1,15 @@
+import ctypes
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QIcon, QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QCheckBox, QFrame, QScrollArea, QProgressBar, QSizePolicy,
     QStatusBar, QMessageBox, QApplication, QStackedWidget,
-    QSystemTrayIcon, QMenu,
+    QSystemTrayIcon, QMenu, QFileDialog,
 )
 
 from app.config import Config
@@ -32,6 +33,8 @@ class CaptionCard(QFrame):
         super().__init__(parent)
         self.setObjectName("CaptionCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.created_at = datetime.now()
+        self.source_text = source_text
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
@@ -190,12 +193,36 @@ class MainWindow(QMainWindow):
         self.clear_button.clicked.connect(self._clear_captions)
         status.addPermanentWidget(self.clear_button)
 
+        self.export_button = QPushButton("导出")
+        self.export_button.setObjectName("GhostButton")
+        self.export_button.setCursor(Qt.PointingHandCursor)
+        self.export_button.setToolTip("把当前会话的双语字幕导出为文本文件")
+        self.export_button.clicked.connect(self._export_captions)
+        status.addPermanentWidget(self.export_button)
+
         self.session_label = QLabel("本次会话：0 条")
         status.addPermanentWidget(self.session_label)
 
-        self.overlay = CaptionOverlay(on_closed=self.on_overlay_closed)
+        self.overlay = CaptionOverlay(on_closed=self.on_overlay_closed,
+                                      on_moved=self._on_overlay_moved)
         self.overlay.hide()
         self._build_tray()
+
+    def _clamp_overlay_pos(self, x, y):
+        """把悬浮字幕位置限制在屏幕可用区域内，避免被拖丢/换分辨率后找不回来。"""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        w = max(80, self.overlay.width())
+        h = max(40, self.overlay.height())
+        x = max(geo.left(), min(int(x), geo.right() - w))
+        y = max(geo.top(), min(int(y), geo.bottom() - h))
+        return x, y
+
+    def _on_overlay_moved(self, x, y):
+        x, y = self._clamp_overlay_pos(x, y)
+        self.overlay.move(x, y)
+        self.config.set("overlay_x", x)
+        self.config.set("overlay_y", y)
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(QIcon(str(icon_path())), self)
@@ -219,7 +246,8 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self):
         c = self.config
-        self.overlay.move(c.get("overlay_x"), c.get("overlay_y"))
+        x, y = self._clamp_overlay_pos(c.get("overlay_x"), c.get("overlay_y"))
+        self.overlay.move(x, y)
         self.apply_overlay_from_config()
         if c.get("overlay_enabled"):
             self.overlay.show()
@@ -264,7 +292,9 @@ class MainWindow(QMainWindow):
 
     def set_overlay_enabled(self, checked):
         if checked:
-            self.overlay.move(self.config.get("overlay_x"), self.config.get("overlay_y"))
+            x, y = self._clamp_overlay_pos(self.config.get("overlay_x"),
+                                           self.config.get("overlay_y"))
+            self.overlay.move(x, y)
             self.overlay.show()
         else:
             self.overlay.hide()
@@ -287,7 +317,9 @@ class MainWindow(QMainWindow):
             return
         self._save_settings()
         self.config.set("overlay_enabled", False)
-
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None:
+            dlg.sync_overlay_check(False)
 
     def _clear_captions(self):
         while self.scroll_layout.count() > 1:
@@ -298,6 +330,38 @@ class MainWindow(QMainWindow):
         self.session_count = 0
         self.session_label.setText("本次会话：0 条")
         self.stack.setCurrentIndex(0)
+
+    def _export_captions(self):
+        cards = []
+        for i in range(self.scroll_layout.count()):
+            w = self.scroll_layout.itemAt(i).widget()
+            if isinstance(w, CaptionCard):
+                cards.append(w)
+        if not cards:
+            QMessageBox.information(self, "导出字幕", "当前会话还没有可导出的字幕。")
+            return
+        default_name = f"LiveSubtitle_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出字幕", default_name, "文本文件 (*.txt);;所有文件 (*)")
+        if not path:
+            return
+        lines = []
+        for card in cards:
+            meta = card.meta_label.text()
+            source = card.source_label.text() if card.source_label.isVisibleTo(card) else ""
+            target = card.target_label.text()
+            lines.append(f"[{meta}]")
+            if source:
+                lines.append(source)
+            if target and target != "...":
+                lines.append(target)
+            lines.append("")
+        try:
+            Path(path).write_text("\n".join(lines), encoding="utf-8")
+        except Exception as e:
+            QMessageBox.warning(self, "导出字幕", f"写入文件失败：{e}")
+            return
+        QMessageBox.information(self, "导出字幕", f"已导出 {len(cards)} 条字幕到：\n{path}")
 
     def toggle_running(self):
         if self.running:
@@ -323,7 +387,7 @@ class MainWindow(QMainWindow):
         self.translate_thread = TranslateThread(engine, c.get("target_lang"), self)
         self.translate_thread.result_ready.connect(self._on_translated)
         self.translate_thread.status_changed.connect(
-            lambda m: self.engine_status_label.setText(f"翻译: {m}"))
+            lambda m: self._set_engine_status(f"翻译: {m}"))
         self.translate_thread.start()
 
         self.asr_thread = AsrThread(
@@ -334,7 +398,7 @@ class MainWindow(QMainWindow):
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(
-            lambda m: self.engine_status_label.setText(f"识别: {m}"))
+            lambda m: self._set_engine_status(f"识别: {m}"))
         self.asr_thread.error_occurred.connect(self._on_pipeline_error)
         self.asr_thread.start()
 
@@ -346,17 +410,34 @@ class MainWindow(QMainWindow):
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self.level_bar.setValue)
         self.capture_thread.error_occurred.connect(self._on_pipeline_error)
+        self.capture_thread.low_input.connect(self._on_low_input)
         self.capture_thread.start()
 
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
+
+    def _set_engine_status(self, text):
+        self._engine_status_text = text
+        if not getattr(self, "_low_input_warn", False):
+            self.engine_status_label.setText(text)
+
+    def _on_low_input(self, quiet):
+        """采集线程报告输入信号持续过弱/恢复正常。"""
+        if not self.running:
+            return
+        self._low_input_warn = quiet
+        if quiet and self.running:
+            self.engine_status_label.setText(
+                "⚠ 输入信号过弱：字幕可能无法识别，请检查系统音量或音频设备")
+        else:
+            self.engine_status_label.setText(getattr(self, "_engine_status_text", ""))
 
     @staticmethod
     def _detach_thread(t):
         """停止超时的残留线程必须与界面断开信号，避免再向 UI 发送过期字幕。"""
         if t is None:
             return
-        for name in ("segment_ready", "level_changed", "error_occurred",
+        for name in ("segment_ready", "level_changed", "error_occurred", "low_input",
                      "text_ready", "status_changed", "result_ready", "model_ready"):
             sig = getattr(t, name, None)
             if sig is not None:
@@ -376,33 +457,37 @@ class MainWindow(QMainWindow):
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
+        self._low_input_warn = False
         self.stack.setCurrentIndex(0)
 
         threads = (self.capture_thread, self.asr_thread, self.translate_thread)
+        # 先断开全部信号再停止：否则停止过程中/停止后仍会收到迟到的状态信号，
+        # 把"已停止"覆盖成"就绪，正在聆听..."之类的僵尸状态
         for t in threads:
             if t:
+                self._detach_thread(t)
                 t.stop()
         if threads[0]:
             threads[0].wait(2000)
         for t in threads[1:]:
             if t:
                 t.wait(15000)
-        for t in threads:
-            if t and t.isRunning():
-                self._detach_thread(t)
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
         self.engine_status_label.setText("引擎：已停止")
 
     def _on_pipeline_error(self, msg):
-        self.engine_status_label.setText(msg)
-        if self.running and ("采集" in msg or "回环" in msg or "音频" in msg):
+        if self.running and ("采集" in msg or "回环" in msg or "音频" in msg or "设备" in msg):
             self.stop_pipeline()
+            # stop_pipeline 会把状态重置为"已停止"，错误信息要在其后显示才能被看到
+            self.engine_status_label.setText(f"错误：{msg}")
             self._show_info("音频错误", msg)
+        else:
+            self.engine_status_label.setText(msg)
 
     def _on_asr_text(self, text, detected, duration):
-        self.engine_status_label.setText(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中...")
+        self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中...")
         if self.translate_thread:
             self.translate_thread.submit(text, detected)
 
@@ -418,7 +503,7 @@ class MainWindow(QMainWindow):
             card.set_result(translated, engine, detected, show_source)
         self.session_count = getattr(self, "session_count", 0) + 1
         self.session_label.setText(f"本次会话：{self.session_count} 条")
-        self.engine_status_label.setText(f"引擎：{engine} · 源语言: {detected or '?'}")
+        self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         if self.overlay.isVisible():
@@ -455,9 +540,15 @@ class MainWindow(QMainWindow):
         tray_btn = box.addButton("隐藏到托盘", QMessageBox.AcceptRole)
         exit_btn = box.addButton("退出程序", QMessageBox.DestructiveRole)
         cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-        box.setCheckBox(QCheckBox("记住我的选择，下次不再询问"))
+        remember_box = QCheckBox("记住我的选择，下次不再询问")
+        box.setCheckBox(remember_box)
         box.exec()
-        remember = box.checkBox().isChecked()
+        # 打包环境下部分 PySide6 版本 box.checkBox() 返回的对象没有 isChecked，
+        # 直接调用会抛未捕获异常，导致连"取消"都会关掉窗口；改用自己持有的引用并兜底
+        try:
+            remember = bool(remember_box.isChecked())
+        except Exception:
+            remember = False
         clicked = box.clickedButton()
         if clicked == cancel_btn:
             event.ignore()
@@ -485,6 +576,19 @@ class MainWindow(QMainWindow):
 
 def run_app():
     import sys
+    # 单实例互斥：避免两个进程同时写配置、争抢音频设备
+    try:
+        ERROR_ALREADY_EXISTS = 183
+        _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "LiveSubtitle_SingleInstance_Mutex")
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            app = QApplication(sys.argv)
+            QMessageBox.warning(
+                None, "LiveSubtitle",
+                "LiveSubtitle 已经在运行中。\n\n"
+                "请点击任务栏右下角托盘区的 LiveSubtitle 图标打开主窗口。")
+            return
+    except Exception:
+        pass  # 互斥检测失败时按原行为启动，不阻塞正常使用
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName("LiveSubtitle")

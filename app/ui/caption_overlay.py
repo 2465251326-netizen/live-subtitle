@@ -76,7 +76,7 @@ class OutlinedLabel(QLabel):
 
 
 class CaptionOverlay(QWidget):
-    def __init__(self, on_closed=None):
+    def __init__(self, on_closed=None, on_moved=None):
         super().__init__(None)
         self.setWindowFlags(
             Qt.FramelessWindowHint
@@ -89,6 +89,7 @@ class CaptionOverlay(QWidget):
         self.setFixedWidth(460)
         self._drag_pos = None
         self._on_closed = on_closed
+        self._on_moved = on_moved
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 12, 22, 14)
@@ -163,6 +164,9 @@ class CaptionOverlay(QWidget):
             event.accept()
 
     def mouseReleaseEvent(self, event):
+        if self._drag_pos is not None and self._on_moved:
+            # 拖动结束立即记忆位置，不等隐藏/退出
+            self._on_moved(self.x(), self.y())
         self._drag_pos = None
 
     def contextMenuEvent(self, event):

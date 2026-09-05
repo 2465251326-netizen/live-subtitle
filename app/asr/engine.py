@@ -21,6 +21,7 @@ class AsrThread(QThread):
         self._model = None
         self._lang_lock = threading.Lock()
         self._last_lang = language if language != "auto" else None
+        self._discard_streak = 0
 
     def stop(self):
         self._stop = True
@@ -128,9 +129,16 @@ class AsrThread(QThread):
         if self.language == "auto" and conf < 0.6:
             with self._lang_lock:
                 self._last_lang = None
-            self.status_changed.emit("语言检测不确定已丢弃，下段重新检测；若持续偏差请锁定语言")
+            self._discard_streak += 1
+            if self._discard_streak >= 3:
+                self.status_changed.emit(
+                    "已连续丢弃多段不确定的语音：当前模型对这段内容识别吃力，"
+                    "建议在「设置 - 语音识别」换更大模型（如 small）或锁定识别语言")
+            else:
+                self.status_changed.emit("语言检测不确定已丢弃，下段重新检测；若持续偏差请锁定语言")
             return
         if self.language == "auto":
             with self._lang_lock:
                 self._last_lang = detected
+        self._discard_streak = 0
         self.text_ready.emit(text, detected, f"{duration:.1f}")

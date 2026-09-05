@@ -9,7 +9,7 @@ import threading
 import time
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import requests
 
@@ -119,6 +119,10 @@ def _extract_pack(model_path: Path, dest: Path):
         for name in names:
             if name.startswith(inner_root + "/") and name != inner_root + "/":
                 rel = name[len(inner_root) + 1:]
+                # 防 zip-slip：拒绝绝对路径 / 盘符 / 上跳目录
+                pure = PurePosixPath(rel)
+                if pure.is_absolute() or ".." in pure.parts or (len(rel) > 1 and rel[1] == ":"):
+                    continue
                 target = tmp / rel
                 if name.endswith("/"):
                     target.mkdir(parents=True, exist_ok=True)
@@ -129,6 +133,22 @@ def _extract_pack(model_path: Path, dest: Path):
     if dest.exists():
         shutil.rmtree(dest)
     tmp.rename(dest)
+
+
+def cleanup_temp_files():
+    """清理历史版本/异常退出遗留的下载与解压临时文件。"""
+    if not PACKS_DIR.exists():
+        return
+    for p in PACKS_DIR.glob("*.tmp"):
+        try:
+            p.unlink()
+        except Exception:
+            pass
+    for d in PACKS_DIR.glob("*.extracting"):
+        try:
+            shutil.rmtree(d)
+        except Exception:
+            pass
 
 
 MIRROR_RELEASE = (
@@ -158,7 +178,6 @@ def install_pack(pack: PackInfo, progress_cb=None):
     pair = f"{pack.from_code}_{pack.to_code}"
     model_path = PACKS_DIR / f"{pair}.argosmodel"
     tmp_path = model_path.with_suffix(".tmp")
-
     mirror_url = MIRROR_RELEASE + pack.url.rsplit("/", 1)[-1]
     last_err = None
     for url in [mirror_url, pack.url]:
@@ -175,7 +194,12 @@ def install_pack(pack: PackInfo, progress_cb=None):
         raise last_err
 
     dest = _pack_dir(pair)
-    _extract_pack(tmp_path, dest)
+    try:
+        _extract_pack(tmp_path, dest)
+    except Exception:
+        # 解压失败同样清理下载临时文件，避免 .tmp 残留
+        tmp_path.unlink(missing_ok=True)
+        raise
     meta = {
         "from_code": pack.from_code,
         "to_code": pack.to_code,
