@@ -22,6 +22,7 @@ from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
 
 DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
+DRAWER_HEIGHT = 420
 
 MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
           ("base", "base · 流畅 · 中文较弱"),
@@ -134,13 +135,6 @@ class MainWindow(QMainWindow):
         root.setSpacing(12)
 
         header = QHBoxLayout()
-        self.drawer_button = QPushButton("设置")
-        self.drawer_button.setObjectName("GhostButton")
-        self.drawer_button.setCursor(Qt.PointingHandCursor)
-        self.drawer_button.setFixedWidth(64)
-        self.drawer_button.setToolTip("展开 / 收起设置面板")
-        self.drawer_button.clicked.connect(self._toggle_drawer)
-        header.addWidget(self.drawer_button)
         title_box = QVBoxLayout()
         title = QLabel("LiveSubtitle")
         title.setObjectName("HeaderTitle")
@@ -167,6 +161,14 @@ class MainWindow(QMainWindow):
         self.help_button.clicked.connect(self._open_docs)
         header.addWidget(self.help_button)
 
+        self.drawer_button = QPushButton("设置")
+        self.drawer_button.setObjectName("GhostButton")
+        self.drawer_button.setCursor(Qt.PointingHandCursor)
+        self.drawer_button.setFixedWidth(64)
+        self.drawer_button.setToolTip("展开 / 收起设置面板")
+        self.drawer_button.clicked.connect(self._toggle_drawer)
+        header.addWidget(self.drawer_button)
+
         self.toggle_button = QPushButton("开始翻译")
         self.toggle_button.setObjectName("PrimaryButton")
         self.toggle_button.setCursor(Qt.PointingHandCursor)
@@ -174,14 +176,14 @@ class MainWindow(QMainWindow):
         header.addWidget(self.toggle_button)
         root.addLayout(header)
 
-        body = QHBoxLayout()
-        body.setSpacing(14)
-
         side = QFrame()
         side.setObjectName("SidePanel")
-        side_layout = QVBoxLayout(side)
-        side_layout.setContentsMargins(16, 14, 16, 14)
-        side_layout.setSpacing(10)
+        side_wrap = QVBoxLayout(side)
+        side_wrap.setContentsMargins(18, 14, 18, 12)
+        side_wrap.setSpacing(10)
+        side_row = QHBoxLayout()
+        side_row.setSpacing(24)
+        side_wrap.addLayout(side_row)
 
         def panel_title(text, tip=""):
             lab = QLabel(text)
@@ -190,12 +192,19 @@ class MainWindow(QMainWindow):
                 lab.setToolTip(tip)
             return lab
 
-        side_layout.addWidget(panel_title("音频输入"))
+        def column(stretch=1):
+            v = QVBoxLayout()
+            v.setSpacing(10)
+            side_row.addLayout(v, stretch)
+            return v
+
+        col_audio = column(12)
+        col_audio.addWidget(panel_title("音频输入"))
         self.source_combo = QComboBox()
         self.source_combo.addItem("系统声音（正在播放的内容）", "system")
         self.source_combo.addItem("麦克风", "microphone")
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        side_layout.addWidget(self.source_combo)
+        col_audio.addWidget(self.source_combo)
 
         self.device_combo = QComboBox()
         device_row = QHBoxLayout()
@@ -206,17 +215,17 @@ class MainWindow(QMainWindow):
         self.refresh_button.setToolTip("刷新设备列表")
         self.refresh_button.clicked.connect(self._load_devices)
         device_row.addWidget(self.refresh_button)
-        side_layout.addLayout(device_row)
+        col_audio.addLayout(device_row)
 
         self.level_bar = QProgressBar()
         self.level_bar.setObjectName("LevelBar")
         self.level_bar.setRange(0, 100)
         self.level_bar.setTextVisible(False)
         self.level_bar.setFixedHeight(10)
-        side_layout.addWidget(self.level_bar)
+        col_audio.addWidget(self.level_bar)
 
-        side_layout.addSpacing(6)
-        side_layout.addWidget(panel_title(
+        col_asr = column(10)
+        col_asr.addWidget(panel_title(
             "语音识别（本地）", "本地 Whisper 模型，语音不出电脑。越小越快，中文建议 small"))
         self.model_combo = QComboBox()
         model_tips = {
@@ -229,7 +238,7 @@ class MainWindow(QMainWindow):
             self.model_combo.addItem(label, code)
             self.model_combo.setItemData(self.model_combo.count() - 1, model_tips[code], Qt.ToolTipRole)
         self.model_combo.setToolTip("首次选择后自动下载，之后永久离线可用")
-        side_layout.addWidget(self.model_combo)
+        col_asr.addWidget(self.model_combo)
 
         self.asr_lang_combo = QComboBox()
         self.asr_lang_combo.setToolTip("自动检测：第一句后自动锁定语言；锁定语言识别更快更稳")
@@ -237,16 +246,16 @@ class MainWindow(QMainWindow):
             if code in ("zh-CN", "zh-TW"):
                 continue
             self.asr_lang_combo.addItem(name, code)
-        side_layout.addWidget(self.asr_lang_combo)
+        col_asr.addWidget(self.asr_lang_combo)
 
         self.compute_combo = QComboBox()
         self.compute_combo.addItem("CPU 模式（通用）", "cpu")
         self.compute_combo.addItem("自动（优先 GPU）", "auto")
         self.compute_combo.setToolTip("有 NVIDIA 显卡时选「自动」可用 GPU 加速")
-        side_layout.addWidget(self.compute_combo)
+        col_asr.addWidget(self.compute_combo)
 
-        side_layout.addSpacing(6)
-        side_layout.addWidget(panel_title(
+        col_translate = column(12)
+        col_translate.addWidget(panel_title(
             "翻译引擎", "全部免费无需密钥。自动模式先探测 Google，不通自动切换 MyMemory"))
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("自动探测（推荐）", "auto")
@@ -258,14 +267,14 @@ class MainWindow(QMainWindow):
         self.engine_combo.addItem("Argos 离线语言包", "argos")
         self.engine_combo.setItemData(3, "完全断网可用，需先在下方下载语言包", Qt.ToolTipRole)
         self.engine_combo.currentIndexChanged.connect(self._refresh_argos_section)
-        side_layout.addWidget(self.engine_combo)
+        col_translate.addWidget(self.engine_combo)
 
         self.target_combo = QComboBox()
         for code in TARGET_LANGS:
             self.target_combo.addItem(LANGUAGES.get(code, code), code)
         self.target_combo.setToolTip("字幕将翻译为此语言；Argos 离线包按此处选择的方向下载")
         self.target_combo.currentIndexChanged.connect(self._refresh_argos_section)
-        side_layout.addWidget(self.target_combo)
+        col_translate.addWidget(self.target_combo)
 
         self.argos_hint = QLabel("选择 Argos 引擎后，请先下载所需语言包（下载一次即可永久离线使用）")
         self.argos_hint.setObjectName("CaptionMeta")
@@ -278,19 +287,33 @@ class MainWindow(QMainWindow):
         self.argos_progress.setVisible(False)
         for w in (self.argos_combo, self.argos_download_button, self.argos_progress):
             w.setVisible(False)
-            side_layout.addWidget(w)
-        side_layout.addWidget(self.argos_hint)
+            col_translate.addWidget(w)
+        col_translate.addWidget(self.argos_hint)
         self._refresh_argos_section()
 
-        side_layout.addSpacing(6)
-        side_layout.addWidget(panel_title("显示"))
+        col_display = column(10)
+        col_display.addWidget(panel_title("显示"))
         self.overlay_check = QCheckBox("启用悬浮字幕条（置顶）")
         self.overlay_check.toggled.connect(self._on_overlay_toggle)
-        side_layout.addWidget(self.overlay_check)
+        col_display.addWidget(self.overlay_check)
         self.show_source_check = QCheckBox("同时显示原文")
-        side_layout.addWidget(self.show_source_check)
+        col_display.addWidget(self.show_source_check)
 
-        side_layout.addWidget(panel_title("悬浮字幕样式"))
+        col_display.addSpacing(6)
+        col_display.addWidget(panel_title(
+            "关闭行为", "点击主窗口关闭按钮时执行的动作"))
+        self.close_combo = QComboBox()
+        self.close_combo.addItem("每次询问", "ask")
+        self.close_combo.setItemData(0, "关闭时弹出选择：隐藏到托盘或退出", Qt.ToolTipRole)
+        self.close_combo.addItem("隐藏到托盘（字幕继续）", "tray")
+        self.close_combo.setItemData(1, "主窗口消失，后台继续出字幕，可从托盘恢复", Qt.ToolTipRole)
+        self.close_combo.addItem("直接退出程序", "exit")
+        self.close_combo.setItemData(2, "关闭窗口即完全退出", Qt.ToolTipRole)
+        self.close_combo.setToolTip("点击主窗口关闭按钮时执行的动作")
+        col_display.addWidget(self.close_combo)
+
+        col_style = column(14)
+        col_style.addWidget(panel_title("悬浮字幕样式"))
         style_grid = QGridLayout()
         style_grid.setHorizontalSpacing(8)
         style_grid.setVerticalSpacing(6)
@@ -343,22 +366,31 @@ class MainWindow(QMainWindow):
             lambda: self._pick_color("outline"))
         style_grid.addWidget(self.outline_color_button, 4, 1)
 
-        side_layout.addLayout(style_grid)
+        col_style.addLayout(style_grid)
         self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
 
-        side_layout.addStretch()
+        for col in (col_audio, col_asr, col_translate, col_display, col_style):
+            col.addStretch()
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch()
         self.clear_button = QPushButton("清空字幕记录")
         self.clear_button.clicked.connect(self._clear_captions)
-        side_layout.addWidget(self.clear_button)
+        bottom_row.addWidget(self.clear_button)
+        side_wrap.addLayout(bottom_row)
 
         side_scroll = QScrollArea()
         side_scroll.setWidgetResizable(True)
-        side_scroll.setMinimumWidth(0)
-        side_scroll.setMaximumWidth(300)
+        side_scroll.setMinimumHeight(0)
+        side_scroll.setMaximumHeight(0)
         side_scroll.setFrameShape(QFrame.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         side_scroll.setWidget(side)
-        body.addWidget(side_scroll)
+        root.addWidget(side_scroll)
         self.side_scroll = side_scroll
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
 
         captions_column = QVBoxLayout()
         self.scroll = QScrollArea()
@@ -438,29 +470,29 @@ class MainWindow(QMainWindow):
         if open_it:
             w.setVisible(True)
             if animate:
-                anim = QPropertyAnimation(w, b"maximumWidth", self)
+                anim = QPropertyAnimation(w, b"maximumHeight", self)
                 anim.setDuration(180)
-                anim.setStartValue(w.maximumWidth())
-                anim.setEndValue(300)
+                anim.setStartValue(w.maximumHeight())
+                anim.setEndValue(DRAWER_HEIGHT)
                 anim.setEasingCurve(QEasingCurve.OutCubic)
                 self._drawer_anim = anim
                 anim.start()
             else:
-                w.setMaximumWidth(300)
+                w.setMaximumHeight(DRAWER_HEIGHT)
         else:
             if animate:
-                anim = QPropertyAnimation(w, b"maximumWidth", self)
+                anim = QPropertyAnimation(w, b"maximumHeight", self)
                 anim.setDuration(180)
-                anim.setStartValue(w.maximumWidth())
+                anim.setStartValue(w.maximumHeight())
                 anim.setEndValue(0)
                 anim.setEasingCurve(QEasingCurve.OutCubic)
-                anim.finished.connect(lambda: w.setVisible(False) if w.maximumWidth() == 0 else None)
+                anim.finished.connect(lambda: w.setVisible(False) if w.maximumHeight() == 0 else None)
                 self._drawer_anim = anim
                 anim.start()
             else:
-                w.setMaximumWidth(0)
+                w.setMaximumHeight(0)
                 w.setVisible(False)
-        self.drawer_button.setText("设置" if open_it else "设置")
+        self.drawer_button.setText("设置")
 
     def _open_docs(self):
         from PySide6.QtGui import QDesktopServices
@@ -528,6 +560,9 @@ class MainWindow(QMainWindow):
         self._outline_color = QColor(c.get("overlay_outline_color"))
         self._update_color_button(self.outline_color_button, self._outline_color)
         self._apply_overlay_style()
+        close_idx = self.close_combo.findData(c.get("close_action"))
+        if close_idx >= 0:
+            self.close_combo.setCurrentIndex(close_idx)
 
     def _save_settings(self):
         c = self.config
@@ -548,6 +583,7 @@ class MainWindow(QMainWindow):
         c.set("overlay_bg_opacity", self.bg_opacity_slider.value())
         c.set("overlay_outline", self.outline_check.isChecked())
         c.set("overlay_outline_color", self._outline_color.name())
+        c.set("close_action", self.close_combo.currentData())
 
     def _refresh_argos_section(self):
         is_argos = self.engine_combo.currentData() == "argos"
