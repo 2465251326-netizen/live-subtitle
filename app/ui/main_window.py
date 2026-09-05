@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QFrame, QScrollArea, QGridLayout, QProgressBar,
-    QStatusBar, QSizePolicy, QMessageBox, QApplication,
+    QStatusBar, QSizePolicy, QMessageBox, QApplication, QStackedWidget,
 )
 
 from app.config import Config, LANGUAGES
@@ -16,10 +16,10 @@ from app.translate.translator import TranslateThread, ArgosEngine
 from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
 
-MODELS = [("tiny", "tiny  最快 · 字幕延迟约 2s / 75MB"),
-          ("base", "base  流畅 · 延迟约 2.5s · 中文较弱 / 145MB"),
-          ("small", "small  推荐 · 延迟约 3s（4 核以上 CPU） / 480MB"),
-          ("medium", "medium  高精度 · 需较新多核 CPU / 1.5GB")]
+MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
+          ("base", "base · 流畅 · 中文较弱"),
+          ("small", "small · 推荐（4 核以上）"),
+          ("medium", "medium · 高精度 · 需好 CPU")]
 
 
 class ArgosWorker(QThread):
@@ -82,7 +82,7 @@ class CaptionCard(QFrame):
             self.target_label.setText(translated)
         else:
             self.target_label.setText("[翻译失败]")
-        note = f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} -> 中文 · 引擎: {engine}"
+        note = f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} · 引擎: {engine}"
         self.meta_label.setText(note)
         self.source_label.setVisible(show_source)
 
@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self.argos_worker = None
         self.running = False
         self.device_map = {}
+        self.session_count = 0
         self.setWindowTitle("LiveSubtitle · 实时字幕翻译")
         self.resize(1150, 760)
         self.setStyleSheet(DARK_QSS)
@@ -180,7 +181,7 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.level_bar)
 
         side_layout.addSpacing(6)
-        side_layout.addWidget(panel_title("语音识别（离线）"))
+        side_layout.addWidget(panel_title("语音识别（本地）"))
         self.model_combo = QComboBox()
         for code, label in MODELS:
             self.model_combo.addItem(label, code)
@@ -193,10 +194,10 @@ class MainWindow(QMainWindow):
             self.asr_lang_combo.addItem(name, code)
         side_layout.addWidget(self.asr_lang_combo)
 
-        self.device_combo_cuda = QComboBox()
-        self.device_combo_cuda.addItem("CPU 模式（通用）", "cpu")
-        self.device_combo_cuda.addItem("自动（优先 GPU）", "auto")
-        side_layout.addWidget(self.device_combo_cuda)
+        self.compute_combo = QComboBox()
+        self.compute_combo.addItem("CPU 模式（通用）", "cpu")
+        self.compute_combo.addItem("自动（优先 GPU）", "auto")
+        side_layout.addWidget(self.compute_combo)
 
         side_layout.addSpacing(6)
         side_layout.addWidget(panel_title("翻译引擎"))
@@ -257,11 +258,24 @@ class MainWindow(QMainWindow):
             "点击右上角「开始翻译」\n\n播放任意视频或说话，字幕将实时出现在这里\n\n"
             "系统声音模式可直接抓取网页视频 / 播放器 / 会议的声音"
         )
+        self.empty_hint.setObjectName("EmptyHint")
         self.empty_hint.setAlignment(Qt.AlignCenter)
-        self.empty_hint.setStyleSheet("color: #5a6172; font-size: 14px;")
         self.empty_hint.setWordWrap(True)
+        empty_page = QWidget()
+        empty_layout = QVBoxLayout(empty_page)
+        empty_layout.addStretch()
+        empty_layout.addWidget(self.empty_hint)
+        empty_layout.addStretch()
+        list_page = QWidget()
+        list_layout = QVBoxLayout(list_page)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.addWidget(self.scroll)
 
-        captions_column.addWidget(self.scroll)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(empty_page)
+        self.stack.addWidget(list_page)
+        self.stack.setCurrentIndex(0)
+        captions_column.addWidget(self.stack)
         body.addLayout(captions_column, 1)
         root.addLayout(body)
 
@@ -296,15 +310,18 @@ class MainWindow(QMainWindow):
         idx = self.source_combo.findData(c.get("source_type"))
         if idx >= 0:
             self.source_combo.setCurrentIndex(idx)
+        dev_idx = self.device_combo.findData(c.get("device_index"))
+        if dev_idx >= 0:
+            self.device_combo.setCurrentIndex(dev_idx)
         model_idx = self.model_combo.findData(c.get("asr_model"))
         if model_idx >= 0:
             self.model_combo.setCurrentIndex(model_idx)
         lang_idx = self.asr_lang_combo.findData(c.get("asr_language"))
         if lang_idx >= 0:
             self.asr_lang_combo.setCurrentIndex(lang_idx)
-        dev_idx = self.device_combo_cuda.findData(c.get("asr_device"))
+        dev_idx = self.compute_combo.findData(c.get("asr_device"))
         if dev_idx >= 0:
-            self.device_combo_cuda.setCurrentIndex(dev_idx)
+            self.compute_combo.setCurrentIndex(dev_idx)
         eng_idx = self.engine_combo.findData(c.get("engine"))
         if eng_idx >= 0:
             self.engine_combo.setCurrentIndex(eng_idx)
@@ -320,7 +337,7 @@ class MainWindow(QMainWindow):
         c.set("device_index", self.device_combo.currentData())
         c.set("asr_model", self.model_combo.currentData())
         c.set("asr_language", self.asr_lang_combo.currentData())
-        c.set("asr_device", self.device_combo_cuda.currentData())
+        c.set("asr_device", self.compute_combo.currentData())
         c.set("engine", self.engine_combo.currentData())
         c.set("target_lang", self.target_combo.currentData())
         c.set("overlay_enabled", self.overlay_check.isChecked())
@@ -330,9 +347,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_argos_section(self):
         is_argos = self.engine_combo.currentData() == "argos"
-        for w in (self.argos_combo, self.argos_download_button, self.argos_progress):
+        for w in (self.argos_combo, self.argos_download_button):
             w.setVisible(is_argos)
         self.argos_hint.setVisible(is_argos)
+        downloading = bool(self.argos_worker and self.argos_worker.isRunning())
+        self.argos_progress.setVisible(is_argos and downloading)
         if is_argos:
             self._populate_argos_langs()
 
@@ -345,6 +364,12 @@ class MainWindow(QMainWindow):
             if (code, "zh") in installed:
                 name += "（已安装）"
             self.argos_combo.addItem(name, code)
+        if installed:
+            self.argos_hint.setText(
+                f"已安装 {len(installed)} 个语言包，选中即可离线翻译；下方可继续补充其他语言。")
+        else:
+            self.argos_hint.setText(
+                "请先下载所需语言包（下载一次即可永久离线使用），下载期间请勿切换翻译引擎。")
 
     def _download_argos(self):
         code = self.argos_combo.currentData()
@@ -353,6 +378,8 @@ class MainWindow(QMainWindow):
         if self.argos_worker and self.argos_worker.isRunning():
             return
         self.argos_download_button.setEnabled(False)
+        self.argos_combo.setEnabled(False)
+        self.engine_combo.setEnabled(False)
         self.argos_progress.setValue(0)
         self.argos_progress.setVisible(True)
         self.engine_status_label.setText(f"正在安装离线语言包: {code} -> 中文")
@@ -366,6 +393,8 @@ class MainWindow(QMainWindow):
 
     def _on_argos_done(self, msg):
         self.argos_download_button.setEnabled(True)
+        self.argos_combo.setEnabled(True)
+        self.engine_combo.setEnabled(True)
         self.argos_progress.setVisible(False)
         self.engine_status_label.setText(msg)
         self._populate_argos_langs()
@@ -373,6 +402,8 @@ class MainWindow(QMainWindow):
 
     def _on_argos_failed(self, msg):
         self.argos_download_button.setEnabled(True)
+        self.argos_combo.setEnabled(True)
+        self.engine_combo.setEnabled(True)
         self.argos_progress.setVisible(False)
         self.engine_status_label.setText(msg)
         self._show_info("失败", f"{msg}\n\n请检查网络，或改用在线翻译引擎。")
@@ -405,7 +436,7 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
         self.session_count = 0
         self.session_label.setText("本次会话：0 条")
-        self.empty_hint.show()
+        self.stack.setCurrentIndex(0)
 
     def toggle_running(self):
         if self.running:
@@ -422,7 +453,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.style().polish(self.toggle_button)
         self.status_dot.setStyleSheet("background-color: #2ecc71; border-radius: 7px;")
         self.status_text.setText("运行中")
-        self.empty_hint.hide()
+        self.stack.setCurrentIndex(1)
         self.session_count = 0
 
         engine = self.engine_combo.currentData()
@@ -434,7 +465,7 @@ class MainWindow(QMainWindow):
 
         self.asr_thread = AsrThread(
             self.model_combo.currentData(),
-            self.device_combo_cuda.currentData(),
+            self.compute_combo.currentData(),
             self.asr_lang_combo.currentData(),
             self,
         )
@@ -466,6 +497,7 @@ class MainWindow(QMainWindow):
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
+        self.stack.setCurrentIndex(0)
 
         for t in (self.capture_thread, self.asr_thread, self.translate_thread):
             if t:
@@ -494,6 +526,8 @@ class MainWindow(QMainWindow):
     def _on_translated(self, source_text, translated, engine, detected, error):
         card = CaptionCard(source_text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+        if self.stack.currentIndex() == 0:
+            self.stack.setCurrentIndex(1)
         if error:
             card.set_failed(error)
         else:

@@ -108,6 +108,11 @@ QLabel#CaptionMeta {
     color: #5a6172;
     font-size: 11px;
 }
+QLabel#EmptyHint {
+    color: #5a6172;
+    font-size: 14px;
+    background: transparent;
+}
 QScrollArea {
     border: none;
     background: transparent;

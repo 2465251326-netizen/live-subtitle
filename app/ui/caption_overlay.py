@@ -15,7 +15,7 @@ class CaptionOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setObjectName("OverlayRoot")
         self.setStyleSheet(OVERLAY_QSS)
-        self.setMinimumWidth(420)
+        self.setFixedWidth(460)
         self._drag_pos = None
 
         layout = QVBoxLayout(self)
