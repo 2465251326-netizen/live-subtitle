@@ -1,5 +1,3 @@
-# 可选：离线翻译引擎（Argos）
-# 安装后即可在界面切换 Argos 引擎并下载语言包
-# 注意：依赖较重（含 torch，约 2GB），安装需较长时间
-# 安装命令: pip install -r requirements-offline.txt
-argostranslate>=1.9.6
+# 离线翻译已内置，无需额外安装任何依赖。
+# 依赖项：ctranslate2 + sentencepiece 已在 requirements.txt 中（随 EXE 打包）。
+# 语言包（.argosmodel）在应用界面内一键下载：侧栏 -> 翻译引擎 -> Argos 离线语言包。

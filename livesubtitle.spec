@@ -20,6 +20,7 @@ a = Analysis(
         'pyaudiowpatch',
         'requests',
         'numpy',
+        'sentencepiece',
     ],
     hookspath=[],
     hooksconfig={},

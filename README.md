@@ -16,7 +16,7 @@
 | 语音分段 | 能量 VAD（自适应噪声底） | 静音 0.45s 切句，单段最长 14s |
 | 语音识别 | faster-whisper | CPU int8 即可实时；tiny/base/small/medium 可选 |
 | 在线翻译 | Google gtx 接口（免 Key） | 失败自动降级 MyMemory |
-| 离线翻译 | Argos Translate 语言包 | 在界面内一键下载 xx -> 中文 包 |
+| 离线翻译 | Argos 语言包（CTranslate2 直载） | 界面内一键下载，内置推理无需 torch |
 | 界面 | PySide6 (Qt6) | 深色玻璃风格 + 悬浮字幕条 |
 
 ## 快速开始（Windows）
@@ -75,15 +75,15 @@ python main.py
 
 注意：tiny/base 模型对中文的识别与语言检测明显偏弱（合成语音会误判），中文场景请用 small 及以上。
 
-## 离线语言包（可选）
+## 离线语言包
 
-Argos 离线翻译依赖较重（含 torch），默认不随主程序安装。需要完全离线翻译时：
+离线翻译已内置（CTranslate2 推理，无需额外安装任何依赖），语言包在应用内一键下载：
 
-```bat
-pip install -r requirements-offline.txt
-```
+1. 「翻译引擎」选择 **Argos 离线语言包**
+2. 下拉选择源语言（如 English），点击下载（英文包约 70MB，含进度条）
+3. 下载一次后永久离线可用，识别（本地 Whisper）+ 翻译（本地语言包）全程断网可用
 
-然后在「翻译引擎」选择 Argos，选择语言点击下载语言包（英文包约 80MB），安装到 `~\.live_subtitle\argos\`。语言包下载一次后，识别（本地 Whisper）+ 翻译（本地 Argos）全程断网可用。
+语言包安装到 `~\.live_subtitle\argos\packs\`，索引自动从官方源获取（GitHub raw + jsdelivr 双源自动切换）。
 
 ## 识别模型选择建议
 

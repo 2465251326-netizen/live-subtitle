@@ -111,50 +111,32 @@ class MyMemory:
 
 class ArgosEngine:
     name = "argos"
-    _installed = None
-
-    @classmethod
-    def _ensure_import(cls):
-        import argostranslate.translate
-        import argostranslate.package
-        return argostranslate.translate, argostranslate.package
 
     @classmethod
     def installed_pairs(cls):
-        translate_mod, _ = cls._ensure_import()
-        pairs = []
-        for p in translate_mod.get_installed_languages():
-            for target in p.translations_to:
-                pairs.append((p.code, target.code))
-        cls._installed = pairs
-        return pairs
+        from .offline_pack import list_installed
+
+        return list_installed()
 
     @classmethod
     def available_packages(cls):
-        _, package_mod = cls._ensure_import()
-        try:
-            package_mod.update_package_index()
-        except Exception:
-            pass
-        return package_mod.get_available_packages()
+        from .offline_pack import fetch_index
+
+        return fetch_index()
 
     @classmethod
-    def install(cls, package):
-        package.download_and_install()
-        cls._installed = None
+    def install(cls, pack, progress_cb=None):
+        from .offline_pack import install_pack
+
+        install_pack(pack, progress_cb=progress_cb)
 
     @classmethod
     def translate(cls, text, source, target):
-        translate_mod, _ = cls._ensure_import()
+        from .offline_pack import translate as pack_translate
+
         source = WHISPER_LANG_MAP.get(source, source)
         target = "zh" if target.startswith("zh") else target
-        langs = {l.code: l for l in translate_mod.get_installed_languages()}
-        src = langs.get(source) or langs.get("en")
-        dst = langs.get(target)
-        if src is None or dst is None:
-            raise RuntimeError(f"离线语言包缺失: {source}->{target}，请先下载语言包")
-        out = src.get_translation(dst).translate(text)
-        return out, source
+        return pack_translate(text, source, target), source
 
 
 ENGINES = {"google": GoogleFree, "mymemory": MyMemory, "argos": ArgosEngine}

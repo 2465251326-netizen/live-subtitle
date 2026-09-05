@@ -21,7 +21,8 @@ MODELS = [("tiny", "tiny  最快 / 75MB"), ("base", "base  均衡 / 145MB"),
 
 
 class ArgosWorker(QThread):
-    progress = Signal(str)
+    progress_text = Signal(str)
+    progress_pct = Signal(int)
     finished_ok = Signal(str)
     failed = Signal(str)
 
@@ -31,16 +32,21 @@ class ArgosWorker(QThread):
 
     def run(self):
         try:
-            self.progress.emit("正在获取语言包索引...")
-            candidates = [p for p in ArgosEngine.available_packages() if p.from_code == self.from_code]
-            zh_pkgs = [p for p in candidates if p.to_code.startswith("zh")]
+            self.progress_text.emit("正在获取语言包索引...")
+            packs = ArgosEngine.available_packages()
+            zh_pkgs = [p for p in packs if p.from_code == self.from_code and p.to_code.startswith("zh")]
             if not zh_pkgs:
                 self.failed.emit(f"未找到 {self.from_code} -> 中文 的离线语言包")
                 return
             pkg = zh_pkgs[0]
-            self.progress.emit(f"正在下载语言包 {pkg.from_code} -> {pkg.to_code} ...")
-            ArgosEngine.install(pkg)
-            self.finished_ok.emit(f"语言包 {pkg.from_code} -> {pkg.to_code} 安装成功")
+
+            def cb(pct):
+                self.progress_pct.emit(pct)
+
+            self.progress_text.emit(f"正在下载语言包 {pkg.from_name} -> {pkg.to_name}（约 70MB）...")
+            ArgosEngine.install(pkg, progress_cb=cb)
+            self.progress_pct.emit(100)
+            self.finished_ok.emit(f"语言包 {pkg.from_name} -> {pkg.to_name} 安装成功，可离线使用")
         except Exception as e:
             self.failed.emit(f"语言包安装失败: {e}")
 
@@ -205,13 +211,16 @@ class MainWindow(QMainWindow):
         self.target_combo.addItem("繁体中文", "zh-TW")
         side_layout.addWidget(self.target_combo)
 
-        self.argos_hint = QLabel("选择 Argos 引擎后，可在此下载离线语言包")
+        self.argos_hint = QLabel("选择 Argos 引擎后，请先下载所需语言包（下载一次即可永久离线使用）")
         self.argos_hint.setObjectName("CaptionMeta")
         self.argos_hint.setWordWrap(True)
         self.argos_combo = QComboBox()
         self.argos_download_button = QPushButton("下载该语言 -> 中文 语言包")
         self.argos_download_button.clicked.connect(self._download_argos)
-        for w in (self.argos_combo, self.argos_download_button):
+        self.argos_progress = QProgressBar()
+        self.argos_progress.setRange(0, 100)
+        self.argos_progress.setVisible(False)
+        for w in (self.argos_combo, self.argos_download_button, self.argos_progress):
             w.setVisible(False)
             side_layout.addWidget(w)
         side_layout.addWidget(self.argos_hint)
@@ -319,7 +328,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_argos_section(self):
         is_argos = self.engine_combo.currentData() == "argos"
-        for w in (self.argos_combo, self.argos_download_button):
+        for w in (self.argos_combo, self.argos_download_button, self.argos_progress):
             w.setVisible(is_argos)
         self.argos_hint.setVisible(is_argos)
         if is_argos:
@@ -328,8 +337,11 @@ class MainWindow(QMainWindow):
     def _populate_argos_langs(self):
         self.argos_combo.clear()
         common = ["en", "ja", "ko", "ru", "fr", "de", "es", "pt", "it", "th", "vi", "ar", "id", "hi"]
+        installed = set(ArgosEngine.installed_pairs())
         for code in common:
             name = LANGUAGES.get(code, code)
+            if (code, "zh") in installed:
+                name += "（已安装）"
             self.argos_combo.addItem(name, code)
 
     def _download_argos(self):
@@ -339,20 +351,27 @@ class MainWindow(QMainWindow):
         if self.argos_worker and self.argos_worker.isRunning():
             return
         self.argos_download_button.setEnabled(False)
+        self.argos_progress.setValue(0)
+        self.argos_progress.setVisible(True)
         self.engine_status_label.setText(f"正在安装离线语言包: {code} -> 中文")
         self.argos_worker = ArgosWorker(code, self)
-        self.argos_worker.progress.connect(lambda m: self.engine_status_label.setText(m))
+        self.argos_worker.progress_text.connect(
+            lambda m: self.engine_status_label.setText(m))
+        self.argos_worker.progress_pct.connect(self.argos_progress.setValue)
         self.argos_worker.finished_ok.connect(self._on_argos_done)
         self.argos_worker.failed.connect(self._on_argos_failed)
         self.argos_worker.start()
 
     def _on_argos_done(self, msg):
         self.argos_download_button.setEnabled(True)
+        self.argos_progress.setVisible(False)
         self.engine_status_label.setText(msg)
+        self._populate_argos_langs()
         self._show_info("完成", msg)
 
     def _on_argos_failed(self, msg):
         self.argos_download_button.setEnabled(True)
+        self.argos_progress.setVisible(False)
         self.engine_status_label.setText(msg)
         self._show_info("失败", f"{msg}\n\n请检查网络，或改用在线翻译引擎。")
 
