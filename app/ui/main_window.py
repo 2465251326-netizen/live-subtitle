@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QSpinBox, QSlider, QColorDialog, QSystemTrayIcon, QMenu,
 )
 
-from app.config import Config, LANGUAGES
+from app.config import Config, LANGUAGES, TARGET_LANGS
 from app.audio.capture import CaptureThread, list_input_devices, list_output_devices
 from app.asr.engine import AsrThread
 from app.translate.translator import TranslateThread, ArgosEngine
@@ -39,19 +39,21 @@ class ArgosWorker(QThread):
     finished_ok = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, from_code, parent=None):
+    def __init__(self, from_code, to_code, parent=None):
         super().__init__(parent)
         self.from_code = from_code
+        self.to_code = to_code
 
     def run(self):
         try:
             self.progress_text.emit("正在获取语言包索引...")
             packs = ArgosEngine.available_packages()
-            zh_pkgs = [p for p in packs if p.from_code == self.from_code and p.to_code.startswith("zh")]
-            if not zh_pkgs:
-                self.failed.emit(f"未找到 {self.from_code} -> 中文 的离线语言包")
+            match = [p for p in packs if p.from_code == self.from_code and p.to_code == self.to_code]
+            if not match:
+                self.failed.emit(
+                    f"未找到 {self.from_code} -> {self.to_code} 的离线语言包（该方向暂无离线包，可改用在线引擎）")
                 return
-            pkg = zh_pkgs[0]
+            pkg = match[0]
 
             def cb(pct):
                 self.progress_pct.emit(pct)
@@ -243,15 +245,17 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self.engine_combo)
 
         self.target_combo = QComboBox()
-        self.target_combo.addItem("简体中文", "zh-CN")
-        self.target_combo.addItem("繁体中文", "zh-TW")
+        for code in TARGET_LANGS:
+            self.target_combo.addItem(LANGUAGES.get(code, code), code)
+        self.target_combo.setToolTip("字幕将翻译为此语言；Argos 离线包按此处选择的方向下载")
+        self.target_combo.currentIndexChanged.connect(self._refresh_argos_section)
         side_layout.addWidget(self.target_combo)
 
         self.argos_hint = QLabel("选择 Argos 引擎后，请先下载所需语言包（下载一次即可永久离线使用）")
         self.argos_hint.setObjectName("CaptionMeta")
         self.argos_hint.setWordWrap(True)
         self.argos_combo = QComboBox()
-        self.argos_download_button = QPushButton("下载该语言 -> 中文 语言包")
+        self.argos_download_button = QPushButton("下载语言包")
         self.argos_download_button.clicked.connect(self._download_argos)
         self.argos_progress = QProgressBar()
         self.argos_progress.setRange(0, 100)
@@ -496,21 +500,28 @@ class MainWindow(QMainWindow):
         if is_argos:
             self._populate_argos_langs()
 
+    def _argos_target_code(self):
+        t = self.target_combo.currentData() or "zh-CN"
+        return "zh" if t.startswith("zh") else t
+
     def _populate_argos_langs(self):
         self.argos_combo.clear()
         common = ["en", "ja", "ko", "ru", "fr", "de", "es", "pt", "it", "th", "vi", "ar", "id", "hi"]
+        tgt = self._argos_target_code()
+        tgt_name = LANGUAGES.get(self.target_combo.currentData() or "zh-CN", tgt)
         installed = set(ArgosEngine.installed_pairs())
         for code in common:
             name = LANGUAGES.get(code, code)
-            if (code, "zh") in installed:
+            if (code, tgt) in installed:
                 name += "（已安装）"
             self.argos_combo.addItem(name, code)
+        self.argos_download_button.setText(f"下载所选 → {tgt_name} 语言包")
         if installed:
             self.argos_hint.setText(
-                f"已安装 {len(installed)} 个语言包，选中即可离线翻译；下方可继续补充其他语言。")
+                f"已安装 {len(installed)} 个语言包；选择与「识别语言 → 翻译目标」一致的方向下载，下载一次永久离线使用。")
         else:
             self.argos_hint.setText(
-                "请先下载所需语言包（下载一次即可永久离线使用），下载期间请勿切换翻译引擎。")
+                "请下载与「识别语言 → 翻译目标」一致的语言包（约 70MB，一次下载永久离线使用），下载期间请勿切换引擎。")
 
     def _download_argos(self):
         code = self.argos_combo.currentData()
@@ -518,13 +529,15 @@ class MainWindow(QMainWindow):
             return
         if self.argos_worker and self.argos_worker.isRunning():
             return
+        tgt = self._argos_target_code()
+        tgt_name = LANGUAGES.get(self.target_combo.currentData() or "zh-CN", tgt)
         self.argos_download_button.setEnabled(False)
         self.argos_combo.setEnabled(False)
         self.engine_combo.setEnabled(False)
         self.argos_progress.setValue(0)
         self.argos_progress.setVisible(True)
-        self.engine_status_label.setText(f"正在安装离线语言包: {code} -> 中文")
-        self.argos_worker = ArgosWorker(code, self)
+        self.engine_status_label.setText(f"正在安装离线语言包: {code} -> {tgt_name}")
+        self.argos_worker = ArgosWorker(code, tgt, self)
         self.argos_worker.progress_text.connect(
             lambda m: self.engine_status_label.setText(m))
         self.argos_worker.progress_pct.connect(self.argos_progress.setValue)

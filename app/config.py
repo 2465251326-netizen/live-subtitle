@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -61,6 +61,11 @@ WHISPER_LANG_MAP = {
     "de": "de", "es": "es", "pt": "pt", "it": "it", "th": "th",
     "vi": "vi", "ar": "ar", "id": "id", "hi": "hi",
 }
+
+TARGET_LANGS = [
+    "zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de", "es",
+    "ru", "pt", "it", "th", "vi", "ar", "id", "hi",
+]
 
 
 _hf_probe_done = threading.Event()

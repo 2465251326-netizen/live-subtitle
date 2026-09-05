@@ -135,6 +135,8 @@ class ArgosEngine:
         from .offline_pack import translate as pack_translate
 
         source = WHISPER_LANG_MAP.get(source, source)
+        if source.startswith("zh"):
+            source = "zh"
         target = "zh" if target.startswith("zh") else target
         return pack_translate(text, source, target), source
 

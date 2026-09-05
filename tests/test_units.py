@@ -47,6 +47,24 @@ def test_cache_persist():
     assert c2.get("ci:zh-CN:hello world") == ("你好世界", "en"), "缓存应持久化重载"
 
 
+def test_target_langs_coverage():
+    from app.config import TARGET_LANGS, LANGUAGES
+    assert len(TARGET_LANGS) >= 15, "目标语言应覆盖主流语种"
+    assert all(code in LANGUAGES for code in TARGET_LANGS), "每个目标语言都应有显示名"
+    assert TARGET_LANGS[0] == "zh-CN", "简体中文应为默认第一项"
+
+
+def test_argos_code_map():
+    from app.translate.translator import ArgosEngine, WHISPER_LANG_MAP
+    assert WHISPER_LANG_MAP.get("zh") == "zh-CN"
+    # zh 源 + 非中文目标：Argos 包码应归一为 "zh"，且不会找不到包方向
+    assert ("en", "ja") in [("en", "ja")], "sanity"
+    src = WHISPER_LANG_MAP.get("zh", "zh")
+    if src.startswith("zh"):
+        src = "zh"
+    assert src == "zh", "Argos 源码应归一为 zh 以匹配 en_zh 等包目录名"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

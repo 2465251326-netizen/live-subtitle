@@ -6,6 +6,7 @@
 import json
 import shutil
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +40,14 @@ class PackInfo:
     url: str
 
 
-def fetch_index(timeout=8):
+_index_cache = {"at": 0.0, "packs": None}
+_INDEX_TTL = 300.0
+
+
+def fetch_index(timeout=8, use_cache=True):
+    now = time.time()
+    if use_cache and _index_cache["packs"] and now - _index_cache["at"] < _INDEX_TTL:
+        return _index_cache["packs"]
     last_err = None
     for src in INDEX_SOURCES:
         try:
@@ -62,6 +70,8 @@ def fetch_index(timeout=8):
                     )
                 )
             if packs:
+                _index_cache["at"] = time.time()
+                _index_cache["packs"] = packs
                 return packs
         except Exception as e:
             last_err = e
