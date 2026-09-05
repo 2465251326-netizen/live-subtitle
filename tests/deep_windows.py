@@ -66,7 +66,7 @@ def main():
         if done[0] >= 8 and time.time() - t0 > 60:
             break
 
-    w.overlay_check.setChecked(True)
+    w.set_overlay_enabled(True)
     overlay_ok = w.overlay.isVisible()
     config_ok = CONFIG_FILE.exists()
     w.stop_pipeline()
