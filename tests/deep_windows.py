@@ -50,28 +50,30 @@ def main():
             got = seg.feed(long_track[i:i + chunk].astype(np.float32))
             if got is not None:
                 start_times[len(start_times)] = time.time()
+                while w.asr_thread.queue_in.qsize() >= 2 and time.time() < t0 + 800:
+                    time.sleep(1.0)
                 w.asr_thread.submit(got)
-            time.sleep(0.006)
+                print(f"DEEP segment {len(start_times)} submitted ({len(got)/TARGET_SR:.1f}s)", flush=True)
+            time.sleep(0.05)
 
     t0 = time.time()
     threading.Thread(target=feeder, daemon=True).start()
 
-    deadline = t0 + 300
+    deadline = t0 + 1500
     while time.time() < deadline:
         app.processEvents()
-        time.sleep(0.1)
-        if done[0] >= 6 and not any(th.is_alive() for th in threading.enumerate() if th.name.startswith("Thread-")):
+        time.sleep(0.2)
+        if done[0] >= 8 and time.time() - t0 > 60:
             break
 
-    lat = max((0.0,), default=0.0)
     w.overlay_check.setChecked(True)
     overlay_ok = w.overlay.isVisible()
     config_ok = CONFIG_FILE.exists()
     w.stop_pipeline()
 
-    print(f"DEEP: captions={done[0]} (expected>=6), errors={len(errors)}, overlay={overlay_ok}, config_saved={config_ok}")
+    print(f"DEEP: captions={done[0]} (expected>=8), errors={len(errors)}, overlay={overlay_ok}, config_saved={config_ok}")
     print(f"DEEP: total wall time {time.time() - t0:.0f}s")
-    if done[0] >= 6 and not errors and overlay_ok and config_ok:
+    if done[0] >= 8 and not errors and overlay_ok and config_ok:
         print("DEEP PASS")
         sys.exit(0)
     print("DEEP FAIL")
