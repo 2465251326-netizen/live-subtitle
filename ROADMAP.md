@@ -154,8 +154,20 @@ requests 不读系统代理，国内用户 Google 免费翻译接口探测必失
 ### 补充 7. ⬜ 悬浮条拖动落点偏差
 拖动释放记录的坐标与实际窗口位置有小偏差（v1.8.0 已做双写缓解，未根治）。根治需排查 adjustSize 与 move 的时序。
 
-### 补充 8. ⬜ 安装器中文化
-Inno 的安装模式选择对话框（Install for all users / me only）仍是英文。需去掉 PrivilegesRequiredOverridesAllowed 或自定义页面。
+### 补充 8. ⬜ 安装向导全面中文化（用户 2026-09-06 追加：安装导向需要改成中文）
+整个安装向导均为英文，包括：Select Setup Install Mode（安装模式选择）、Select Destination Location（目标目录）、Select Start Menu Folder（开始菜单文件夹）、Select Additional Tasks（附加任务）、Ready to Install（准备安装）、Completing Setup（完成页）及全部按钮（Next / Cancel / Install / Finish / Browse）。
+- **实现要点**：
+  - Inno Setup 原生支持多语言：将 `ChineseSimplified.isl`（来自 Inno Setup 官方 unofficial languages 仓库）放入仓库 `installer\` 目录，setup.iss 添加：
+    ```
+    [Languages]
+    Name: "chs"; MessagesFile: "installer\ChineseSimplified.isl"
+    ```
+    即可让全部向导页面、按钮、对话框自动变中文
+  - 「Select Setup Install Mode」弹窗文案同样由语言包键控制（SetupModeTitle / SetupModeInfo / UserModesAdministrative 等），简中语言包可一并覆盖，无需去掉 PrivilegesRequiredOverridesAllowed
+  - 若个别键语言包未覆盖，用 setup.iss 的 `[Messages]` 段手工覆写兜底
+  - 默认语言设为简体中文；将来要做多语言（中英并列）只需再加英文条目并在安装时让用户选
+  - **注意**：isl 文件需 UTF-8（Inno 6.3+ 要求带 BOM），否则中文乱码；纳入仓库前先本地跑一遍安装向导逐页核对
+- **验收标准**：全新用户从下载到完成安装，全程无一个英文单词
 
 ### 补充 9. ⬜ LICENSE 文件
 README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已声明 MIT）。
