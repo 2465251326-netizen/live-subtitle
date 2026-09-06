@@ -178,11 +178,6 @@ QToolTip {
 """
 
 OVERLAY_QSS = """
-QWidget#OverlayRoot {
-    background-color: rgba(12, 14, 20, 200);
-    border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 24);
-}
 QLabel#OverlaySource {
     color: rgba(255, 255, 255, 150);
     font-size: 13px;
@@ -274,5 +269,12 @@ QPushButton#ColorPickButton {
     min-height: 26px;
     font-weight: 600;
     font-size: 12px;
+}
+QLabel#SavedHint {
+    color: #34d399;
+    font-size: 12px;
+    padding: 5px 0 7px 0;
+    background-color: #12151c;
+    border-top: 1px solid #1e2330;
 }
 """

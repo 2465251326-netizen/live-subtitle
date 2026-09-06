@@ -90,6 +90,19 @@ class CaptionOverlay(QWidget):
         self._drag_pos = None
         self._on_closed = on_closed
         self._on_moved = on_moved
+        # 背景由 paintEvent 自绘：样式表更新 rgba alpha 在打包环境不触发重绘，
+        # 导致「背景透明度」设置保存成功但视觉永远不变
+        self._bg_color = QColor("#0c0e14")
+        self._bg_alpha = int(78 * 2.55)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        bg = QColor(self._bg_color)
+        bg.setAlpha(max(0, min(255, self._bg_alpha)))
+        p.setPen(QPen(QColor(255, 255, 255, 24), 1))
+        p.setBrush(QBrush(bg))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 14, 14)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 12, 22, 14)
@@ -111,15 +124,11 @@ class CaptionOverlay(QWidget):
 
     def apply_style(self, font_size, text_color, bg_color, bg_opacity,
                     outline, outline_width, outline_color):
-        """按配置应用外观：字号/颜色/背景/描边。"""
+        """按配置应用外观：字号/颜色/背景/描边。背景走 paintEvent 自绘。"""
         opacity = max(0, min(100, int(bg_opacity)))
-        r, g, b = QColor(bg_color).red(), QColor(bg_color).green(), QColor(bg_color).blue()
+        self._bg_color = QColor(bg_color)
+        self._bg_alpha = int(opacity * 2.55)
         qss = f"""
-        QWidget#OverlayRoot {{
-            background-color: rgba({r}, {g}, {b}, {int(opacity * 2.55)});
-            border-radius: 14px;
-            border: 1px solid rgba(255, 255, 255, 24);
-        }}
         QLabel#OverlaySource {{
             color: rgba(255, 255, 255, 150);
             font-size: {max(10, int(font_size * 0.72))}px;
@@ -138,6 +147,7 @@ class CaptionOverlay(QWidget):
         self.target_label.set_outline(outline_w, outline_color)
         self.target_label.set_fill_color(text_color)
         self.source_label.set_fill_color(QColor(255, 255, 255, 150))
+        self.update()
         self.updateGeometry()
         self.adjustSize()
 

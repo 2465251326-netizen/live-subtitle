@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QComboBox,
@@ -78,6 +78,20 @@ class SettingsDialog(QDialog):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        central = QWidget()
+        central.setLayout(root)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(central, 1)
+        # 自动保存指示：本产品设置即改即生效，没有确定按钮；
+        # 用这个标签告诉用户「改动已落盘」，消除不确定感
+        self.saved_label = QLabel("✓ 设置已自动保存")
+        self.saved_label.setObjectName("SavedHint")
+        self.saved_label.setAlignment(Qt.AlignCenter)
+        self.saved_label.hide()
+        outer.addWidget(self.saved_label)
 
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
@@ -406,6 +420,19 @@ class SettingsDialog(QDialog):
     def _save(self, key, value):
         self.c.set(key, value)
         self.settings_saved.emit()
+        self._flash_saved()
+
+    def _flash_saved(self):
+        self.saved_label.setText("✓ 设置已自动保存")
+        self.saved_label.show()
+        # 连续调整时只保留最后一次计时，避免闪烁
+        timer = getattr(self, "_saved_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.saved_label.hide)
+            self._saved_timer = timer
+        timer.start(1600)
 
     def _save_combo(self, key, combo):
         self._save(key, combo.currentData())
