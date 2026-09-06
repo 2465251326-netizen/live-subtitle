@@ -94,18 +94,6 @@ class CaptionOverlay(QWidget):
         self._on_closed = on_closed
         self._on_moved = on_moved
 
-    def paintEvent(self, event):
-        # setStyleSheet 会触发提前重绘，属性缺失时跳过本帧
-        if not hasattr(self, "_bg_color"):
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        bg = QColor(self._bg_color)
-        bg.setAlpha(max(0, min(255, self._bg_alpha)))
-        p.setPen(QPen(QColor(255, 255, 255, 24), 1))
-        p.setBrush(QBrush(bg))
-        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 14, 14)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 12, 22, 14)
         layout.setSpacing(4)
@@ -123,6 +111,18 @@ class CaptionOverlay(QWidget):
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
         self.adjustSize()
+
+    def paintEvent(self, event):
+        # setStyleSheet 会触发提前重绘，属性缺失时跳过本帧
+        if not hasattr(self, "_bg_color"):
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        bg = QColor(self._bg_color)
+        bg.setAlpha(max(0, min(255, self._bg_alpha)))
+        p.setPen(QPen(QColor(255, 255, 255, 24), 1))
+        p.setBrush(QBrush(bg))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 14, 14)
 
     def apply_style(self, font_size, text_color, bg_color, bg_opacity,
                     outline, outline_width, outline_color):
