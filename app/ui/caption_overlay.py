@@ -78,6 +78,9 @@ class OutlinedLabel(QLabel):
 class CaptionOverlay(QWidget):
     def __init__(self, on_closed=None, on_moved=None):
         super().__init__(None)
+        # 背景参数必须先于任何可能触发 paintEvent 的调用（setStyleSheet 等）
+        self._bg_color = QColor("#0c0e14")
+        self._bg_alpha = int(78 * 2.55)
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -90,12 +93,11 @@ class CaptionOverlay(QWidget):
         self._drag_pos = None
         self._on_closed = on_closed
         self._on_moved = on_moved
-        # 背景由 paintEvent 自绘：样式表更新 rgba alpha 在打包环境不触发重绘，
-        # 导致「背景透明度」设置保存成功但视觉永远不变
-        self._bg_color = QColor("#0c0e14")
-        self._bg_alpha = int(78 * 2.55)
 
     def paintEvent(self, event):
+        # setStyleSheet 会触发提前重绘，属性缺失时跳过本帧
+        if not hasattr(self, "_bg_color"):
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         bg = QColor(self._bg_color)
