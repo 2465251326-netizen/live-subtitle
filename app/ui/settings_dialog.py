@@ -124,6 +124,7 @@ class SettingsDialog(QDialog):
         lab = QLabel(text)
         lab.setObjectName("SettingGroup")
         page._inner_layout.addWidget(lab)
+        return lab
 
     def _row(self, page, title, desc, widget):
         box = QVBoxLayout()
@@ -249,12 +250,14 @@ class SettingsDialog(QDialog):
                   "支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种。",
                   self.target_combo)
 
-        self._section(page, "离线语言包")
+        self.argos_section_label = self._section(page, "离线语言包")
         try:
             cleanup_temp_files()
         except Exception:
             pass
         self.argos_hint = QLabel("选择 Argos 引擎后在此下载语言包（约 70MB / 包，一次下载永久离线使用）。")
+        self.argos_hint.setObjectName("SettingDesc")
+        self.argos_hint.setWordWrap(True)
         self.argos_hint.setObjectName("SettingDesc")
         self.argos_hint.setWordWrap(True)
         page._inner_layout.addWidget(self.argos_hint)
@@ -472,14 +475,26 @@ class SettingsDialog(QDialog):
         if source_type == "system":
             devices = list_output_devices()
         else:
-            # 麦克风模式只列真实输入设备，回环设备混进来会被误选导致采集失败
-            devices = [d for d in list_input_devices() if not d.get("loopback")]
+            # 麦克风模式只列真实输入设备：回环设备混进来会被误选导致采集失败，
+            # MME 的 "Sound Mapper"/"主声音捕获" 是虚拟映射项，对用户没有意义
+            raw = [d for d in list_input_devices() if not d.get("loopback")]
+            devices = [d for d in raw
+                       if "sound mapper" not in d["name"].lower()
+                       and "主声音" not in d["name"]]
         self._device_map = {}
         for d in devices:
             tag = " [系统声音]" if d.get("loopback") else ""
             label = f"{d['name']}{tag}"
             self._device_map[label] = d["index"]
             self.device_combo.addItem(label, d["index"])
+        # 规范化去重：不同 Host API 对同一设备的命名常有截断/大小写差异
+        seen = set()
+        for i in range(self.device_combo.count() - 1, -1, -1):
+            key = self.device_combo.itemText(i).replace(" ", "").lower()[:20]
+            if key in seen:
+                self.device_combo.removeItem(i)
+            else:
+                seen.add(key)
         if source_type == "system":
             if not devices:
                 self.device_combo.addItem("默认输出设备（自动）", -1)
@@ -507,8 +522,10 @@ class SettingsDialog(QDialog):
 
     def _refresh_argos_section(self):
         is_argos = self.engine_combo.currentData() == "argos"
-        for w in (self.argos_combo, self.argos_download_button, self.argos_hint):
-            w.setVisible(is_argos)
+        section_label = getattr(self, "argos_section_label", None)
+        for w in (self.argos_combo, self.argos_download_button, self.argos_hint, section_label):
+            if w is not None:
+                w.setVisible(is_argos)
         downloading = bool(getattr(self, "argos_worker", None) and self.argos_worker.isRunning())
         self.argos_progress.setVisible(is_argos and downloading)
         if not is_argos:

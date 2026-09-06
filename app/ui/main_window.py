@@ -3,7 +3,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QStandardPaths
 from PySide6.QtGui import QIcon, QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
@@ -20,6 +20,9 @@ from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
 
 DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
+
+# 各识别模型的近似下载体积（MB），用于把缓存目录增量换算成下载进度
+MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 480, "medium": 1536}
 
 
 def icon_path():
@@ -341,8 +344,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "导出字幕", "当前会话还没有可导出的字幕。")
             return
         default_name = f"LiveSubtitle_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        # 默认落到用户文档目录：安装目录（Program Files）对标准权限用户不可写
+        docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or str(Path.home())
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出字幕", default_name, "文本文件 (*.txt);;所有文件 (*)")
+            self, "导出字幕", str(Path(docs) / default_name), "文本文件 (*.txt);;所有文件 (*)")
         if not path:
             return
         lines = []
@@ -400,7 +405,13 @@ class MainWindow(QMainWindow):
         self.asr_thread.status_changed.connect(
             lambda m: self._set_engine_status(f"识别: {m}"))
         self.asr_thread.error_occurred.connect(self._on_pipeline_error)
+        self.asr_thread.model_ready.connect(self._stop_model_download_feedback)
         self.asr_thread.start()
+
+        # 首次使用的模型需要下载（可能上百 MB）：轮询缓存目录增量，
+        # 在状态栏给出进度，避免用户在一句静态文案里无限等待
+        if not self.asr_thread.model_cached(c.get("asr_model")):
+            self._start_model_download_feedback(c.get("asr_model"))
 
         self.capture_thread = CaptureThread(
             c.get("source_type"),
@@ -415,6 +426,36 @@ class MainWindow(QMainWindow):
 
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
+
+    def _start_model_download_feedback(self, model_size):
+        self._model_dl_model = model_size
+        self._model_dl_total = MODEL_SIZES_MB.get(model_size, 480)
+        self._stop_model_download_feedback()
+        self._model_dl_timer = QTimer(self)
+        self._model_dl_timer.setInterval(600)
+        self._model_dl_timer.timeout.connect(self._tick_model_download_feedback)
+        self._model_dl_timer.start()
+        self._tick_model_download_feedback()
+
+    def _stop_model_download_feedback(self):
+        timer = getattr(self, "_model_dl_timer", None)
+        if timer is not None:
+            timer.stop()
+            self._model_dl_timer = None
+
+    def _tick_model_download_feedback(self):
+        from app.asr.engine import AsrThread
+        d = AsrThread.model_cache_dir(getattr(self, "_model_dl_model", ""))
+        mb = 0.0
+        if d.exists():
+            try:
+                mb = sum(f.stat().st_size for f in d.rglob("*") if f.is_file()) / 1048576.0
+            except Exception:
+                pass
+        total = self._model_dl_total
+        pct = min(99, int(mb * 100 / total))
+        self._set_engine_status(
+            f"正在下载识别模型（{mb:.0f}/{total}MB，{pct}%，仅首次；完成前请保持网络畅通）...")
 
     def _set_engine_status(self, text):
         self._engine_status_text = text
@@ -458,6 +499,7 @@ class MainWindow(QMainWindow):
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
         self._low_input_warn = False
+        self._stop_model_download_feedback()
         self.stack.setCurrentIndex(0)
 
         threads = (self.capture_thread, self.asr_thread, self.translate_thread)
