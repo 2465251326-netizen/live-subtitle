@@ -1,8 +1,28 @@
 import queue
+import re
 import threading
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
+
+
+def split_long_caption(text, limit=60):
+    """把一段超长识别结果按句末标点二次切分，避免快语速内容出现 14 秒长字幕。"""
+    text = text.strip()
+    if len(text) <= limit:
+        return [text]
+    parts = [p.strip() for p in re.split(r"(?<=[.!?。！？；;])\s*", text) if p.strip()]
+    if len(parts) <= 1:
+        return [text]
+    merged = []
+    for p in parts:
+        # 过短的尾巴并入前一句，避免碎片化
+        if merged and len(merged[-1]) + len(p) + 1 < limit // 2:
+            sep = "" if merged[-1][-1] in ".!?。！？；;" else " "
+            merged[-1] = merged[-1] + sep + p
+        else:
+            merged.append(p)
+    return merged
 
 
 class AsrThread(QThread):
@@ -22,6 +42,16 @@ class AsrThread(QThread):
         self._lang_lock = threading.Lock()
         self._last_lang = language if language != "auto" else None
         self._discard_streak = 0
+
+    @staticmethod
+    def model_cache_dir(model_size: str):
+        from app.config import HF_HOME
+        return HF_HOME / "hub" / ("models--Systran--faster-whisper-" + model_size)
+
+    @staticmethod
+    def model_cached(model_size: str) -> bool:
+        snap = AsrThread.model_cache_dir(model_size) / "snapshots"
+        return snap.exists() and any(snap.glob("**/model.bin"))
 
     def stop(self):
         self._stop = True
@@ -141,4 +171,6 @@ class AsrThread(QThread):
             with self._lang_lock:
                 self._last_lang = detected
         self._discard_streak = 0
-        self.text_ready.emit(text, detected, f"{duration:.1f}")
+        # 快语速内容一次转写可能拿到 14 秒长文，按句末标点二次切分后再上屏
+        for piece in split_long_caption(text):
+            self.text_ready.emit(piece, detected, f"{duration:.1f}")

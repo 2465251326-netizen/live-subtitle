@@ -165,8 +165,14 @@ class CaptionOverlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         if self._drag_pos is not None and self._on_moved:
-            # 拖动结束立即记忆位置，不等隐藏/退出
+            from PySide6.QtCore import QTimer
+
+            def _save_final():
+                # 字幕刷新可能触发 adjustSize 微调几何，稳定后再存一次最终位置
+                if self._on_moved:
+                    self._on_moved(self.x(), self.y())
             self._on_moved(self.x(), self.y())
+            QTimer.singleShot(400, _save_final)
         self._drag_pos = None
 
     def contextMenuEvent(self, event):
