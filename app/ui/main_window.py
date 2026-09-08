@@ -481,7 +481,7 @@ class MainWindow(QMainWindow):
             c.get("asr_device"),
             c.get("asr_language"),
             self,
-            hallucination_filter=bool(c.get("hallucination_filter", True)),
+            hallucination_filter=bool(c.get("hallucination_filter")),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(
