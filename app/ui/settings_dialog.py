@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION, DEFAULTS
 from app.translate.translator import ArgosEngine, _cache
 from app.translate.offline_pack import cleanup_temp_files
+from app.translate import offline_pack as offline_pack_mod
 from app.audio.capture import list_input_devices, list_output_devices
 from app.ui.styles import SETTING_QSS
 
@@ -346,9 +347,18 @@ class SettingsDialog(QDialog):
                             ("medium", "medium · 高精度 · 需好 CPU")]:
             self.model_combo.addItem(label, code)
             self.model_combo.setItemData(self.model_combo.count() - 1, tips[code], Qt.ToolTipRole)
+        model_row = QHBoxLayout()
+        model_row.setSpacing(6)
+        model_row.addWidget(self.model_combo, 1)
+        self.model_manage_button = QPushButton("管理")
+        self.model_manage_button.setFixedWidth(64)
+        self.model_manage_button.clicked.connect(self._manage_models)
+        model_row.addWidget(self.model_manage_button)
+        model_wrap = QWidget()
+        model_wrap.setLayout(model_row)
         self._row(page, "识别模型",
                   "全部在本地运行，语音不出电脑。首次选择后自动下载模型（一次性），之后永久离线可用。中文内容建议 small。",
-                  self.model_combo)
+                  model_wrap)
 
         self._section(page, "语言与计算")
         self.asr_lang_combo = QComboBox()
@@ -449,6 +459,19 @@ class SettingsDialog(QDialog):
         self.argos_download_button = QPushButton("下载语言包")
         self.argos_download_button.clicked.connect(self._download_argos)
         grid.addWidget(self.argos_download_button, 0, 1)
+
+        # 已安装语言包管理（建议3）：显示占用体积，支持单独卸载
+        self._section(page, "已安装语言包管理")
+        self.packs_list = QListWidget()
+        self.packs_list.setObjectName("PacksList")
+        self.packs_list.setMaximumHeight(150)
+        page._inner_layout.addWidget(self.packs_list)
+        self.pack_remove_button = QPushButton("卸载所选语言包")
+        self.pack_remove_button.clicked.connect(self._remove_selected_pack)
+        self.pack_remove_button.setEnabled(False)
+        page._inner_layout.addWidget(self.pack_remove_button)
+        self.packs_list.itemSelectionChanged.connect(
+            lambda: self.pack_remove_button.setEnabled(bool(self.packs_list.selectedItems())))
         self.argos_progress = QProgressBar()
         self.argos_progress.setRange(0, 100)
         self.argos_progress.setVisible(False)
@@ -606,6 +629,65 @@ class SettingsDialog(QDialog):
             self.hotkey_status.setText(self.main.apply_hotkey_config())
         except Exception:
             pass
+
+    # ---------- 识别模型管理 ----------
+
+    def _manage_models(self):
+        """模型管理对话框：显示各模型下载状态与体积，支持删除。"""
+        from app.asr.engine import AsrThread
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("识别模型管理")
+        dlg.resize(480, 320)
+        v = QVBoxLayout(dlg)
+        hint = QLabel("模型只在本机运行。删除后下次选择该模型时会自动重新下载。")
+        hint.setObjectName("SettingDesc")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        lst = QListWidget()
+        v.addWidget(lst, 1)
+        current = str(self.c.get("asr_model"))
+        for code, label in MODELS:
+            cached = AsrThread.model_cached(code)
+            mb = AsrThread.model_size_mb(code)
+            status = (f"已下载 · {mb:.0f} MB" if cached else "未下载（首次选择时自动下载）")
+            if code == current:
+                status += " · 当前使用"
+            item = QListWidgetItem(f"{label}\n    {status}")
+            item.setData(Qt.UserRole, code)
+            lst.addItem(item)
+        remove_btn = QPushButton("删除所选模型")
+        remove_btn.setEnabled(False)
+        lst.itemSelectionChanged.connect(lambda: remove_btn.setEnabled(bool(lst.selectedItems())))
+        v.addWidget(remove_btn)
+
+        def do_remove():
+            item = lst.currentItem()
+            if item is None:
+                return
+            code = item.data(Qt.UserRole)
+            if code == current and getattr(self.main, "running", False):
+                QMessageBox.warning(dlg, "无法删除",
+                                    "该模型正在使用中，请先停止翻译再删除。")
+                return
+            box = QMessageBox(dlg)
+            box.setWindowTitle("删除模型")
+            box.setText(f"确定删除 {code} 模型的缓存文件吗？")
+            b_yes = box.addButton("删除", QMessageBox.DestructiveRole)
+            box.addButton("取消", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() != b_yes:
+                return
+            if AsrThread.remove_model(code):
+                row = lst.row(item)
+                cached = AsrThread.model_cached(code)
+                mb = AsrThread.model_size_mb(code)
+                status = (f"已下载 · {mb:.0f} MB" if cached else "未下载（首次选择时自动下载）")
+                if code == current:
+                    status += " · 当前使用"
+                item.setText(f"{label}\n    {status}")
+        remove_btn.clicked.connect(do_remove)
+        dlg.exec()
 
     # ---------- 页面：版本与更新 ----------
 
@@ -1090,6 +1172,7 @@ class SettingsDialog(QDialog):
                 w.setVisible(is_argos)
         downloading = bool(getattr(self, "argos_worker", None) and self.argos_worker.isRunning())
         self.argos_progress.setVisible(is_argos and downloading)
+        self._refresh_packs_list()
         if not is_argos:
             return
         tgt = self.target_combo.currentData() or "zh-CN"
@@ -1110,6 +1193,48 @@ class SettingsDialog(QDialog):
         else:
             self.argos_hint.setText(
                 "请下载与「识别语言 → 翻译目标」一致的语言包（约 70MB，一次下载永久离线使用）。下载优先走本项目镜像，失败自动回退官方源。")
+
+    def _refresh_packs_list(self):
+        """已安装语言包列表（含体积），供卸载管理。"""
+        lst = getattr(self, "packs_list", None)
+        if lst is None:
+            return
+        lst.clear()
+        try:
+            sizes = offline_pack_mod.installed_sizes()
+        except Exception:
+            sizes = []
+        for fc, tc, mb in sizes:
+            name = f"{LANGUAGES.get(fc, fc)} → {LANGUAGES.get(tc, tc)}"
+            item = QListWidgetItem(f"{name}  ·  {mb:.0f} MB")
+            item.setData(Qt.UserRole, (fc, tc))
+            lst.addItem(item)
+
+    def _remove_selected_pack(self):
+        sel = self.packs_list.currentItem()
+        if sel is None:
+            return
+        fc, tc = sel.data(Qt.UserRole)
+        name = sel.text().split("·")[0].strip()
+        box = QMessageBox(self)
+        box.setWindowTitle("卸载语言包")
+        box.setText(f"确定卸载 {name} 语言包吗？\n\n删除后可随时重新下载（约 70MB）。")
+        b_yes = box.addButton("卸载", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() != b_yes:
+            return
+        try:
+            removed = offline_pack_mod.remove_pack(fc, tc)
+        except Exception as e:
+            QMessageBox.warning(self, "卸载失败", f"删除目录时出错：{e}")
+            return
+        if removed:
+            self._refresh_packs_list()
+            self._refresh_argos_section()
+            QMessageBox.information(self, "完成", f"已卸载 {name}（释放 {sel.text().split('·')[-1].strip()}）。")
+        else:
+            self._refresh_packs_list()
 
     def _download_argos(self):
         code = self.argos_combo.currentData()

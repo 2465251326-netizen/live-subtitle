@@ -53,6 +53,22 @@ class AsrThread(QThread):
         snap = AsrThread.model_cache_dir(model_size) / "snapshots"
         return snap.exists() and any(snap.glob("**/model.bin"))
 
+    @staticmethod
+    def model_size_mb(model_size: str) -> float:
+        """已缓存模型的实际磁盘占用（MB），未下载返回 0。"""
+        from app.translate.offline_pack import dir_size_mb
+        return dir_size_mb(AsrThread.model_cache_dir(model_size))
+
+    @staticmethod
+    def remove_model(model_size: str) -> bool:
+        """删除已下载的识别模型缓存目录；返回是否删除了内容。"""
+        import shutil
+        d = AsrThread.model_cache_dir(model_size)
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            return True
+        return False
+
     def stop(self):
         self._stop = True
         try:

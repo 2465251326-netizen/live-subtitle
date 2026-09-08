@@ -109,6 +109,81 @@ def list_installed():
     return out
 
 
+def dir_size_mb(path) -> float:
+    """递归统计目录体积（MB）；目录不存在返回 0。"""
+    total = 0
+    p = Path(path)
+    if not p.exists():
+        return 0.0
+    for f in p.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            continue
+    return total / 1048576.0
+
+
+def installed_sizes():
+    """返回 [(from_code, to_code, 体积MB)]，供设置页展示。"""
+    out = []
+    if not PACKS_DIR.exists():
+        return out
+    for d in sorted(PACKS_DIR.iterdir()):
+        meta = d / "metadata.json"
+        if d.is_dir() and meta.exists():
+            try:
+                m = json.loads(meta.read_text(encoding="utf-8"))
+                out.append((m.get("from_code", ""), m.get("to_code", ""),
+                            dir_size_mb(d)))
+            except Exception:
+                continue
+    return out
+
+
+def remove_pack(source, target):
+    """卸载 source->target 语言包：删除全部匹配目录并清理翻译器缓存。
+
+    返回实际删除的目录名列表（兼容直连命名与旧版 translate- 前缀命名）。
+    """
+    removed = []
+    if not PACKS_DIR.exists():
+        return removed
+    for d in list(PACKS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        match = False
+        # 命名匹配：en_zh / translate-en_zh
+        if d.name in (f"{source}_{target}", f"translate-{source}_{target}"):
+            match = True
+        else:
+            # 元数据匹配（覆盖历史遗留的其他命名）
+            meta = d / "metadata.json"
+            if meta.exists():
+                try:
+                    m = json.loads(meta.read_text(encoding="utf-8"))
+                    match = (m.get("from_code") == source and m.get("to_code") == target)
+                except Exception:
+                    match = False
+        if match:
+            shutil.rmtree(d, ignore_errors=True)
+            removed.append(d.name)
+    with _lock:
+        stale = [k for k in _translator_cache if k[0] == source]
+        for key in stale:
+            _translator_cache.pop(key, None)
+        try:
+            _cache_order.remove(key)
+        except ValueError:
+            pass
+        for key in stale:
+            try:
+                _cache_order.remove(key)
+            except ValueError:
+                pass
+    return removed
+
+
 def _extract_pack(model_path: Path, dest: Path):
     with zipfile.ZipFile(model_path) as zf:
         names = zf.namelist()
