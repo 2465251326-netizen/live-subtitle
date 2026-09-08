@@ -32,18 +32,29 @@ class AsrThread(QThread):
     error_occurred = Signal(str)
 
     def __init__(self, model_size: str, device: str, language: str, parent=None,
-                 hallucination_filter=True):
+                 hallucination_filter=True, silero_vad=False, mishear_map=None):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
         self.language = language
         self.hallucination_filter = bool(hallucination_filter)
+        self.silero_vad = bool(silero_vad)
+        self.mishear_map = dict(mishear_map or {})
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
         self._model = None
         self._lang_lock = threading.Lock()
         self._last_lang = language if language != "auto" else None
         self._discard_streak = 0
+
+    def _postprocess(self, text):
+        """识别后处理（建议5）：可选的常见误听修正词典（精确子串替换）。"""
+        if not self.mishear_map:
+            return text
+        for wrong, right in self.mishear_map.items():
+            if wrong:
+                text = text.replace(wrong, right)
+        return text
 
     @staticmethod
     def model_cache_dir(model_size: str):
@@ -165,10 +176,14 @@ class AsrThread(QThread):
             beam_size=1,
             best_of=1,
             condition_on_previous_text=False,
-            vad_filter=False,
             no_speech_threshold=0.6,
             log_prob_threshold=-1.0,
         )
+        # Silero VAD（建议5）：faster-whisper 内置，对段内非语音再过滤一道；
+        # 与能量 VAD 分工——能量 VAD 管切句，Silero 管段内净化，双保险
+        if self.silero_vad:
+            kwargs["vad_filter"] = True
+            kwargs["vad_parameters"] = {"min_silence_duration_ms": 300}
         with self._lang_lock:
             lang = self._last_lang
         if self.language != "auto":
@@ -198,6 +213,7 @@ class AsrThread(QThread):
                     self._last_lang = None
             return
         text = "".join(texts) if (info.language or "").startswith("zh") else " ".join(texts)
+        text = self._postprocess(text)
         detected = info.language or ""
         conf = info.language_probability or 0.0
         if self.language == "auto" and conf < 0.6:

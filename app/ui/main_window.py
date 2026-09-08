@@ -23,7 +23,8 @@ from app import hotkey
 DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
 
 # 各识别模型的近似下载体积（MB），用于把缓存目录增量换算成下载进度
-MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 480, "medium": 1536}
+MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 480, "medium": 1536,
+                  "large-v3-turbo": 1600}
 
 
 def icon_path():
@@ -487,6 +488,8 @@ class MainWindow(QMainWindow):
             c.get("asr_language"),
             self,
             hallucination_filter=bool(c.get("hallucination_filter")),
+            silero_vad=bool(c.get("silero_vad", True)),
+            mishear_map=dict(c.get("mishear_map") or {}),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(
