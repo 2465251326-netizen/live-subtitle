@@ -397,3 +397,9 @@ python scripts\smoke_test.py
 ## 参与贡献
 
 发现问题或功能建议请提交 [Issue](https://github.com/2465251326-netizen/live-subtitle/issues)；欢迎 Fork 后提交 Pull Request。
+
+---
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源发布。
