@@ -267,33 +267,32 @@ class SettingsDialog(QDialog):
 
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
-        self.nav.setFixedWidth(190)
+        self.nav.setFixedWidth(174)
         for t in ("🎤 音频输入", "🧠 语音识别", "🌐 翻译", "🖥 显示", "⚙ 通用",
                   "ℹ 版本与更新"):
             self.nav.addItem(_nav_item(t))
-        root.addWidget(self.nav)
 
-        # 建议6：设置项搜索——输入关键词直接跳转对应页
+        # 建议6：导航列顶部搜索——输入关键词直接跳转对应页
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("🔍 搜索设置…")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setObjectName("SearchBox")
         self.search_edit.setFixedHeight(34)
         self.search_edit.textChanged.connect(self._on_search_changed)
-        nav_box = QVBoxLayout()
-        nav_box.setContentsMargins(8, 8, 8, 0)
-        nav_box.setSpacing(6)
-        nav_box.addWidget(self.search_edit)
         self.search_hint = QLabel("")
         self.search_hint.setObjectName("SettingDesc")
         self.search_hint.setWordWrap(True)
         self.search_hint.hide()
-        nav_box.addWidget(self.search_hint)
         nav_wrap = QWidget()
-        nav_wrap.setLayout(nav_box)
+        nav_wrap.setObjectName("NavWrap")
         nav_wrap.setFixedWidth(190)
-        root.insertWidget(1, nav_wrap)
-        self.nav.setFixedWidth(174)
+        nav_box = QVBoxLayout(nav_wrap)
+        nav_box.setContentsMargins(8, 8, 8, 8)
+        nav_box.setSpacing(6)
+        nav_box.addWidget(self.search_edit)
+        nav_box.addWidget(self.nav, 1)
+        nav_box.addWidget(self.search_hint)
+        root.addWidget(nav_wrap)
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("SettingPages")
@@ -309,36 +308,14 @@ class SettingsDialog(QDialog):
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         self.nav.setCurrentRow(0)
         self._build_search_index()
-        self._fade_anim = None
 
     def _on_nav_changed(self, index):
         self.pages.setCurrentIndex(index)
-        self._fade_page()
 
     def _fade_page(self):
-        """页面切换淡入（建议6 动效）。"""
-        try:
-            from PySide6.QtWidgets import QGraphicsOpacityEffect
-            from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-            w = self.pages.currentWidget()
-            if w is None:
-                return
-            eff = w.findChild(QGraphicsOpacityEffect)
-            if eff is None:
-                eff = QGraphicsOpacityEffect(w)
-                w.setGraphicsEffect(eff)
-            eff.setOpacity(0.35)
-            if self._fade_anim is not None:
-                self._fade_anim.stop()
-            anim = QPropertyAnimation(eff, b"opacity", self)
-            anim.setDuration(140)
-            anim.setStartValue(0.35)
-            anim.setEndValue(1.0)
-            anim.setEasingCurve(QEasingCurve.OutCubic)
-            anim.start()
-            self._fade_anim = anim
-        except Exception:
-            pass
+        """页面切换动效占位：原 QGraphicsOpacityEffect 方案会破坏 Qt 可访问性
+        子树（UIA/读屏器读不到页面内容），已移除；保留接口兼容。"""
+        pass
 
     def _build_search_index(self):
         self._search_index = []
