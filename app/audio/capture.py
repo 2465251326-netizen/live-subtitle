@@ -150,6 +150,7 @@ class CaptureThread(QThread):
     level_changed = Signal(float)
     error_occurred = Signal(str)
     low_input = Signal(bool)  # True=输入信号持续过弱（可能音量过低/抓错设备）
+    muted = Signal(bool)      # True=系统处于静音状态（补充5：静音盲区提示）
 
     QUIET_WARN_S = 12.0
     QUIET_LEVEL = 0.012
@@ -237,14 +238,24 @@ class CaptureThread(QThread):
                 # 长时间近乎无声时提醒用户：低音量/抓错设备会让字幕静默失效
                 if level < self.QUIET_LEVEL:
                     self._quiet_s = getattr(self, "_quiet_s", 0.0) + CHUNK_MS / 1000.0
+                    # 静音盲区（补充5）：部分驱动静音后 loopback 电平不归零。
+                    # 这里在"持续无声"时主动查系统静音状态，给出确定性提示
+                    if self._quiet_s >= self.QUIET_WARN_S and not self._warned_quiet:
+                        self._warned_quiet = True
+                        try:
+                            from app.win_mute import is_system_muted
+                            m = is_system_muted()
+                        except Exception:
+                            m = None
+                        if m is True and self.source_type == "system":
+                            self.muted.emit(True)
+                        self.low_input.emit(True)
                 else:
                     self._quiet_s = 0.0
                     if self._warned_quiet:
                         self._warned_quiet = False
+                        self.muted.emit(False)
                         self.low_input.emit(False)
-                if self._quiet_s >= self.QUIET_WARN_S and not self._warned_quiet:
-                    self._warned_quiet = True
-                    self.low_input.emit(True)
                 seg = self.segmenter.feed(mono16)
                 if seg is not None:
                     self.segment_ready.emit(seg)

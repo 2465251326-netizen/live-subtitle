@@ -289,6 +289,9 @@ class MainWindow(QMainWindow):
         """把运行状态/来源/引擎/模型同步到悬浮条状态行。"""
         if not hasattr(self, "overlay"):
             return
+        if getattr(self, "_muted_warn", False):
+            self.overlay.set_status("系统静音中 · 不会有字幕", is_error=True)
+            return
         if getattr(self, "_low_input_warn", False):
             self.overlay.set_status("信号弱", is_error=True)
             return
@@ -506,6 +509,7 @@ class MainWindow(QMainWindow):
         self.capture_thread.level_changed.connect(self.level_bar.setValue)
         self.capture_thread.error_occurred.connect(self._on_pipeline_error)
         self.capture_thread.low_input.connect(self._on_low_input)
+        self.capture_thread.muted.connect(self._on_muted)
         self.capture_thread.start()
 
         if c.get("overlay_enabled") and not self.overlay.isVisible():
@@ -544,7 +548,7 @@ class MainWindow(QMainWindow):
 
     def _set_engine_status(self, text):
         self._engine_status_text = text
-        if not getattr(self, "_low_input_warn", False):
+        if not getattr(self, "_low_input_warn", False) and not getattr(self, "_muted_warn", False):
             self.engine_status_label.setText(text)
 
     def _on_low_input(self, quiet):
@@ -557,6 +561,18 @@ class MainWindow(QMainWindow):
                 "⚠ 输入信号过弱：字幕可能无法识别，请检查系统音量或音频设备")
         else:
             self.engine_status_label.setText(getattr(self, "_engine_status_text", ""))
+        self.update_overlay_status()
+
+    def _on_muted(self, m):
+        """系统静音盲区提示（补充5）：静音且抓系统声音时给出确定性指引。"""
+        if m and self.running:
+            self._muted_warn = True
+            self.engine_status_label.setText(
+                "⚠ 系统已静音：正在抓取系统声音，静音期间不会有字幕；取消静音后自动恢复")
+        else:
+            self._muted_warn = False
+            self.engine_status_label.setText(getattr(self, "_engine_status_text", ""))
+        self.update_overlay_status()
 
     @staticmethod
     def _detach_thread(t):
