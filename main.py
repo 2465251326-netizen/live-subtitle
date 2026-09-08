@@ -8,18 +8,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.config import CONFIG_DIR
 
 LOG_DIR = CONFIG_DIR / "logs"
+LOG_FILE = LOG_DIR / "app.log"
 
 
 def write_log(title, text):
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOG_DIR / "app.log", "a", encoding="utf-8") as f:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {title}\n{text}\n")
     except Exception:
         pass
 
 
 def install_crash_logger():
+    # 结构化生命周期日志（v2.0.0）：UTF-8 + 轮转，全局 logger("ls") 共用
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        from app import log as app_log
+        app_log.get(str(LOG_FILE))
+        app_log.log("app.start", version=_app_version())
+    except Exception:
+        pass
+
     def excepthook(exc_type, exc_value, exc_tb):
         write_log("未捕获异常", "".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
         sys.__excepthook__(exc_type, exc_value, exc_tb)
@@ -35,6 +45,14 @@ def install_crash_logger():
         qInstallMessageHandler(qt_handler)
     except Exception:
         pass
+
+
+def _app_version():
+    try:
+        from app.config import APP_VERSION
+        return APP_VERSION
+    except Exception:
+        return "?"
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import json
 import queue
+import re
 import threading
 import time
 import urllib.parse
@@ -10,11 +11,11 @@ from PySide6.QtCore import QThread, Signal
 from app import config as _cfgmod
 from app.config import WHISPER_LANG_MAP
 from app import net
+from app.errors import friendly_error
+from app import log as app_log
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-}
+# v2.0.0：HTTP 头收敛到 net.py（此前与本包各写一份且 UA 不一致）
+HEADERS = net.BROWSER_HEADERS
 
 
 class TranslationCache:
@@ -76,22 +77,55 @@ _cache = TranslationCache()
 class GoogleFree:
     name = "google"
 
-    @staticmethod
-    def translate(text, source, target):
-        url = "https://translate.googleapis.com/translate_a/single"
-        # client=dict-chrome-ex：2026-09 起 gtx 客户端被 Google 大面积 429 限流
-        # （无论出口 IP），dict-chrome-ex 同端点同响应结构、实测可用且更快
-        params = {"client": "dict-chrome-ex", "sl": source or "auto", "tl": target, "dt": "t", "q": text}
-        r = requests.get(url, params=params, headers=HEADERS, timeout=8, proxies=net.proxies())
-        if r.status_code == 429:
-            raise RuntimeError("Google 接口限流(429)，已自动切换备援引擎")
-        r.raise_for_status()
-        data = r.json()
-        parts = data[0] or []
-        out = "".join(p[0] for p in parts if p and p[0])
-        detected = data[2] if len(data) > 2 else (source or "auto")
-        return out, detected
+    # 多通道链（v2.0.0）：Google 单方面限流某个 client 时自动换下一个。
+    # 2026-09 实测：gtx 全面 429；dict-chrome-ex（googleapis）与
+    # clients5 /translate_a/t 均可用。
+    _CHAIN = [
+        ("https://translate.googleapis.com/translate_a/single", "dict-chrome-ex"),
+        ("https://translate.googleapis.com/translate_a/single", "gtx"),
+        ("https://clients5.google.com/translate_a/t", "dict-chrome-ex"),
+    ]
 
+    @staticmethod
+    def _parse(data):
+        """兼容两种响应结构，返回 (译文, 检测语言)；都解析不了抛 ValueError。"""
+        # /translate_a/single：[[[译文, 原文, ...], ...], ..., 检测语言, ...]
+        try:
+            parts = data[0] or []
+            out = "".join(p[0] for p in parts if p and p[0])
+            if out:
+                return out, (data[2] if len(data) > 2 else None)
+        except Exception:
+            pass
+        # clients5 /translate_a/t：[[译文, 检测语言], ...]
+        first = data[0]
+        if isinstance(first, list) and first and isinstance(first[0], list):
+            first = first[0]
+        if isinstance(first, list) and first and isinstance(first[0], str):
+            return first[0], (first[1] if len(first) > 1 else None)
+        raise ValueError("Google 响应结构无法解析")
+
+    @classmethod
+    def translate(cls, text, source, target):
+        last_err = None
+        for url, client in cls._CHAIN:
+            params = {"client": client, "sl": source or "auto", "tl": target, "q": text}
+            if url.endswith("/single"):
+                params["dt"] = "t"
+            try:
+                r = requests.get(url, params=params, headers=HEADERS, timeout=8,
+                                 proxies=net.proxies())
+                if r.status_code == 429:
+                    last_err = RuntimeError("Google 接口限流(429)")
+                    continue
+                r.raise_for_status()
+                out, detected = cls._parse(r.json())
+                return out, detected or (source or "auto")
+            except RuntimeError:
+                last_err = RuntimeError("Google 接口限流(429)")
+            except Exception as e:
+                last_err = e
+        raise last_err or RuntimeError("Google 全部通道不可用")
 
     @staticmethod
     def detect_lang(text):
@@ -110,14 +144,39 @@ class MyMemory:
     LIMIT_CHARS = 480
 
     @staticmethod
+    def _split_sentences(text, limit=LIMIT_CHARS):
+        """按句末标点切块（v2.0.0）：旧逻辑硬按 480 字符切会把句子拦腰斩断，
+        翻译质量明显受损；现在尽量在句边界分块，超长单句才硬切。"""
+        parts = [p for p in re.split(r"(?<=[.!?。！？；;])\s*", text) if p]
+        chunks, cur = [], ""
+        for p in parts:
+            if len(cur) + len(p) + 1 <= limit or not cur:
+                cur = (cur + " " + p).strip() if cur else p
+                # 单句本身超长：硬切
+                while len(cur) > limit:
+                    chunks.append(cur[:limit])
+                    cur = cur[limit:]
+            else:
+                chunks.append(cur)
+                cur = p[:limit]
+                if len(p) > limit:
+                    rest = p[limit:]
+                    while len(rest) > limit:
+                        chunks.append(rest[:limit])
+                        rest = rest[limit:]
+                    cur = rest
+        if cur:
+            chunks.append(cur)
+        return chunks or [text[:limit]]
+
+    @staticmethod
     def translate(text, source, target):
         if not source or source == "auto":
             source = GoogleFree.detect_lang(text)
         source = WHISPER_LANG_MAP.get(source, source) or "en"
         target = "zh-CN" if target.startswith("zh") else target
-        chunks = [text[i:i + MyMemory.LIMIT_CHARS] for i in range(0, len(text), MyMemory.LIMIT_CHARS)]
         out_parts = []
-        for c in chunks:
+        for c in MyMemory._split_sentences(text):
             url = "https://api.mymemory.translated.net/get"
             params = {"q": c, "langpair": f"{source}|{target}"}
             r = requests.get(url, params=params, headers=HEADERS, timeout=8,
@@ -262,6 +321,7 @@ class TranslateThread(QThread):
             self.status_changed.emit("正在探测可用翻译引擎...")
             self._active_engine = select_engine()
             self.status_changed.emit(f"已选用翻译引擎: {self._active_engine}")
+        app_log.log("translate.engine_selected", engine=self._active_engine, target=self.target)
         while not self._stop:
             try:
                 item = self.queue_in.get(timeout=0.5)
@@ -282,13 +342,24 @@ class TranslateThread(QThread):
             try:
                 translated, used_lang = self._do_translate(text, detected)
             except Exception as e:
-                # 对称降级链（建议2）：google↔mymemory 互为备援，限流/故障自动自愈
-                error = str(e)
+                # 多层降级链（v2.0.0）：google ↔ mymemory 互备，最后落 Argos 离线
+                # （仅当对应方向的离线包已安装时才参与，避免无意义的报错切换）
+                from app import log as app_log
+                app_log.exception("translate.failed", e, engine=self._active_engine)
+                error = friendly_error(e)
                 fallbacks = []
                 if self._active_engine != "mymemory":
                     fallbacks.append("mymemory")
                 if self._active_engine != "google":
                     fallbacks.append("google")
+                if self._active_engine != "argos":
+                    try:
+                        src_for_argos = WHISPER_LANG_MAP.get(detected, "") if detected and detected != "auto" else ""
+                        tgt_for_argos = "zh" if self.target.startswith("zh") else self.target
+                        if src_for_argos and (src_for_argos, tgt_for_argos) in ENGINES["argos"].installed_pairs():
+                            fallbacks.append("argos")
+                    except Exception:
+                        pass
                 for fb in fallbacks:
                     try:
                         self.status_changed.emit(f"{self._active_engine} 失败，切换备援引擎 {fb}...")
@@ -303,5 +374,6 @@ class TranslateThread(QThread):
                         _cache.put(f"{fb}:{self.target}:{text}", (translated, used_lang))
                         break
                     except Exception as e2:
-                        error = str(e2)
+                        error = friendly_error(e2)
+                        app_log.exception("translate.fallback_failed", e2, engine=fb)
             self.result_ready.emit(text, translated, used_engine, detected, error)

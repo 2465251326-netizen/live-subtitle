@@ -27,7 +27,7 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Verify version consistency (tag must match setup.iss)
+      - name: Verify version consistency (tag must match all three files)
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
@@ -37,7 +37,31 @@ jobs:
             Write-Error "setup.iss version does not match tag ${{ github.ref_name }} (expected MyAppVersion `"$tag`")"
             exit 1
           }
-          Write-Host "Version check OK: tag ${{ github.ref_name }} == setup.iss $tag"
+          $cfg = Get-Content app/config.py -Raw
+          if ($cfg -notmatch [regex]::Escape("APP_VERSION = `"$tag`"")) {
+            Write-Error "app/config.py APP_VERSION does not match tag ${{ github.ref_name }} (expected APP_VERSION = `"$tag`")"
+            exit 1
+          }
+          $vi = Get-Content version_info.txt -Raw
+          if ($vi -notmatch [regex]::Escape("'FileVersion', '$tag.0'") -or $vi -notmatch [regex]::Escape("'ProductVersion', '$tag.0'")) {
+            Write-Error "version_info.txt does not match tag ${{ github.ref_name }}"
+            exit 1
+          }
+          Write-Host "Version check OK: tag ${{ github.ref_name }} == setup.iss / config.py / version_info.txt"
+
+      - name: Cache whisper model (small)
+        uses: actions/cache@v4
+        with:
+          path: ~\.live_subtitle\hf
+          key: whisper-small-ct2-v1
+
+      - name: Prefetch whisper model
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -c "import os, pathlib; os.environ.setdefault('HF_HOME', str(pathlib.Path.home() / '.live_subtitle' / 'hf')); from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-small')"
 
       - name: Offline regression tests (no audio device needed)
         env:
@@ -59,9 +83,11 @@ jobs:
           python tests/bench_asr.py small en 1
 
       - name: Build EXE with PyInstaller
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: pyinstaller livesubtitle.spec --noconfirm
 
       - name: Verify EXE starts and stays alive
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $proc = Start-Process -FilePath "dist\LiveSubtitle\LiveSubtitle.exe" -PassThru
@@ -74,6 +100,7 @@ jobs:
           Stop-Process -Id $proc.Id -Force
 
       - name: Build installer with Inno Setup
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -83,6 +110,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Upload installer artifact
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: LiveSubtitle-Setup
@@ -90,6 +118,7 @@ jobs:
           retention-days: 30
 
       - name: Upload green build
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: LiveSubtitle-portable

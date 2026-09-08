@@ -443,7 +443,7 @@ class SettingsDialog(QDialog):
             "tiny": "75MB · 延迟约 2s · 中文易误判，适合纯英文+老电脑",
             "base": "145MB · 延迟约 2.5s · 中文较弱",
             "small": "480MB · 延迟约 3s · 中文良好，推荐 4 核以上 CPU",
-            "medium": "1.5GB · 高精度 · 需较新多核 CPU 或 GPU",
+            "medium": "1.5GB · 高精度 · 需较新多核 CPU 或 GPU（纯 CPU 慢机实时吃力，建议 small）",
             "large-v3-turbo": "约1.6GB · 顶级精度 · 需 GPU 或高配 CPU（约 6s+）",
         }
         # 与模块顶部 MODELS 常量保持同一来源，避免新增模型时漏进下拉（v1.9.2 修复）
@@ -738,6 +738,13 @@ class SettingsDialog(QDialog):
                   clear_btn)
         clear_btn.clicked.connect(self._clear_cache)
 
+        # v2.0.0：升级/跳过过向导的用户可随时重看三步引导
+        wizard_btn = QPushButton("重新运行首次向导")
+        self._row(page, "新手引导",
+                  "重新打开「音频源 → 模型 → 完成」三步向导（不会改动你的现有配置，确认步骤时可保持原样）。",
+                  wizard_btn)
+        wizard_btn.clicked.connect(self._rerun_wizard)
+
         self._section(page, "全局热键")
         self.hotkey_check = QCheckBox()
         self._row(page, "启用全局热键",
@@ -778,6 +785,13 @@ class SettingsDialog(QDialog):
         return page
 
     # ---------- 全局热键 ----------
+
+    def _rerun_wizard(self):
+        """重新打开首启三步向导（默认项即当前配置，一路「下一步」无副作用）。"""
+        from app.ui.first_run import FirstRunWizard
+        dlg = FirstRunWizard(self)
+        dlg.exec()
+        self.load_from_config()
 
     def _on_hotkey_enabled_changed(self, v):
         self._stage("hotkey_enabled", bool(v))
@@ -1535,13 +1549,18 @@ class SettingsDialog(QDialog):
         argos_tgt = "zh" if tgt.startswith("zh") else tgt
         tgt_name = LANGUAGES.get(tgt, argos_tgt)
         self.argos_combo.clear()
-        common = ["en", "ja", "ko", "ru", "fr", "de", "es", "pt", "it", "th", "vi", "ar", "id", "hi"]
+        # v2.0.0：候选源语言从翻译目标列表派生（单一数据源），不再手写副本漏项
         installed = set(ArgosEngine.installed_pairs())
-        for code in common:
-            name = LANGUAGES.get(code, code)
-            if (code, argos_tgt) in installed:
+        seen = set()
+        for code in TARGET_LANGS:
+            argos_src = "zh" if code.startswith("zh") else code
+            if argos_src in seen or argos_src == argos_tgt:
+                continue
+            seen.add(argos_src)
+            name = LANGUAGES.get(code, argos_src)
+            if (argos_src, argos_tgt) in installed:
                 name += "（已安装）"
-            self.argos_combo.addItem(name, code)
+            self.argos_combo.addItem(name, argos_src)
         self.argos_download_button.setText(f"下载所选 → {tgt_name} 语言包")
         if installed:
             self.argos_hint.setText(

@@ -80,8 +80,19 @@ class AsrThread(QThread):
 
     @staticmethod
     def model_cached(model_size: str) -> bool:
+        """缓存完整判定：model.bin 存在且体积达到真实模型量级（>50MB）。
+
+        只查存在性会把 0 字节/半截文件当完整缓存（v1.9.0 用户的
+        NO SUCH FILE 事故根因），这里用体积阈值兜底识别损坏缓存。
+        """
         snap = AsrThread.model_cache_dir(model_size) / "snapshots"
-        return snap.exists() and any(snap.glob("**/model.bin"))
+        for p in snap.glob("**/model.bin"):
+            try:
+                if p.stat().st_size > 50 * 1024 * 1024:
+                    return True
+            except OSError:
+                continue
+        return False
 
     @staticmethod
     def model_size_mb(model_size: str) -> float:
@@ -126,6 +137,7 @@ class AsrThread(QThread):
         if self._model is not None:
             return True
         from app.config import HF_HOME
+        from app import log as app_log
         cached = self.model_cached(self.model_size)
         if not cached:
             # 模型需要联网下载：走 huggingface_hub（只认环境变量），下载前同步代理策略
@@ -139,6 +151,8 @@ class AsrThread(QThread):
         from faster_whisper import WhisperModel
         device = self.device if self.device in ("cpu", "cuda") else "auto"
         compute_type = "int8" if device in ("cpu", "auto") else "float16"
+        import time as _time
+        t0 = _time.perf_counter()
         try:
             self._model = WhisperModel(
                 self.model_size,
@@ -148,6 +162,8 @@ class AsrThread(QThread):
                 # 缓存完整时离线加载：跳过联网校验，避免代理抖动时卡在「正在加载模型」
                 local_files_only=cached,
             )
+            app_log.log("asr.model_loaded", model=self.model_size, device=device,
+                        cached=cached, seconds=round(_time.perf_counter() - t0, 2))
             self._device_used = device
             return True
         except Exception as e:
@@ -159,7 +175,10 @@ class AsrThread(QThread):
                 except Exception:
                     pass
             self._device_used = "cpu"
-            self.error_occurred.emit(f"模型加载失败: {e}")
+            from app.errors import friendly_error
+            from app import log as app_log
+            app_log.exception("asr.model_load_failed", e, model=self.model_size)
+            self.error_occurred.emit(f"模型加载失败：{friendly_error(e)}")
             return False
 
     def run(self):
@@ -193,7 +212,10 @@ class AsrThread(QThread):
             try:
                 self._transcribe(audio)
             except Exception as e:
-                self.status_changed.emit(f"识别异常: {e}")
+                from app.errors import friendly_error
+                from app import log as app_log
+                app_log.exception("asr.transcribe_failed", e)
+                self.status_changed.emit(f"识别异常：{friendly_error(e)}")
 
     def _warmup(self):
         try:

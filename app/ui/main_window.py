@@ -244,7 +244,10 @@ class MainWindow(QMainWindow):
     def _install_global_hotkey(self):
         """安装原生事件过滤器并按当前配置注册热键（进程生命周期内一次过滤器）。"""
         hotkey.install(QApplication.instance(), self.toggle_running)
-        self.apply_hotkey_config()
+        status = self.apply_hotkey_config()
+        # v2.0.0：启动时注册失败不再静默（组合被占用/不支持时用户毫无感知）
+        if status.startswith("✗"):
+            self.tray.showMessage("LiveSubtitle 全局热键", status[2:], QSystemTrayIcon.Warning, 4000)
 
     def apply_hotkey_config(self):
         """按配置注册/注销全局热键；返回给设置页展示的状态文本。"""
@@ -258,7 +261,7 @@ class MainWindow(QMainWindow):
         self._update_tray_hotkey_text(seq if ok else "")
         if ok:
             return f"✓ 全局热键 {seq} 已生效（托盘菜单同步显示）"
-        return f"✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用"
+        return f"✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用，请在「设置-通用」换一个组合"
 
     def _update_tray_hotkey_text(self, seq):
         act = getattr(self, "_tray_toggle_action", None)
@@ -474,6 +477,9 @@ class MainWindow(QMainWindow):
     def start_pipeline(self):
         if self.running:
             return
+        from app import log as app_log
+        app_log.log("pipeline.start", source=c.get("source_type"), model=c.get("asr_model"),
+                    engine=engine, target=c.get("target_lang"))
         self.running = True
         self.toggle_button.setText("停止翻译")
         self.toggle_button.setObjectName("StopButton")
@@ -604,6 +610,8 @@ class MainWindow(QMainWindow):
     def stop_pipeline(self):
         if not self.running:
             return
+        from app import log as app_log
+        app_log.log("pipeline.stop")
         self.running = False
         self.toggle_button.setText("开始翻译")
         self.toggle_button.setObjectName("PrimaryButton")
@@ -637,6 +645,10 @@ class MainWindow(QMainWindow):
         self.update_overlay_status()
 
     def _on_pipeline_error(self, msg):
+        from app.errors import friendly_message
+        from app import log as app_log
+        app_log.log("pipeline.error", detail=str(msg)[:200])
+        msg = friendly_message(str(msg))
         if self.running and ("采集" in msg or "回环" in msg or "音频" in msg or "设备" in msg):
             self.stop_pipeline()
             # stop_pipeline 会把状态重置为"已停止"，错误信息要在其后显示才能被看到

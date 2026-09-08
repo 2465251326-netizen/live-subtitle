@@ -15,6 +15,7 @@ import requests
 
 from app.config import CONFIG_DIR
 from app import net
+from app import log as app_log
 
 PACKS_DIR = CONFIG_DIR / "argos" / "packs"
 
@@ -23,7 +24,8 @@ INDEX_SOURCES = [
     "https://cdn.jsdelivr.net/gh/argosopentech/argospm-index@main/index.json",
 ]
 
-HEADERS = {"User-Agent": "Mozilla/5.0 LiveSubtitle/1.0"}
+# v2.0.0：HTTP 头收敛到 net.py（应用 UA 便于开源索引方统计）
+HEADERS = net.APP_HEADERS
 
 _lock = threading.Lock()
 _translator_cache = {}
@@ -176,6 +178,7 @@ def remove_pack(source, target):
                 _cache_order.remove(key)
             except ValueError:
                 pass
+    app_log.log("argos.pack_removed", pair=f"{source}_{target}", dirs=",".join(removed) or "none")
     return removed
 
 

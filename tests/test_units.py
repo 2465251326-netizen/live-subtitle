@@ -142,6 +142,94 @@ def test_config_has_hotkey_defaults():
     assert DEFAULTS.get("hotkey_sequence") == "Ctrl+Alt+S"
 
 
+# ---------- v2.0.0 可靠性专项 ----------
+
+def test_net_proxies_modes():
+    from app import net
+    net.configure("none")
+    assert net.proxies() == {"http": None, "https": None}, "直连模式应显式屏蔽代理"
+    net.configure("manual", "127.0.0.1:10808")
+    p = net.proxies()
+    assert p["http"] == "http://127.0.0.1:10808" and p["https"] == p["http"], "手动模式应补全 scheme"
+    net.configure("system")
+    p2 = net.proxies()
+    assert p2 is not None and "http" in p2, "system 模式应返回合法结构"
+
+
+def test_net_parse_socks_only():
+    from app.net import _parse_proxy_server
+    url, note = _parse_proxy_server("socks=127.0.0.1:1080")
+    assert url is None and "SOCKS" in note, "仅 SOCKS 代理应提示而非静默直连"
+    url2, note2 = _parse_proxy_server("http=1.2.3.4:8080;https=1.2.3.4:8080")
+    assert url2 == "http://1.2.3.4:8080" and not note2
+    url3, _ = _parse_proxy_server("127.0.0.1:10808")
+    assert url3 == "http://127.0.0.1:10808"
+
+
+def test_friendly_error_mapping():
+    from app.errors import friendly_error, friendly_message
+    out = friendly_error(RuntimeError("onnxruntime error: NO SUCH FILE silero_vad.onnx"))
+    assert "缺失" in out, "缺文件类异常应给出中文结论"
+    assert "限流" in friendly_error(RuntimeError("HTTP 429 Too Many Requests"))
+    assert "代理" in friendly_message("ProxyError: cannot connect")
+    assert friendly_message("一切正常") == "一切正常", "无匹配时中文原文应原样保留"
+
+
+def test_model_cached_rejects_stub():
+    import tempfile
+    import pathlib
+    from app.asr.engine import AsrThread
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    orig = AsrThread.model_cache_dir
+    try:
+        AsrThread.model_cache_dir = staticmethod(lambda s: tmp)
+        stub = tmp / "snapshots" / "abc" / "model.bin"
+        stub.parent.mkdir(parents=True)
+        stub.write_bytes(b"\0" * 1024)
+        assert AsrThread.model_cached("small") is False, "1KB 假 model.bin 不应视为已缓存"
+        with open(stub, "wb") as f:
+            f.truncate(60 * 1024 * 1024)
+        assert AsrThread.model_cached("small") is True, "达到真实模型量级应视为已缓存"
+    finally:
+        AsrThread.model_cache_dir = staticmethod(orig)
+
+
+def test_mymemory_sentence_chunks():
+    from app.translate.translator import MyMemory
+    text = "This is a sentence. " * 40
+    chunks = MyMemory._split_sentences(text)
+    assert len(chunks) >= 2, "长文本应分块"
+    assert all(len(c) <= MyMemory.LIMIT_CHARS for c in chunks), "分块不应超过限额"
+    assert " ".join(text.split()) == " ".join(" ".join(chunks).split()), "分块不应丢字"
+
+
+def test_remove_pack_no_crash():
+    import tempfile
+    import pathlib
+    import json
+    from app.translate import offline_pack as op
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    orig = op.PACKS_DIR
+    try:
+        op.PACKS_DIR = tmp
+        d = tmp / "en_zh"
+        d.mkdir()
+        (d / "metadata.json").write_text(json.dumps({"from_code": "en", "to_code": "zh"}), encoding="utf-8")
+        assert op.remove_pack("en", "zh") == ["en_zh"], "应返回被删目录并正常清理缓存"
+        assert not d.exists()
+        assert op.remove_pack("en", "zh") == [], "重复卸载应安全返回空列表"
+    finally:
+        op.PACKS_DIR = orig
+
+
+def test_version_files_sync():
+    import subprocess
+    import sys
+    script = Path(__file__).resolve().parents[1] / "scripts" / "bump_version.py"
+    r = subprocess.run([sys.executable, str(script), "--check"], capture_output=True, text=True)
+    assert r.returncode == 0, f"三处版本号应一致: {r.stdout} {r.stderr}"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
