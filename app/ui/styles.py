@@ -325,4 +325,57 @@ QLineEdit#SearchBox {
 QLineEdit#SearchBox:focus {
     border-color: #4f8cff;
 }
+QWidget {
+    background-color: #0f1115;
+    color: #e8eaf0;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+QComboBox {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    border-radius: 8px;
+    padding: 6px 10px;
+    color: #e8eaf0;
+    min-height: 20px;
+}
+QComboBox:hover {
+    border-color: #4f8cff;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+QComboBox QAbstractItemView {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    selection-background-color: #2b3a5e;
+    color: #e8eaf0;
+    outline: none;
+}
+QPushButton {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    border-radius: 8px;
+    padding: 6px 14px;
+    color: #dfe3ee;
+}
+QPushButton:hover {
+    background-color: #232936;
+    border-color: #3d4656;
+}
+QPushButton:disabled {
+    color: #5a6172;
+    background-color: #171b23;
+}
+QMessageBox, QToolTip {
+    background-color: #161a22;
+}
+QMessageBox QLabel {
+    color: #e8eaf0;
+    background: transparent;
+}
+QMessageBox QPushButton {
+    min-width: 72px;
+}
 """
