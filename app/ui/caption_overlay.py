@@ -3,7 +3,9 @@ from PySide6.QtGui import (
     QPainter, QPainterPath, QPen, QBrush, QColor, QTextOption,
     QTextLayout,
 )
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QMenu
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
+)
 
 from app.ui.styles import OVERLAY_QSS
 
