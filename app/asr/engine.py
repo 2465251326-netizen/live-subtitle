@@ -81,6 +81,12 @@ class AsrThread(QThread):
             return True
         from app.config import ensure_hf_endpoint_ready
         ensure_hf_endpoint_ready()
+        # 模型下载走 huggingface_hub（只认环境变量），下载前同步代理策略
+        try:
+            from app import net as _net
+            _net.apply_proxy_env()
+        except Exception:
+            pass
         from faster_whisper import WhisperModel
         device = self.device if self.device in ("cpu", "cuda") else "auto"
         compute_type = "int8" if device in ("cpu", "auto") else "float16"

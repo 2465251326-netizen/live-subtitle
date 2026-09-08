@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QCheckBox, QFrame, QGridLayout, QProgressBar, QSpinBox, QSlider,
     QListWidget, QListWidgetItem, QStackedWidget, QWidget, QMessageBox,
-    QScrollArea, QStyle, QStyleOptionSlider,
+    QScrollArea, QStyle, QStyleOptionSlider, QLineEdit,
 )
 
 from app.config import LANGUAGES, TARGET_LANGS
@@ -98,9 +98,22 @@ def _nav_item(text):
     return item
 
 
+class ProxyProbeWorker(QThread):
+    """后台探测 Google 免费翻译通道连通性（避免卡 UI 线程）。"""
+    done = Signal(bool, str)
+
+    def run(self):
+        from app.translate.translator import probe_engine
+        from app import net
+        try:
+            ok = probe_engine("google", timeout=4.0)
+        except Exception:
+            ok = False
+        self.done.emit(bool(ok), net.describe())
+
+
 class SettingsDialog(QDialog):
     settings_saved = Signal()
-
     def __init__(self, main):
         super().__init__(None)
         self.main = main
@@ -300,6 +313,43 @@ class SettingsDialog(QDialog):
                   "支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种。",
                   self.target_combo)
 
+        self._section(page, "网络代理")
+        proxy_hint = QLabel(
+            "「跟随系统」读取 Windows 系统代理（v2rayN / Clash 开启系统代理即可用）。\n"
+            "Google 免费接口国内直连不可达，走代理后翻译质量显著提升。")
+        proxy_hint.setObjectName("SettingDesc")
+        proxy_hint.setWordWrap(True)
+        page._inner_layout.addWidget(proxy_hint)
+
+        self.proxy_combo = QComboBox()
+        self.proxy_combo.addItem("跟随系统代理（推荐）", "system")
+        self.proxy_combo.addItem("手动指定", "manual")
+        self.proxy_combo.addItem("不使用代理（直连）", "none")
+        self._row(page, "代理模式",
+                  "手动指定适合代理软件未开启系统代理、或需要端口转发的场景。",
+                  self.proxy_combo)
+        self.proxy_url_edit = QLineEdit()
+        self.proxy_url_edit.setPlaceholderText("例如 http://127.0.0.1:10808")
+        self.proxy_test_button = QPushButton("测试 Google 通道")
+        self.proxy_test_button.setFixedWidth(140)
+        proxy_row = QHBoxLayout()
+        proxy_row.setSpacing(6)
+        proxy_row.addWidget(self.proxy_url_edit, 1)
+        proxy_row.addWidget(self.proxy_test_button)
+        proxy_wrap = QWidget()
+        proxy_wrap.setLayout(proxy_row)
+        self._row(page, "手动代理地址",
+                  "仅「手动指定」模式需要填写；支持 http/https/socks5（socks5 需安装 pysocks）。",
+                  proxy_wrap)
+        self.proxy_status_label = QLabel("")
+        self.proxy_status_label.setObjectName("SettingDesc")
+        self.proxy_status_label.setWordWrap(True)
+        page._inner_layout.addWidget(self.proxy_status_label)
+
+        self.proxy_combo.currentIndexChanged.connect(self._on_proxy_mode_changed)
+        self.proxy_url_edit.editingFinished.connect(self._on_proxy_url_changed)
+        self.proxy_test_button.clicked.connect(self._test_proxy)
+
         self.argos_section_label = self._section(page, "离线语言包")
         try:
             cleanup_temp_files()
@@ -483,6 +533,39 @@ class SettingsDialog(QDialog):
         self._save_combo("engine", self.engine_combo)
         self._save_combo("target_lang", self.target_combo)
         self._refresh_argos_section()
+
+    # ---------- 网络代理 ----------
+
+    def _on_proxy_mode_changed(self):
+        self._save_combo("proxy_mode", self.proxy_combo)
+        self._update_proxy_manual_enabled()
+
+    def _on_proxy_url_changed(self):
+        url = self.proxy_url_edit.text().strip()
+        if url != (self.c.get("proxy_url") or ""):
+            self._save("proxy_url", url)
+
+    def _update_proxy_manual_enabled(self):
+        manual = self.proxy_combo.currentData() == "manual"
+        self.proxy_url_edit.setEnabled(manual)
+        if not manual and not self.proxy_url_edit.text().strip():
+            self.proxy_url_edit.setPlaceholderText("仅「手动指定」模式需要填写")
+
+    def _test_proxy(self):
+        self.proxy_test_button.setEnabled(False)
+        self.proxy_status_label.setText("正在探测 Google 免费翻译通道（最长 4 秒）...")
+        self._proxy_probe = ProxyProbeWorker()
+        self._proxy_probe.done.connect(self._on_proxy_probe_done)
+        self._proxy_probe.start()
+
+    def _on_proxy_probe_done(self, ok, via):
+        self.proxy_test_button.setEnabled(True)
+        if ok:
+            self.proxy_status_label.setText(f"✓ Google 免费翻译通道可达（当前出口：{via}）")
+        else:
+            self.proxy_status_label.setText(
+                f"✗ Google 通道不可达（当前出口：{via}）。请确认代理软件已开启；"
+                "不影响 MyMemory / Argos 备援通道。")
 
     def _on_overlay_toggle(self, checked):
         self._save("overlay_enabled", bool(checked))
@@ -673,6 +756,9 @@ class SettingsDialog(QDialog):
         set_combo(self.compute_combo, "asr_device")
         set_combo(self.engine_combo, "engine")
         set_combo(self.target_combo, "target_lang")
+        set_combo(self.proxy_combo, "proxy_mode")
+        self.proxy_url_edit.setText(str(c.get("proxy_url") or ""))
+        self._update_proxy_manual_enabled()
         self._refresh_argos_section()
         self.overlay_check.blockSignals(True)
         self.overlay_check.setChecked(bool(c.get("overlay_enabled")))

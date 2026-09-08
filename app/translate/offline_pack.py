@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import requests
 
 from app.config import CONFIG_DIR
+from app import net
 
 PACKS_DIR = CONFIG_DIR / "argos" / "packs"
 
@@ -51,7 +52,7 @@ def fetch_index(timeout=8, use_cache=True):
     last_err = None
     for src in INDEX_SOURCES:
         try:
-            r = requests.get(src, headers=HEADERS, timeout=timeout)
+            r = requests.get(src, headers=HEADERS, timeout=timeout, proxies=net.proxies())
             r.raise_for_status()
             items = r.json()
             packs = []
@@ -158,7 +159,8 @@ MIRROR_RELEASE = (
 
 
 def _download_stream(url, tmp_path, progress_cb=None):
-    with requests.get(url, headers=HEADERS, stream=True, timeout=30) as r:
+    with requests.get(url, headers=HEADERS, stream=True, timeout=30,
+                      proxies=net.proxies()) as r:
         r.raise_for_status()
         total = int(r.headers.get("Content-Length", 0))
         done = 0

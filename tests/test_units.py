@@ -87,6 +87,33 @@ def test_resolve_pack_dir(tmp_path=None):
         op.PACKS_DIR = old
 
 
+def test_proxy_provider_modes():
+    from app import net
+    # 直连模式：显式屏蔽代理来源
+    net.configure("none")
+    assert net.proxies() == {"http": None, "https": None}, "none 模式应显式直连"
+    # 手动模式：自动补 http:// 前缀
+    net.configure("manual", "127.0.0.1:10808")
+    p = net.proxies()
+    assert p["http"] == "http://127.0.0.1:10808" and p["https"] == p["http"], \
+        "手动模式应规范化地址并对 http/https 生效"
+    net.configure("manual", "http://host:7890")
+    assert net.proxies()["https"] == "http://host:7890"
+    # 非法/空 URL 的手动模式回退系统行为，不应抛异常
+    net.configure("manual", "")
+    net.proxies()
+    # 非法模式名归一为 system，不应抛异常
+    net.configure("bogus-mode")
+    net.proxies()
+    net.configure("system")
+
+
+def test_config_has_proxy_defaults():
+    from app.config import DEFAULTS
+    assert DEFAULTS.get("proxy_mode") == "system"
+    assert "proxy_url" in DEFAULTS
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

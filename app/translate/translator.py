@@ -8,6 +8,7 @@ import requests
 from PySide6.QtCore import QThread, Signal
 
 from app.config import CACHE_FILE, WHISPER_LANG_MAP
+from app import net
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -73,7 +74,7 @@ class GoogleFree:
     def translate(text, source, target):
         url = "https://translate.googleapis.com/translate_a/single"
         params = {"client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text}
-        r = requests.get(url, params=params, headers=HEADERS, timeout=8)
+        r = requests.get(url, params=params, headers=HEADERS, timeout=8, proxies=net.proxies())
         if r.status_code == 429:
             raise RuntimeError("Google 接口限流(429)，已自动切换备援引擎")
         r.raise_for_status()
@@ -89,7 +90,7 @@ class GoogleFree:
         try:
             url = "https://translate.googleapis.com/translate_a/single"
             params = {"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": text[:80]}
-            r = requests.get(url, params=params, headers=HEADERS, timeout=6)
+            r = requests.get(url, params=params, headers=HEADERS, timeout=6, proxies=net.proxies())
             data = r.json()
             return data[2] if len(data) > 2 else "en"
         except Exception:
@@ -111,7 +112,8 @@ class MyMemory:
         for c in chunks:
             url = "https://api.mymemory.translated.net/get"
             params = {"q": c, "langpair": f"{source}|{target}"}
-            r = requests.get(url, params=params, headers=HEADERS, timeout=8)
+            r = requests.get(url, params=params, headers=HEADERS, timeout=8,
+                             proxies=net.proxies())
             r.raise_for_status()
             data = r.json()
             out_parts.append(data.get("responseData", {}).get("translatedText", ""))
@@ -163,14 +165,14 @@ def probe_engine(name, timeout=2.5):
             r = requests.get(
                 "https://translate.googleapis.com/translate_a/single",
                 params={"client": "gtx", "sl": "auto", "tl": "zh-CN", "dt": "t", "q": "hi"},
-                headers=HEADERS, timeout=timeout,
+                headers=HEADERS, timeout=timeout, proxies=net.proxies(),
             )
             return r.ok
         if name == "mymemory":
             r = requests.get(
                 "https://api.mymemory.translated.net/get",
                 params={"q": "hi", "langpair": "en|zh-CN"},
-                headers=HEADERS, timeout=timeout,
+                headers=HEADERS, timeout=timeout, proxies=net.proxies(),
             )
             return r.ok and r.json().get("responseData", {}).get("translatedText")
     except Exception:

@@ -35,6 +35,8 @@ DEFAULTS = {
     "translate_zh_from_zh": False,
     "close_action": "ask",             # ask / tray / exit
     "auto_start": False,               # 启动后自动开始翻译
+    "proxy_mode": "system",            # system 跟随系统 | manual 手动 | none 直连
+    "proxy_url": "",                   # manual 模式的代理地址，如 http://127.0.0.1:10808
 }
 
 LANGUAGES = {
@@ -83,7 +85,8 @@ def _start_hf_probe():
     def probe():
         try:
             import requests
-            requests.head("https://huggingface.co", timeout=2.5)
+            from app import net
+            requests.head("https://huggingface.co", timeout=2.5, proxies=net.proxies())
             os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
         except Exception:
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
@@ -106,9 +109,20 @@ class Config:
         os.environ.setdefault("HF_HOME", str(HF_HOME))
         os.environ.setdefault("ARGOS_DATA_HOME", str(ARGOS_DATA))
         os.environ.setdefault("ARGOS_TRANSLATE_PACKAGES_DIR", str(ARGOS_DATA / "packages"))
-        _start_hf_probe()
         self._data = dict(DEFAULTS)
         self.load()
+        self._sync_proxy()
+        _start_hf_probe()
+
+    def _sync_proxy(self):
+        """把代理设置同步给网络层（app.net），并刷新模型下载用的环境变量。"""
+        try:
+            from app import net
+            net.configure(self._data.get("proxy_mode", "system"),
+                          self._data.get("proxy_url", ""))
+            net.apply_proxy_env()
+        except Exception:
+            pass
 
     def load(self):
         if CONFIG_FILE.exists():
@@ -138,3 +152,5 @@ class Config:
     def set(self, key, value):
         self._data[key] = value
         self.save()
+        if key in ("proxy_mode", "proxy_url"):
+            self._sync_proxy()
