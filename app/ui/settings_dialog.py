@@ -530,7 +530,8 @@ class SettingsDialog(QDialog):
         for code in TARGET_LANGS:
             self.target_combo.addItem(LANGUAGES.get(code, code), code)
         self._row(page, "翻译目标语言",
-                  "支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种。",
+                  "在线引擎支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种；"
+                  "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
                   self.target_combo)
 
         self._section(page, "网络代理")
