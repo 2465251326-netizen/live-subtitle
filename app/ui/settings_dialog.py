@@ -1,9 +1,10 @@
 """独立设置窗口（微信 PC 版风格：左侧分类导航 + 右侧内容区，改动即时生效保存）"""
+import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF, QEvent
-from PySide6.QtGui import QColor, QMouseEvent
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF, QEvent, QUrl
+from PySide6.QtGui import QColor, QMouseEvent, QIcon, QDesktopServices
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QCheckBox, QFrame, QGridLayout, QProgressBar, QSpinBox, QSlider,
@@ -11,11 +12,14 @@ from PySide6.QtWidgets import (
     QScrollArea, QStyle, QStyleOptionSlider, QLineEdit, QKeySequenceEdit,
 )
 
-from app.config import LANGUAGES, TARGET_LANGS
+from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION
 from app.translate.translator import ArgosEngine, _cache
 from app.translate.offline_pack import cleanup_temp_files
 from app.audio.capture import list_input_devices, list_output_devices
 from app.ui.styles import SETTING_QSS
+
+REPO_URL = "https://github.com/2465251326-netizen/live-subtitle"
+DOCS_URL = REPO_URL + "#readme"
 
 MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
           ("base", "base · 流畅 · 中文较弱"),
@@ -112,6 +116,52 @@ class ProxyProbeWorker(QThread):
         self.done.emit(bool(ok), net.describe())
 
 
+def _version_tuple(s):
+    """'1.8.1' -> (1, 8, 1)；解析失败返回空元组（视为最旧）。"""
+    try:
+        return tuple(int(x) for x in re.findall(r"\d+", str(s))[:3])
+    except Exception:
+        return ()
+
+
+class _UpdateCheckWorker(QThread):
+    """「版本与更新」页的三类在线检查：软件 / 模型 / 语言包。"""
+    done = Signal(object, str)  # result, error
+
+    def __init__(self, kind, model_size="", parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.model_size = model_size or "small"
+
+    def run(self):
+        import requests
+        from app import net
+        try:
+            if self.kind == "app":
+                r = requests.get(
+                    "https://api.github.com/repos/2465251326-netizen/live-subtitle/releases/latest",
+                    timeout=8, proxies=net.proxies(),
+                    headers={"User-Agent": "LiveSubtitle-UpdateCheck"})
+                if r.status_code == 404:
+                    self.done.emit("", "")
+                    return
+                r.raise_for_status()
+                tag = r.json().get("tag_name", "")
+                self.done.emit(str(tag).lstrip("vV"), "")
+            elif self.kind == "model":
+                url = f"https://huggingface.co/api/models/Systran/faster-whisper-{self.model_size}"
+                r = requests.get(url, timeout=8, proxies=net.proxies(),
+                                 headers={"User-Agent": "LiveSubtitle-UpdateCheck"})
+                r.raise_for_status()
+                self.done.emit(str(r.json().get("sha", ""))[:7], "")
+            elif self.kind == "pack":
+                from app.translate.offline_pack import fetch_index
+                packs = fetch_index(timeout=8)
+                self.done.emit(packs, "")
+        except Exception as e:
+            self.done.emit(None, str(e))
+
+
 class SettingsDialog(QDialog):
     settings_saved = Signal()
     def __init__(self, main):
@@ -145,7 +195,7 @@ class SettingsDialog(QDialog):
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
         self.nav.setFixedWidth(190)
-        for t in ("音频输入", "语音识别", "翻译", "显示", "通用"):
+        for t in ("音频输入", "语音识别", "翻译", "显示", "通用", "版本与更新"):
             self.nav.addItem(_nav_item(t))
         root.addWidget(self.nav)
 
@@ -158,6 +208,7 @@ class SettingsDialog(QDialog):
         self.pages.addWidget(self._page_translate())
         self.pages.addWidget(self._page_display())
         self.pages.addWidget(self._page_general())
+        self.pages.addWidget(self._page_about())
 
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
@@ -527,6 +578,161 @@ class SettingsDialog(QDialog):
             self.hotkey_status.setText(self.main.apply_hotkey_config())
         except Exception:
             pass
+
+    # ---------- 页面：版本与更新 ----------
+
+    def _page_about(self):
+        page = self._page()
+
+        # 品牌区
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        icon_label = QLabel()
+        icon_label.setAlignment(Qt.AlignCenter)
+        try:
+            from app.ui.main_window import icon_path
+            icon_label.setPixmap(QIcon(str(icon_path())).pixmap(64, 64))
+        except Exception:
+            pass
+        name_label = QLabel("LiveSubtitle")
+        name_label.setObjectName("AboutAppName")
+        name_label.setAlignment(Qt.AlignCenter)
+        ver_label = QLabel(f"实时字幕翻译 · v{APP_VERSION}")
+        ver_label.setObjectName("AboutVersion")
+        ver_label.setAlignment(Qt.AlignCenter)
+        brand.addWidget(icon_label)
+        brand.addWidget(name_label)
+        brand.addWidget(ver_label)
+        page._inner_layout.addLayout(brand)
+        page._inner_layout.addSpacing(14)
+
+        self._section(page, "软件更新")
+        self.app_update_title = QLabel(f"当前 v{APP_VERSION}")
+        self.app_update_title.setObjectName("SettingTitle")
+        self.app_update_btn = QPushButton("检查新版本 →")
+        self.app_update_btn.setFixedWidth(130)
+        app_row = self._about_row("软件更新", "检查 GitHub Releases 上的最新版本", self.app_update_btn)
+        page._inner_layout.addLayout(app_row)
+        self.app_update_status = QLabel("")
+        self.app_update_status.setObjectName("SettingDesc")
+        self.app_update_status.setWordWrap(True)
+        page._inner_layout.addWidget(self.app_update_status)
+
+        self._section(page, "识别模型")
+        self.model_update_btn = QPushButton("检查更新 →")
+        self.model_update_btn.setFixedWidth(130)
+        model_row = self._about_row("识别模型", "检查 HuggingFace 上模型是否有新版本", self.model_update_btn)
+        page._inner_layout.addLayout(model_row)
+        self.model_update_status = QLabel("")
+        self.model_update_status.setObjectName("SettingDesc")
+        self.model_update_status.setWordWrap(True)
+        page._inner_layout.addWidget(self.model_update_status)
+
+        self._section(page, "离线语言包")
+        self.pack_update_btn = QPushButton("检查更新 →")
+        self.pack_update_btn.setFixedWidth(130)
+        pack_row = self._about_row("离线语言包", "检查 Argos 语言包索引中的最新版本", self.pack_update_btn)
+        page._inner_layout.addLayout(pack_row)
+        self.pack_update_status = QLabel("")
+        self.pack_update_status.setObjectName("SettingDesc")
+        self.pack_update_status.setWordWrap(True)
+        page._inner_layout.addWidget(self.pack_update_status)
+
+        self._section(page, "链接")
+        self._about_link(page, "更新日志", "查看版本历史与改进内容", DOCS_URL)
+        self._about_link(page, "问题反馈 / 源码仓库", "提交 Issue 或 Fork 贡献", REPO_URL)
+
+        self.app_update_btn.clicked.connect(self._check_app_update)
+        self.model_update_btn.clicked.connect(self._check_model_update)
+        self.pack_update_btn.clicked.connect(self._check_pack_update)
+        page._inner_layout.addStretch()
+        return page
+
+    def _about_row(self, title, desc, widget):
+        box = QVBoxLayout()
+        box.setSpacing(4)
+        h = QHBoxLayout()
+        t = QLabel(title)
+        t.setObjectName("SettingTitle")
+        h.addWidget(t)
+        h.addStretch()
+        h.addWidget(widget)
+        box.addLayout(h)
+        if desc:
+            d = QLabel(desc)
+            d.setObjectName("SettingDesc")
+            d.setWordWrap(True)
+            box.addWidget(d)
+        return box
+
+    def _about_link(self, page, title, desc, url):
+        btn = QPushButton("打开 →")
+        btn.setFixedWidth(130)
+        btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        row = self._about_row(title, desc, btn)
+        page._inner_layout.addLayout(row)
+
+    # ---------- 更新检查 ----------
+
+    def _check_app_update(self):
+        self.app_update_btn.setEnabled(False)
+        self.app_update_status.setText("正在检查 GitHub Releases ...")
+        self._app_check = _UpdateCheckWorker("app")
+        self._app_check.done.connect(self._on_app_check_done)
+        self._app_check.start()
+
+    def _on_app_check_done(self, latest, err):
+        self.app_update_btn.setEnabled(True)
+        if err:
+            self.app_update_status.setText(f"✗ 检查失败：{err}")
+            return
+        if not latest:
+            self.app_update_status.setText("未获取到版本信息。")
+            return
+        if _version_tuple(latest) > _version_tuple(APP_VERSION):
+            self.app_update_status.setText(
+                f"🎉 发现新版本 v{latest}！可到 Releases 页下载安装包更新（保留用户数据）。")
+            QDesktopServices.openUrl(QUrl(f"{REPO_URL}/releases"))
+        else:
+            self.app_update_status.setText(f"✓ 已是最新版本（最新 v{latest}）。")
+
+    def _check_model_update(self):
+        self.model_update_btn.setEnabled(False)
+        self.model_update_status.setText("正在检查 HuggingFace 模型版本 ...")
+        self._model_check = _UpdateCheckWorker("model", self.c.get("asr_model"))
+        self._model_check.done.connect(self._on_model_check_done)
+        self._model_check.start()
+
+    def _on_model_check_done(self, rev, err):
+        self.model_update_btn.setEnabled(True)
+        cur = str(self.c.get("asr_model"))
+        if err:
+            self.model_update_status.setText(f"✗ 检查失败：{err}")
+            return
+        self.model_update_status.setText(
+            f"✓ 当前使用 {cur} 模型，线上最新修订 {rev}。模型随首次下载固定，重装才会更新。")
+
+    def _check_pack_update(self):
+        self.pack_update_btn.setEnabled(False)
+        self.pack_update_status.setText("正在检查 Argos 语言包索引 ...")
+        self._pack_check = _UpdateCheckWorker("pack")
+        self._pack_check.done.connect(self._on_pack_check_done)
+        self._pack_check.start()
+
+    def _on_pack_check_done(self, packs, err):
+        self.pack_update_btn.setEnabled(True)
+        if err:
+            self.pack_update_status.setText(f"✗ 检查失败：{err}")
+            return
+        try:
+            installed = ArgosEngine.installed_pairs()
+        except Exception:
+            installed = []
+        self.pack_update_status.setText(
+            f"✓ 索引可访问，共 {len(packs)} 个可用语言包；本机已安装 {len(installed)} 个"
+            + ("（索引与本地均在线，无需更新）" if installed else "。"))
+
+    # ---------- 页面：版本与更新结束 ----------
 
     def _gl(self, text):
         lab = QLabel(text)

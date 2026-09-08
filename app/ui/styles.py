@@ -294,4 +294,15 @@ QLabel#SavedHint {
     background-color: #12151c;
     border-top: 1px solid #1e2330;
 }
+QLabel#AboutAppName {
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+    background: transparent;
+}
+QLabel#AboutVersion {
+    font-size: 12px;
+    color: #8a91a5;
+    background: transparent;
+}
 """
