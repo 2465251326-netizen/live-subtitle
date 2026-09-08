@@ -2,13 +2,13 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF, QEvent
+from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QCheckBox, QFrame, QGridLayout, QProgressBar, QSpinBox, QSlider,
     QListWidget, QListWidgetItem, QStackedWidget, QWidget, QMessageBox,
-    QScrollArea,
+    QScrollArea, QStyle, QStyleOptionSlider,
 )
 
 from app.config import LANGUAGES, TARGET_LANGS
@@ -21,6 +21,42 @@ MODELS = [("tiny", "tiny · 最快 · 延迟约 2s"),
           ("base", "base · 流畅 · 中文较弱"),
           ("small", "small · 推荐（4 核以上）"),
           ("medium", "medium · 高精度 · 需好 CPU")]
+
+
+class ClickableSlider(QSlider):
+    """点击轨道直接定位的滑条。
+
+    Qt 默认点击轨道是 page step，不符合直觉。这里把左键点击换算为具体值，
+    并合成一次 handle 上的按压事件交给 QSlider 原生逻辑，因此定位之后
+    按住鼠标继续移动仍可正常拖动。仅水平方向启用，垂直方向走默认行为。
+    """
+
+    def mousePressEvent(self, event):
+        if (event.button() == Qt.LeftButton and self.isEnabled()
+                and self.orientation() == Qt.Horizontal
+                and self.maximum() > self.minimum()):
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            groove = self.style().subControlRect(
+                QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+            handle = self.style().subControlRect(
+                QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+            pos = event.position().toPoint()
+            if groove.contains(pos) and not handle.contains(pos):
+                span = max(1, groove.width() - handle.width())
+                x = pos.x() - groove.x() - handle.width() / 2.0
+                ratio = min(1.0, max(0.0, x / span))
+                self.setValue(self.minimum()
+                              + round(ratio * (self.maximum() - self.minimum())))
+                # 把本次按下位置平移到 handle 中心，交给原生逻辑接管后续拖动
+                synthetic = QMouseEvent(
+                    QEvent.MouseButtonPress,
+                    QPointF(handle.center()), event.globalPosition(),
+                    Qt.LeftButton, Qt.LeftButton, event.modifiers())
+                super().mousePressEvent(synthetic)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
 
 class ArgosWorker(QThread):
@@ -332,7 +368,7 @@ class SettingsDialog(QDialog):
         grid.addWidget(self._gl("背景透明度"), 3, 0)
         slider_row = QHBoxLayout()
         slider_row.setSpacing(8)
-        self.bg_opacity_slider = QSlider(Qt.Horizontal)
+        self.bg_opacity_slider = ClickableSlider(Qt.Horizontal)
         self.bg_opacity_slider.setRange(0, 95)
         self.bg_opacity_label = QLabel("78%")
         self.bg_opacity_label.setObjectName("SettingDesc")
