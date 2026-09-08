@@ -37,6 +37,8 @@ DEFAULTS = {
     "auto_start": False,               # 启动后自动开始翻译
     "proxy_mode": "system",            # system 跟随系统 | manual 手动 | none 直连
     "proxy_url": "",                   # manual 模式的代理地址，如 http://127.0.0.1:10808
+    "hotkey_enabled": True,            # 全局热键开关
+    "hotkey_sequence": "Ctrl+Alt+S",   # 全局热键组合（开始/停止翻译）
 }
 
 LANGUAGES = {

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QCheckBox, QFrame, QGridLayout, QProgressBar, QSpinBox, QSlider,
     QListWidget, QListWidgetItem, QStackedWidget, QWidget, QMessageBox,
-    QScrollArea, QStyle, QStyleOptionSlider, QLineEdit,
+    QScrollArea, QStyle, QStyleOptionSlider, QLineEdit, QKeySequenceEdit,
 )
 
 from app.config import LANGUAGES, TARGET_LANGS
@@ -489,12 +489,44 @@ class SettingsDialog(QDialog):
                   clear_btn)
         clear_btn.clicked.connect(self._clear_cache)
 
+        self._section(page, "全局热键")
+        self.hotkey_check = QCheckBox()
+        self._row(page, "启用全局热键",
+                  "看视频/开会时无需切回本窗口，任何界面按热键即可开始/停止翻译。",
+                  self.hotkey_check)
+        self.hotkey_edit = QKeySequenceEdit()
+        self._row(page, "热键组合",
+                  "默认 Ctrl+Alt+S，可改键。需含 Ctrl/Alt/Shift/Win 至少一个修饰键，避免影响正常打字。",
+                  self.hotkey_edit)
+        self.hotkey_status = QLabel("")
+        self.hotkey_status.setObjectName("SettingDesc")
+        self.hotkey_status.setWordWrap(True)
+        page._inner_layout.addWidget(self.hotkey_status)
+
         self.close_combo.currentIndexChanged.connect(
             lambda _i: self._save("close_action", self.close_combo.currentData()))
         self.auto_start_check.toggled.connect(lambda v: self._save("auto_start", bool(v)))
         self.max_history_spin.valueChanged.connect(lambda v: self._save("max_history", int(v)))
+        self.hotkey_check.toggled.connect(self._on_hotkey_enabled_changed)
+        self.hotkey_edit.keySequenceChanged.connect(self._on_hotkey_sequence_changed)
         page._inner_layout.addStretch()
         return page
+
+    # ---------- 全局热键 ----------
+
+    def _on_hotkey_enabled_changed(self, v):
+        self._save("hotkey_enabled", bool(v))
+        self._apply_hotkey()
+
+    def _on_hotkey_sequence_changed(self, seq):
+        self._save("hotkey_sequence", seq.toString())
+        self._apply_hotkey()
+
+    def _apply_hotkey(self):
+        try:
+            self.hotkey_status.setText(self.main.apply_hotkey_config())
+        except Exception:
+            pass
 
     def _gl(self, text):
         lab = QLabel(text)
@@ -786,3 +818,10 @@ class SettingsDialog(QDialog):
         set_combo(self.close_combo, "close_action")
         self.auto_start_check.setChecked(bool(c.get("auto_start")))
         self.max_history_spin.setValue(int(c.get("max_history")))
+        self.hotkey_check.blockSignals(True)
+        self.hotkey_check.setChecked(bool(c.get("hotkey_enabled")))
+        self.hotkey_check.blockSignals(False)
+        self.hotkey_edit.blockSignals(True)
+        self.hotkey_edit.setKeySequence(str(c.get("hotkey_sequence") or "Ctrl+Alt+S"))
+        self.hotkey_edit.blockSignals(False)
+        self._apply_hotkey()

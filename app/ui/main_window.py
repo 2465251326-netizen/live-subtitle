@@ -18,6 +18,7 @@ from app.asr.engine import AsrThread
 from app.translate.translator import TranslateThread
 from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
+from app import hotkey
 
 DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
 
@@ -210,6 +211,7 @@ class MainWindow(QMainWindow):
                                       on_moved=self._on_overlay_moved)
         self.overlay.hide()
         self._build_tray()
+        self._install_global_hotkey()
 
     def _clamp_overlay_pos(self, x, y):
         """把悬浮字幕位置限制在屏幕可用区域内，避免被拖丢/换分辨率后找不回来。"""
@@ -227,6 +229,32 @@ class MainWindow(QMainWindow):
         self.config.set("overlay_x", x)
         self.config.set("overlay_y", y)
 
+    # ---------- 全局热键 ----------
+
+    def _install_global_hotkey(self):
+        """安装原生事件过滤器并按当前配置注册热键（进程生命周期内一次过滤器）。"""
+        hotkey.install(QApplication.instance(), self.toggle_running)
+        self.apply_hotkey_config()
+
+    def apply_hotkey_config(self):
+        """按配置注册/注销全局热键；返回给设置页展示的状态文本。"""
+        c = self.config
+        hotkey.unregister()
+        if not c.get("hotkey_enabled"):
+            self._update_tray_hotkey_text("")
+            return "全局热键已关闭"
+        seq = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
+        ok = hotkey.register(int(self.winId()), seq)
+        self._update_tray_hotkey_text(seq if ok else "")
+        if ok:
+            return f"✓ 全局热键 {seq} 已生效（托盘菜单同步显示）"
+        return f"✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用"
+
+    def _update_tray_hotkey_text(self, seq):
+        act = getattr(self, "_tray_toggle_action", None)
+        if act is not None:
+            act.setText(f"开始 / 停止翻译（{seq}）" if seq else "开始 / 停止翻译")
+
     def _build_tray(self):
         self.tray = QSystemTrayIcon(QIcon(str(icon_path())), self)
         self.tray.setToolTip("LiveSubtitle · 实时字幕翻译")
@@ -239,6 +267,7 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self._quit_app)
         menu.addAction(act_show)
         menu.addAction(act_toggle)
+        self._tray_toggle_action = act_toggle
         menu.addSeparator()
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
@@ -558,6 +587,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if getattr(self, "_quitting", False):
+            hotkey.unregister()
             self._save_settings()
             self.stop_pipeline()
             self.overlay.close()

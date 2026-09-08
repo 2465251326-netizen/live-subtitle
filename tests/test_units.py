@@ -114,6 +114,34 @@ def test_config_has_proxy_defaults():
     assert "proxy_url" in DEFAULTS
 
 
+def test_hotkey_sequence_parsing():
+    from PySide6.QtCore import QCoreApplication
+    if QCoreApplication.instance() is None:
+        QCoreApplication([])  # QKeySequence 需要 Qt 核心实例（offscreen 即可）
+    from app.hotkey import sequence_to_hotkey, MOD_CONTROL, MOD_ALT, MOD_SHIFT, MOD_WIN
+    r = sequence_to_hotkey("Ctrl+Alt+S")
+    assert r is not None, "标准组合应可解析"
+    mods, vk = r
+    assert vk == 0x53, "S 的虚拟键码应为 0x53"
+    assert mods & MOD_CONTROL and mods & MOD_ALT, "应包含 Ctrl+Alt 修饰"
+    r2 = sequence_to_hotkey("Ctrl+Shift+F5")
+    assert r2 is not None
+    m2, vk2 = r2
+    assert vk2 == 0x74, "F5 虚拟键码应为 0x74"
+    assert m2 & MOD_CONTROL and m2 & MOD_SHIFT
+    assert sequence_to_hotkey("S") is None, "无修饰键的单键应拒绝（避免全局劫持打字）"
+    assert sequence_to_hotkey("") is None
+    assert sequence_to_hotkey("Ctrl+Alt+Entrance") is None, "不支持的键应拒绝"
+    r3 = sequence_to_hotkey("Win+Alt+Z")
+    assert r3 is not None and (r3[0] & MOD_WIN), "Win 修饰键应被映射"
+
+
+def test_config_has_hotkey_defaults():
+    from app.config import DEFAULTS
+    assert DEFAULTS.get("hotkey_enabled") is True
+    assert DEFAULTS.get("hotkey_sequence") == "Ctrl+Alt+S"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
