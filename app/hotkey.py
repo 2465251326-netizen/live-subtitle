@@ -50,7 +50,11 @@ def sequence_to_hotkey(seq_str):
     if not seq_str:
         return None
     try:
-        seq = QKeySequence(seq_str)
+        import re
+
+        # QKeySequence 不认识 "Win+" 前缀，Qt 的规范名是 Meta+；归一化常见别名
+        s = re.sub(r"(?i)\b(win|windows|cmd|command)\+", "Meta+", str(seq_str).strip())
+        seq = QKeySequence(s)
         if seq.count() != 1:
             return None
         combo = seq[0]
