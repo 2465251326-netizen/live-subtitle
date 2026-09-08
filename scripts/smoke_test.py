@@ -26,8 +26,14 @@ def build_track():
 
 
 def main():
-    from app.config import ensure_hf_endpoint_ready
+    from app.config import ensure_hf_endpoint_ready, Config
     ensure_hf_endpoint_ready(6.0)
+    # 首次运行向导是模态对话框，会在 processEvents 循环里永久阻塞冒烟测试；
+    # 这里预先标记为已完成，保证无人值守 CI 不被引导页卡住
+    try:
+        Config().set("wizard_done", True)
+    except Exception:
+        pass
     from faster_whisper import WhisperModel
 
     app = QApplication([])
