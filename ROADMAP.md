@@ -148,13 +148,13 @@ requests 不读系统代理，国内用户 Google 免费翻译接口探测必失
 ### 补充 5. ⬜ 低电平警告的"系统静音"盲区
 部分驱动系统静音后 loopback 电平不归零，检测不到无信号。可结合系统静音状态 API（IAudioEndpointVolume）判断，静音即提示。
 
-### 补充 6. ⬜ QSlider 点击轨道直接定位
+### 补充 6. ✅ QSlider 点击轨道直接定位
 实测点击滑条轨道不移动手柄（只能拖动/键盘），违反用户直觉。需子类化 QSlider 实现 mousePressEvent 点击即定位。
 
-### 补充 7. ⬜ 悬浮条拖动落点偏差
+### 补充 7. ✅ 悬浮条拖动落点偏差
 拖动释放记录的坐标与实际窗口位置有小偏差（v1.8.0 已做双写缓解，未根治）。根治需排查 adjustSize 与 move 的时序。
 
-### 补充 8. ⬜ 安装向导全面中文化（用户 2026-09-06 追加：安装导向需要改成中文）
+### 补充 8. ✅ 安装向导全面中文化（用户 2026-09-06 追加：安装导向需要改成中文）
 整个安装向导均为英文，包括：Select Setup Install Mode（安装模式选择）、Select Destination Location（目标目录）、Select Start Menu Folder（开始菜单文件夹）、Select Additional Tasks（附加任务）、Ready to Install（准备安装）、Completing Setup（完成页）及全部按钮（Next / Cancel / Install / Finish / Browse）。
 - **实现要点**：
   - Inno Setup 原生支持多语言：将 `ChineseSimplified.isl`（来自 Inno Setup 官方 unofficial languages 仓库）放入仓库 `installer\` 目录，setup.iss 添加：
@@ -169,10 +169,10 @@ requests 不读系统代理，国内用户 Google 免费翻译接口探测必失
   - **注意**：isl 文件需 UTF-8（Inno 6.3+ 要求带 BOM），否则中文乱码；纳入仓库前先本地跑一遍安装向导逐页核对
 - **验收标准**：全新用户从下载到完成安装，全程无一个英文单词
 
-### 补充 9. ⬜ LICENSE 文件
+### 补充 9. ✅ LICENSE 文件
 README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已声明 MIT）。
 
-### 补充 10. ⬜ CI 自动发版
+### 补充 10. ✅ CI 自动发版
 当前发版为手动下载 artifacts 上传。建议 build.yml 加 tag 触发的 release job（softprops/action-gh-release），推 tag 即自动出双资产，消除手动环节的乱码/中断风险。
 
 ---
