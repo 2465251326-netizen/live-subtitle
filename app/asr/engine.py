@@ -115,14 +115,17 @@ class AsrThread(QThread):
                 compute_type=compute_type,
                 download_root=None,
             )
+            self._device_used = device
             return True
         except Exception as e:
             if device == "auto":
                 try:
                     self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+                    self._device_used = "cpu"
                     return True
                 except Exception:
                     pass
+            self._device_used = "cpu"
             self.error_occurred.emit(f"模型加载失败: {e}")
             return False
 
@@ -131,7 +134,11 @@ class AsrThread(QThread):
         if not self._load_model():
             return
         self.model_ready.emit()
-        self.status_changed.emit("就绪，正在聆听...")
+        dev = getattr(self, "_device_used", "cpu")
+        if dev == "cuda":
+            self.status_changed.emit("就绪，正在聆听...（GPU · CUDA 加速已生效）")
+        else:
+            self.status_changed.emit("就绪，正在聆听...（CPU 模式）")
         self._warmup()
         while not self._stop:
             try:

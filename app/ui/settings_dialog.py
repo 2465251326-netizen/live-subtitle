@@ -142,6 +142,27 @@ class _StorageMigrateWorker(QThread):
             self.fail.emit(str(e))
 
 
+class _CudaInstallWorker(QThread):
+    """后台安装 CUDA 12.1 版 PyTorch（仅源码运行模式提供）。"""
+    done = Signal(bool, str)
+
+    def run(self):
+        try:
+            import subprocess
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "torch",
+                 "--index-url", "https://download.pytorch.org/whl/cu121"],
+                capture_output=True, text=True, timeout=3600,
+                encoding="utf-8", errors="replace")
+            if r.returncode == 0:
+                self.done.emit(True, "")
+            else:
+                tail = (r.stderr or r.stdout or "")[-400:]
+                self.done.emit(False, tail)
+        except Exception as e:
+            self.done.emit(False, str(e))
+
+
 def _version_tuple(s):
     """'1.8.1' -> (1, 8, 1)；解析失败返回空元组（视为最旧）。"""
     try:
@@ -397,6 +418,12 @@ class SettingsDialog(QDialog):
         self._row(page, "计算方式",
                   "有 NVIDIA 显卡并配置 CUDA 环境时选「自动」可用 GPU 加速；普通电脑保持 CPU 模式即可实时。",
                   self.compute_combo)
+        self.gpu_check_button = QPushButton("检测 GPU 环境")
+        self.gpu_check_button.setFixedWidth(140)
+        self.gpu_check_button.clicked.connect(self._show_gpu_guidance)
+        self._row(page, "GPU / CUDA 配置",
+                  "一键检测显卡、驱动与 CUDA 可用性，附配置教程与注意事项。",
+                  self.gpu_check_button)
         self.hallucination_check = QCheckBox()
         self._row(page, "幻觉抑制",
                   "自动丢弃音乐/噪声段的胡言乱语字幕（推荐开启；若发现正常语音被误丢可关闭）。",
@@ -817,7 +844,84 @@ class SettingsDialog(QDialog):
         remove_btn.clicked.connect(do_remove)
         dlg.exec()
 
-    # ---------- 页面：版本与更新 ----------
+    # ---------- GPU / CUDA 引导（建议4） ----------
+
+    def _show_gpu_guidance(self):
+        from app import gpu as gpu_mod
+        info = gpu_mod.detect()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("GPU / CUDA 环境检测")
+        dlg.resize(620, 480)
+        v = QVBoxLayout(dlg)
+        title = QLabel("检测结果")
+        title.setObjectName("SettingTitle")
+        v.addWidget(title)
+        summary = QLabel(
+            f"NVIDIA 显卡：{info['nvidia_gpu'] or '未检测到'}\n"
+            f"驱动版本：{info['driver'] or '—'}\n"
+            f"CUDA 可用设备数：{info['cuda_devices']}\n"
+            f"运行形态：{'打包版（内置 CPU 推理）' if info['frozen'] else '源码运行'}")
+        summary.setObjectName("SettingDesc")
+        summary.setWordWrap(True)
+        v.addWidget(summary)
+        v.addWidget(self._sep())
+        t = QLabel("配置教程与注意事项")
+        t.setObjectName("SettingTitle")
+        v.addWidget(t)
+        body = QLabel(gpu_mod.guidance_text(info))
+        body.setObjectName("SettingDesc")
+        body.setWordWrap(True)
+        v.addWidget(body, 1)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        if not info["frozen"] and info["nvidia_gpu"] and info["cuda_devices"] == 0:
+            install_btn = QPushButton("一键安装 CUDA 版 PyTorch")
+            install_btn.setObjectName("PrimaryButton")
+            install_btn.clicked.connect(lambda: self._install_cuda_torch(dlg, install_btn))
+            btn_row.addWidget(install_btn)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+        v.addLayout(btn_row)
+        dlg.exec()
+
+    def _sep(self):
+        sep = QFrame()
+        sep.setObjectName("SettingSep")
+        sep.setFixedHeight(1)
+        return sep
+
+    def _install_cuda_torch(self, parent_dlg, btn):
+        """仅源码模式提供：后台安装 CUDA 12.1 版 PyTorch（提供 cuDNN/cuBLAS）。"""
+        box = QMessageBox(self)
+        box.setWindowTitle("确认安装")
+        box.setText("将从 PyTorch 官方源下载并安装 CUDA 12.1 版 PyTorch（约 2GB+）。\n"
+                    "安装期间请保持网络与电源稳定，完成后需重启本程序生效。")
+        b_go = box.addButton("开始安装", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() != b_go:
+            return
+        btn.setEnabled(False)
+        btn.setText("正在安装…")
+        self._cuda_worker = _CudaInstallWorker()
+        self._cuda_worker.done.connect(lambda ok, msg, b=btn: self._on_cuda_done(ok, msg, b))
+        self._cuda_worker.start()
+
+    def _on_cuda_done(self, ok, msg, btn):
+        btn.setEnabled(True)
+        btn.setText("一键安装 CUDA 版 PyTorch")
+        if ok:
+            QMessageBox.information(self, "安装完成",
+                                    "CUDA 版 PyTorch 已安装。\n请重启 LiveSubtitle，"
+                                    "然后在「计算方式」选择「自动（优先 GPU）」。")
+        else:
+            QMessageBox.warning(self, "安装失败",
+                                f"{msg}\n\n可稍后重试，或手动执行：\n"
+                                "pip install torch --index-url "
+                                "https://download.pytorch.org/whl/cu121")
+
+    # ---------- GPU / CUDA 引导结束 ----------
 
     def _page_about(self):
         page = self._page()
