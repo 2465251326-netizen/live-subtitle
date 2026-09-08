@@ -314,4 +314,15 @@ QLabel#DirtyHint {
     color: #8a91a5;
     background: transparent;
 }
+QLineEdit#SearchBox {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    border-radius: 10px;
+    padding: 4px 10px;
+    color: #e8eaf0;
+    font-size: 12px;
+}
+QLineEdit#SearchBox:focus {
+    border-color: #4f8cff;
+}
 """
