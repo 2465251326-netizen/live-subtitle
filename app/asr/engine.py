@@ -163,8 +163,14 @@ class AsrThread(QThread):
             return False
 
     def run(self):
-        self.status_changed.emit("正在加载语音识别模型（首次运行会自动下载）...")
+        if self.model_cached(self.model_size):
+            self.status_changed.emit(f"正在加载 {self.model_size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...")
+        else:
+            self.status_changed.emit(f"正在准备 {self.model_size} 模型（首次运行会自动下载，见状态栏进度）...")
         if not self._load_model():
+            return
+        if self._stop:
+            # 加载期间用户已按停止：直接退出，不再报“就绪”
             return
         self.model_ready.emit()
         dev = getattr(self, "_device_used", "cpu")

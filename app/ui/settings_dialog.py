@@ -444,11 +444,10 @@ class SettingsDialog(QDialog):
             "base": "145MB · 延迟约 2.5s · 中文较弱",
             "small": "480MB · 延迟约 3s · 中文良好，推荐 4 核以上 CPU",
             "medium": "1.5GB · 高精度 · 需较新多核 CPU 或 GPU",
+            "large-v3-turbo": "约1.6GB · 顶级精度 · 需 GPU 或高配 CPU（约 6s+）",
         }
-        for code, label in [("tiny", "tiny · 最快 · 延迟约 2s"),
-                            ("base", "base · 流畅 · 中文较弱"),
-                            ("small", "small · 推荐（4 核以上）"),
-                            ("medium", "medium · 高精度 · 需好 CPU")]:
+        # 与模块顶部 MODELS 常量保持同一来源，避免新增模型时漏进下拉（v1.9.2 修复）
+        for code, label in MODELS:
             self.model_combo.addItem(label, code)
             self.model_combo.setItemData(self.model_combo.count() - 1, tips[code], Qt.ToolTipRole)
         model_row = QHBoxLayout()
