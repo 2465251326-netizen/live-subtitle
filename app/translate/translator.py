@@ -88,21 +88,29 @@ class GoogleFree:
 
     @staticmethod
     def _parse(data):
-        """兼容两种响应结构，返回 (译文, 检测语言)；都解析不了抛 ValueError。"""
-        # /translate_a/single：[[[译文, 原文, ...], ...], ..., 检测语言, ...]
-        try:
-            parts = data[0] or []
-            out = "".join(p[0] for p in parts if p and p[0])
-            if out:
-                return out, (data[2] if len(data) > 2 else None)
-        except Exception:
-            pass
-        # clients5 /translate_a/t：[[译文, 检测语言], ...]
+        """兼容两种响应结构，返回 (译文, 检测语言)；都解析不了抛 ValueError。
+
+        - /translate_a/single：[[[译文, 原文, ...], ...], None, "en", ...]
+          （data[0] 的元素是列表）
+        - clients5 /translate_a/t：[[译文, 检测语言], ...]
+          （data[0] 的元素是字符串；可能外面多包一层）
+        结构判错直接抛 ValueError 换下一通道——绝不能把字符串误当段
+        列表逐字符拼接出乱译（本地单测实测暴露）。
+        """
+        if not isinstance(data, list) or not data:
+            raise ValueError("Google 响应为空")
         first = data[0]
         if isinstance(first, list) and first and isinstance(first[0], list):
-            first = first[0]
-        if isinstance(first, list) and first and isinstance(first[0], str):
-            return first[0], (first[1] if len(first) > 1 else None)
+            # single 结构：段列表
+            out = "".join(seg[0] for seg in first if seg and seg[0])
+            if not out:
+                raise ValueError("译文为空")
+            return out, (data[2] if len(data) > 2 and isinstance(data[2], str) else None)
+        rows = first
+        if isinstance(rows, list) and rows and isinstance(rows[0], list):
+            rows = rows[0]  # clients5 可能多包一层
+        if isinstance(rows, list) and rows and isinstance(rows[0], str):
+            return rows[0], (rows[1] if len(rows) > 1 and isinstance(rows[1], str) else None)
         raise ValueError("Google 响应结构无法解析")
 
     @classmethod
@@ -344,7 +352,8 @@ class TranslateThread(QThread):
             except Exception as e:
                 # 多层降级链（v2.0.0）：google ↔ mymemory 互备，最后落 Argos 离线
                 # （仅当对应方向的离线包已安装时才参与，避免无意义的报错切换）
-                from app import log as app_log
+                # 注意：app_log 用模块顶部导入；此处若再局部 import 会把整个
+                # run() 作用域里的 app_log 变成局部变量（UnboundLocalError，v2.0.0 实测）
                 app_log.exception("translate.failed", e, engine=self._active_engine)
                 error = friendly_error(e)
                 fallbacks = []
