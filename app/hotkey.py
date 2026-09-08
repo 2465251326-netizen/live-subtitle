@@ -80,7 +80,7 @@ class _HotkeyFilter(QAbstractNativeEventFilter):
             et = bytes(eventType)
             if et == b"windows_generic_MSG":
                 msg = wintypes.MSG.from_address(int(message))
-                if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
+                if int(msg.message) == WM_HOTKEY and int(msg.wParam or 0) == HOTKEY_ID:
                     cb = _callback
                     if cb is not None:
                         cb()
