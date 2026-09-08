@@ -266,16 +266,26 @@ class TranslateThread(QThread):
             try:
                 translated, used_lang = self._do_translate(text, detected)
             except Exception as e:
+                # 对称降级链（建议2）：google↔mymemory 互为备援，限流/故障自动自愈
                 error = str(e)
+                fallbacks = []
                 if self._active_engine != "mymemory":
+                    fallbacks.append("mymemory")
+                if self._active_engine != "google":
+                    fallbacks.append("google")
+                for fb in fallbacks:
                     try:
-                        self.status_changed.emit(f"{self._active_engine} 失败，切换备援引擎...")
-                        translated, used_lang = MyMemory.translate(text, detected, self.target)
-                        used_engine = "mymemory"
-                        self._active_engine = "mymemory"
-                        self.status_changed.emit("本次会话已固定使用备援引擎 MyMemory")
+                        self.status_changed.emit(f"{self._active_engine} 失败，切换备援引擎 {fb}...")
+                        src = None
+                        if fb != "google" and detected and detected != "auto":
+                            src = WHISPER_LANG_MAP.get(detected, detected)
+                        translated, used_lang = ENGINES[fb].translate(text, src, self.target)
+                        used_engine = fb
+                        self._active_engine = fb
+                        self.status_changed.emit(f"本次会话已固定使用备援引擎 {fb}")
                         error = ""
-                        _cache.put(f"mymemory:{self.target}:{text}", (translated, used_lang))
+                        _cache.put(f"{fb}:{self.target}:{text}", (translated, used_lang))
+                        break
                     except Exception as e2:
                         error = str(e2)
             self.result_ready.emit(text, translated, used_engine, detected, error)

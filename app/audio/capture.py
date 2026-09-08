@@ -87,6 +87,22 @@ class Segmenter:
         self.in_speech = False
         self.silence_run = 0.0
         self.speech_run = 0.0
+        # 自适应切句（建议2）：按语速在 0.30-0.60s 间动态调整静音判停
+        self.silence_end = SILENCE_END_S
+
+    def _adapt_silence_end(self, spoken, buffered):
+        """按刚完成段的语速（有声占比）调整判停等待。
+
+        快语速（新闻/辩论，占比高）→ 缩短等待，字幕更跟手；
+        慢语速/停顿多 → 放宽等待，避免把一句话切碎。
+        """
+        if buffered <= 0.05:
+            return
+        density = spoken / buffered
+        if density > 0.80:
+            self.silence_end = max(0.30, self.silence_end - 0.03)
+        elif density < 0.35:
+            self.silence_end = min(0.60, self.silence_end + 0.03)
 
     def _rms(self, chunk: np.ndarray) -> float:
         if chunk.size == 0:
@@ -119,21 +135,23 @@ class Segmenter:
             if self.in_speech:
                 self.buffer.append(chunk)
                 self.buffer_len += duration
-                if self.silence_run >= SILENCE_END_S:
+                if self.silence_run >= self.silence_end:
                     return self._flush()
-            elif self.buffer and self.silence_run > SILENCE_END_S:
+            elif self.buffer and self.silence_run > self.silence_end:
                 self._reset()
         return None
 
     def _flush(self):
         audio = np.concatenate(self.buffer) if self.buffer else np.zeros(0, dtype=np.float32)
         spoken = self.speech_len
+        buffered = self.buffer_len
         self._reset()
         if spoken < MIN_SPEECH_S:
             return None
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         if peak < 0.002:
             return None
+        self._adapt_silence_end(spoken, buffered)
         return audio
 
     def _reset(self):
