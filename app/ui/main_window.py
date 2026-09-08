@@ -478,8 +478,9 @@ class MainWindow(QMainWindow):
         if self.running:
             return
         from app import log as app_log
-        app_log.log("pipeline.start", source=c.get("source_type"), model=c.get("asr_model"),
-                    engine=engine, target=c.get("target_lang"))
+        app_log.log("pipeline.start", source=self.config.get("source_type"),
+                    model=self.config.get("asr_model"), engine=self.config.get("engine"),
+                    target=self.config.get("target_lang"))
         self.running = True
         self.toggle_button.setText("停止翻译")
         self.toggle_button.setObjectName("StopButton")
