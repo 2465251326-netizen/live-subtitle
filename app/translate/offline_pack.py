@@ -172,11 +172,6 @@ def remove_pack(source, target):
         stale = [k for k in _translator_cache if k[0] == source]
         for key in stale:
             _translator_cache.pop(key, None)
-        try:
-            _cache_order.remove(key)
-        except ValueError:
-            pass
-        for key in stale:
             try:
                 _cache_order.remove(key)
             except ValueError:

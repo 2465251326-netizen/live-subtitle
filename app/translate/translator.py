@@ -79,7 +79,9 @@ class GoogleFree:
     @staticmethod
     def translate(text, source, target):
         url = "https://translate.googleapis.com/translate_a/single"
-        params = {"client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text}
+        # client=dict-chrome-ex：2026-09 起 gtx 客户端被 Google 大面积 429 限流
+        # （无论出口 IP），dict-chrome-ex 同端点同响应结构、实测可用且更快
+        params = {"client": "dict-chrome-ex", "sl": source or "auto", "tl": target, "dt": "t", "q": text}
         r = requests.get(url, params=params, headers=HEADERS, timeout=8, proxies=net.proxies())
         if r.status_code == 429:
             raise RuntimeError("Google 接口限流(429)，已自动切换备援引擎")
@@ -95,7 +97,7 @@ class GoogleFree:
     def detect_lang(text):
         try:
             url = "https://translate.googleapis.com/translate_a/single"
-            params = {"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": text[:80]}
+            params = {"client": "dict-chrome-ex", "sl": "auto", "tl": "en", "dt": "t", "q": text[:80]}
             r = requests.get(url, params=params, headers=HEADERS, timeout=6, proxies=net.proxies())
             data = r.json()
             return data[2] if len(data) > 2 else "en"
@@ -166,29 +168,43 @@ PROBE_ORDER = ("google", "mymemory")
 
 
 def probe_engine(name, timeout=2.5):
+    """探测引擎连通性，返回 (ok, 详情)。
+
+    详情文本用于设置页「测试连通性」的可读诊断：把「连不上代理」、
+    「代理通了但被 Google 限流」等不同故障区分开（v1.9.4）。
+    """
     try:
         if name == "google":
+            t0 = time.time()
             r = requests.get(
                 "https://translate.googleapis.com/translate_a/single",
-                params={"client": "gtx", "sl": "auto", "tl": "zh-CN", "dt": "t", "q": "hi"},
+                params={"client": "dict-chrome-ex", "sl": "auto", "tl": "zh-CN", "dt": "t", "q": "hi"},
                 headers=HEADERS, timeout=timeout, proxies=net.proxies(),
             )
-            return r.ok
+            ms = int((time.time() - t0) * 1000)
+            if r.status_code == 429:
+                return False, "HTTP 429：出口 IP 被 Google 限流，请更换代理节点（期间自动使用备援引擎）"
+            if r.ok:
+                return True, f"HTTP 200（{ms}ms）"
+            return False, f"HTTP {r.status_code}"
         if name == "mymemory":
             r = requests.get(
                 "https://api.mymemory.translated.net/get",
                 params={"q": "hi", "langpair": "en|zh-CN"},
                 headers=HEADERS, timeout=timeout, proxies=net.proxies(),
             )
-            return r.ok and r.json().get("responseData", {}).get("translatedText")
-    except Exception:
-        return False
-    return False
+            if r.ok and r.json().get("responseData", {}).get("translatedText"):
+                return True, "OK"
+            return False, f"HTTP {r.status_code}（响应异常）"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:80]}"
+    return False, "未知引擎"
 
 
 def select_engine(timeout=2.5):
     for name in PROBE_ORDER:
-        if probe_engine(name, timeout):
+        ok, _detail = probe_engine(name, timeout)
+        if ok:
             return name
     return "mymemory"
 

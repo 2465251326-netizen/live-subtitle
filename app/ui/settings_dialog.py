@@ -117,10 +117,10 @@ class ProxyProbeWorker(QThread):
         from app.translate.translator import probe_engine
         from app import net
         try:
-            ok = probe_engine("google", timeout=4.0)
-        except Exception:
-            ok = False
-        self.done.emit(bool(ok), net.describe())
+            ok, detail = probe_engine("google", timeout=4.0)
+        except Exception as e:
+            ok, detail = False, str(e)[:120]
+        self.done.emit(bool(ok), detail)
 
 
 class _StorageMigrateWorker(QThread):
@@ -1390,8 +1390,18 @@ class SettingsDialog(QDialog):
     def _update_proxy_manual_enabled(self):
         manual = self.proxy_combo.currentData() == "manual"
         self.proxy_url_edit.setEnabled(manual)
-        if not manual and not self.proxy_url_edit.text().strip():
-            self.proxy_url_edit.setPlaceholderText("仅「手动指定」模式需要填写")
+        if not self.proxy_url_edit.text().strip():
+            if manual:
+                try:
+                    from app import net as _net
+                    sys_url = _net.system_proxy_url()
+                except Exception:
+                    sys_url = None
+                self.proxy_url_edit.setPlaceholderText(
+                    f"如 http://127.0.0.1:10808（检测到系统代理：{sys_url}）"
+                    if sys_url else "如 http://127.0.0.1:10808")
+            else:
+                self.proxy_url_edit.setPlaceholderText("仅「手动指定」模式需要填写")
 
     def _test_proxy(self):
         self.proxy_test_button.setEnabled(False)
@@ -1400,13 +1410,15 @@ class SettingsDialog(QDialog):
         self._proxy_probe.done.connect(self._on_proxy_probe_done)
         self._proxy_probe.start()
 
-    def _on_proxy_probe_done(self, ok, via):
+    def _on_proxy_probe_done(self, ok, detail):
+        from app import net
         self.proxy_test_button.setEnabled(True)
         if ok:
-            self.proxy_status_label.setText(f"✓ Google 免费翻译通道可达（当前出口：{via}）")
+            self.proxy_status_label.setText(
+                f"✓ Google 免费翻译通道可达（{detail} · 出口：{net.describe()}）")
         else:
             self.proxy_status_label.setText(
-                f"✗ Google 通道不可达（当前出口：{via}）。请确认代理软件已开启；"
+                f"✗ Google 通道不可达（{detail} · 出口：{net.describe()}）。"
                 "不影响 MyMemory / Argos 备援通道。")
 
     def _on_overlay_toggle(self, checked):

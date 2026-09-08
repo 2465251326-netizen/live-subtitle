@@ -456,10 +456,20 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "导出字幕", f"已导出 {len(cards)} 条字幕到：\n{path}")
 
     def toggle_running(self):
-        if self.running:
+        was_running = self.running
+        if was_running:
             self.stop_pipeline()
         else:
             self.start_pipeline()
+        # 热键/托盘启动时主窗口往往隐藏在托盘、悬浮条也可能关闭，
+        # 状态变化必须用系统气泡显式告知，否则用户感知为"无响应"（v1.9.4）
+        if not self.isVisible():
+            tray = getattr(self, "tray", None)
+            if tray is not None:
+                tray.showMessage(
+                    "LiveSubtitle",
+                    "已停止翻译" if was_running else "已开始翻译（首次使用会先下载模型）",
+                    QSystemTrayIcon.Information, 2000)
 
     def start_pipeline(self):
         if self.running:
@@ -617,7 +627,9 @@ class MainWindow(QMainWindow):
             threads[0].wait(2000)
         for t in threads[1:]:
             if t:
-                t.wait(15000)
+                # 不在 GUI 线程长等（模型加载中停止曾最长冻界面 15s）：
+                # 信号已断开，线程收尾放后台自行完成（v1.9.4）
+                t.wait(3000)
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
