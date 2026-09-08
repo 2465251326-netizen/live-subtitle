@@ -222,6 +222,16 @@ def test_remove_pack_no_crash():
         op.PACKS_DIR = orig
 
 
+def test_google_parse_formats():
+    from app.translate.translator import GoogleFree
+    # /translate_a/single（dict-chrome-ex / gtx）结构
+    out, det = GoogleFree._parse([[["你好", "hi", None, None, 10]], None, "en"])
+    assert out == "你好" and det == "en"
+    # clients5 /translate_a/t 结构
+    out2, det2 = GoogleFree._parse([["你好", "en"]])
+    assert out2 == "你好" and det2 == "en"
+
+
 def test_version_files_sync():
     import subprocess
     import sys

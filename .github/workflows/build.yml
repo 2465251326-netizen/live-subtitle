@@ -50,13 +50,14 @@ jobs:
           Write-Host "Version check OK: tag ${{ github.ref_name }} == setup.iss / config.py / version_info.txt"
 
       - name: Cache whisper model (small)
+        id: modelcache
         uses: actions/cache@v4
         with:
           path: ~\.live_subtitle\hf
           key: whisper-small-ct2-v1
 
       - name: Prefetch whisper model
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.modelcache.outputs.cache-hit != 'true'
         shell: bash
         env:
           PYTHONIOENCODING: utf-8
