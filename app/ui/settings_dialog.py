@@ -1682,7 +1682,7 @@ class SettingsDialog(QDialog):
             set_combo(self.asr_lang_combo, "asr_language")
             set_combo(self.compute_combo, "asr_device")
             self.hallucination_check.setChecked(bool(c.get("hallucination_filter")))
-            self.silero_check.setChecked(bool(c.get("silero_vad", True)))
+            self.silero_check.setChecked(bool(c.get("silero_vad")))
             self.mishear_edit.setPlainText(self._mishear_to_text(c.get("mishear_map")))
             set_combo(self.engine_combo, "engine")
             set_combo(self.target_combo, "target_lang")

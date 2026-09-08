@@ -488,7 +488,7 @@ class MainWindow(QMainWindow):
             c.get("asr_language"),
             self,
             hallucination_filter=bool(c.get("hallucination_filter")),
-            silero_vad=bool(c.get("silero_vad", True)),
+            silero_vad=bool(c.get("silero_vad")),
             mishear_map=dict(c.get("mishear_map") or {}),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
