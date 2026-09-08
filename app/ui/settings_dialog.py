@@ -1,4 +1,8 @@
-"""独立设置窗口（微信 PC 版风格：左侧分类导航 + 右侧内容区，改动即时生效保存）"""
+"""独立设置窗口（微信 PC 版风格：左侧分类导航 + 右侧内容区）
+
+「保存并应用」模式：改动先暂存（dirty tracking），底部操作栏
+「保存并应用」统一落盘并按层生效——悬浮字幕样式实时预览；
+管线类设置（模型/引擎/音频源）保存后自动重启管线。"""
 import re
 import sys
 from pathlib import Path
@@ -12,7 +16,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QStyle, QStyleOptionSlider, QLineEdit, QKeySequenceEdit,
 )
 
-from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION
+from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION, DEFAULTS
 from app.translate.translator import ArgosEngine, _cache
 from app.translate.offline_pack import cleanup_temp_files
 from app.audio.capture import list_input_devices, list_output_devices
@@ -164,10 +168,13 @@ class _UpdateCheckWorker(QThread):
 
 class SettingsDialog(QDialog):
     settings_saved = Signal()
+
     def __init__(self, main):
         super().__init__(None)
         self.main = main
         self.c = main.config
+        self._staged = {}     # 待应用的改动 key -> value
+        self._loading = False  # 界面重绘期间挂起暂存记录
         self.setWindowTitle("设置 · LiveSubtitle")
         self.setModal(False)
         self.resize(860, 580)
@@ -184,13 +191,35 @@ class SettingsDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addWidget(central, 1)
-        # 自动保存指示：本产品设置即改即生效，没有确定按钮；
-        # 用这个标签告诉用户「改动已落盘」，消除不确定感
-        self.saved_label = QLabel("✓ 设置已自动保存")
-        self.saved_label.setObjectName("SavedHint")
-        self.saved_label.setAlignment(Qt.AlignCenter)
-        self.saved_label.hide()
-        outer.addWidget(self.saved_label)
+
+        # 底部操作栏：保存并应用模式的核心
+        bar = QFrame()
+        bar.setObjectName("ActionBar")
+        bar.setFixedHeight(56)
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(18, 8, 18, 8)
+        self.dirty_hint = QLabel("所有改动已保存")
+        self.dirty_hint.setObjectName("DirtyHint")
+        bar_layout.addWidget(self.dirty_hint)
+        bar_layout.addStretch()
+        self.reset_button = QPushButton("恢复默认")
+        self.reset_button.setObjectName("GhostButton")
+        self.reset_button.setCursor(Qt.PointingHandCursor)
+        self.reset_button.clicked.connect(self._reset_defaults)
+        bar_layout.addWidget(self.reset_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("GhostButton")
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self._discard_staged)
+        bar_layout.addWidget(self.cancel_button)
+        self.apply_button = QPushButton("保存并应用")
+        self.apply_button.setObjectName("PrimaryButton")
+        self.apply_button.setCursor(Qt.PointingHandCursor)
+        self.apply_button.setEnabled(False)
+        self.apply_button.clicked.connect(self._apply_staged)
+        bar_layout.addWidget(self.apply_button)
+        outer.addWidget(bar)
 
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
@@ -286,7 +315,7 @@ class SettingsDialog(QDialog):
         wrap.setLayout(device_row)
         # 只连接一次；_load_devices 会被反复调用，在其中连接会累积重复信号
         self.device_combo.currentIndexChanged.connect(
-            lambda _i: self._save_combo("device_index", self.device_combo))
+            lambda _i: self._stage_combo("device_index", self.device_combo))
         self._row(page, "输入设备",
                   "选择具体设备；更换耳机等设备后点「刷新」重新加载。蓝牙耳机的部分虚拟输出不支持抓取系统声音。",
                   wrap)
@@ -340,7 +369,7 @@ class SettingsDialog(QDialog):
 
         for w, key in ((self.model_combo, "asr_model"), (self.asr_lang_combo, "asr_language"),
                        (self.compute_combo, "asr_device")):
-            w.currentIndexChanged.connect(lambda _i, w=w, k=key: self._save_combo(k, w))
+            w.currentIndexChanged.connect(lambda _i, w=w, k=key: self._stage_combo(k, w))
         page._inner_layout.addStretch()
         return page
 
@@ -492,7 +521,7 @@ class SettingsDialog(QDialog):
         page._inner_layout.addLayout(grid)
 
         self.overlay_check.toggled.connect(self._on_overlay_toggle)
-        self.show_source_check.toggled.connect(lambda v: self._save("show_source", bool(v)))
+        self.show_source_check.toggled.connect(lambda v: self._stage("show_source", bool(v)))
         self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
         self.outline_width_spin.valueChanged.connect(self._apply_overlay_style)
         self.bg_opacity_slider.valueChanged.connect(
@@ -555,9 +584,9 @@ class SettingsDialog(QDialog):
         page._inner_layout.addWidget(self.hotkey_status)
 
         self.close_combo.currentIndexChanged.connect(
-            lambda _i: self._save("close_action", self.close_combo.currentData()))
-        self.auto_start_check.toggled.connect(lambda v: self._save("auto_start", bool(v)))
-        self.max_history_spin.valueChanged.connect(lambda v: self._save("max_history", int(v)))
+            lambda _i: self._stage("close_action", self.close_combo.currentData()))
+        self.auto_start_check.toggled.connect(lambda v: self._stage("auto_start", bool(v)))
+        self.max_history_spin.valueChanged.connect(lambda v: self._stage("max_history", int(v)))
         self.hotkey_check.toggled.connect(self._on_hotkey_enabled_changed)
         self.hotkey_edit.keySequenceChanged.connect(self._on_hotkey_sequence_changed)
         page._inner_layout.addStretch()
@@ -566,14 +595,13 @@ class SettingsDialog(QDialog):
     # ---------- 全局热键 ----------
 
     def _on_hotkey_enabled_changed(self, v):
-        self._save("hotkey_enabled", bool(v))
-        self._apply_hotkey()
+        self._stage("hotkey_enabled", bool(v))
 
     def _on_hotkey_sequence_changed(self, seq):
-        self._save("hotkey_sequence", seq.toString())
-        self._apply_hotkey()
+        self._stage("hotkey_sequence", seq.toString())
 
     def _apply_hotkey(self):
+        """设置页状态提示：展示"当前配置"的热键状态（不含未保存的暂存值）。"""
         try:
             self.hotkey_status.setText(self.main.apply_hotkey_config())
         except Exception:
@@ -739,49 +767,200 @@ class SettingsDialog(QDialog):
         lab.setObjectName("SettingTitle")
         return lab
 
-    # ---------- 保存与应用 ----------
+    # ---------- 暂存与应用（保存并应用模式） ----------
 
-    def _save(self, key, value):
-        self.c.set(key, value)
+    # 各设置项的分组：pipeline = 保存后需重启采集/识别/翻译管线；
+    # overlay_style = 悬浮字幕外观（保存时统一应用一次）；
+    # instant = 无需重启、应用时直接生效
+    _PIPELINE_KEYS = {"source_type", "device_index", "asr_model", "asr_device",
+                      "asr_language", "engine", "target_lang"}
+    _OVERLAY_KEYS = {"overlay_enabled", "overlay_font_size", "overlay_text_color",
+                     "overlay_bg_color", "overlay_bg_opacity", "overlay_outline",
+                     "overlay_outline_width", "overlay_outline_color", "show_source"}
+    _STAGE_ORDER = ["source_type", "device_index", "asr_model", "asr_device",
+                    "asr_language", "engine", "target_lang", "proxy_mode", "proxy_url",
+                    "hotkey_enabled", "hotkey_sequence", "overlay_enabled",
+                    "overlay_font_size", "overlay_text_color", "overlay_bg_color",
+                    "overlay_bg_opacity", "overlay_outline", "overlay_outline_width",
+                    "overlay_outline_color", "show_source", "close_action",
+                    "auto_start", "max_history"]
+
+    def _stage(self, key, value):
+        """暂存改动（不写配置不生效），等用户点「保存并应用」。"""
+        if getattr(self, "_loading", False):
+            return
+        if self.c.get(key) == value:
+            # 改回原值：撤销该项的暂存（脏状态如实收敛）
+            if key in self._staged:
+                self._staged.pop(key)
+                self._mark_dirty()
+                self._preview_overlay_style()
+            return
+        self._staged[key] = value
+        self._mark_dirty()
+        self._preview_overlay_style()
+
+    def _stage_combo(self, key, combo):
+        self._stage(key, combo.currentData())
+
+    def _mark_dirty(self):
+        dirty = bool(self._staged)
+        self.apply_button.setEnabled(dirty)
+        self.cancel_button.setEnabled(dirty)
+        self.dirty_hint.setText("有未保存的修改" if dirty else "所有改动已保存")
+        self.dirty_hint.setStyleSheet(
+            "color: #ffb454; font-size: 12px; font-weight: 700;" if dirty
+            else "color: #8a91a5; font-size: 12px;")
+
+    def _preview_overlay_style(self):
+        """悬浮字幕样式改动实时预览（不落盘），保存时才真正写入配置。"""
+        staged = self._staged
+        if not any(k.startswith("overlay_") or k == "show_source" for k in staged):
+            return
+
+        def g(key):
+            return staged.get(key, self.c.get(key))
+
+        self.main.overlay.apply_style(
+            font_size=int(g("overlay_font_size")),
+            text_color=g("overlay_text_color"),
+            bg_color=g("overlay_bg_color"),
+            bg_opacity=int(g("overlay_bg_opacity")),
+            outline=bool(g("overlay_outline")),
+            outline_width=int(g("overlay_outline_width")),
+            outline_color=g("overlay_outline_color"),
+        )
+
+    def _apply_staged(self):
+        """把暂存的改动写入配置并按分层生效。"""
+        if not self._staged:
+            return
+        order = list(self._STAGE_ORDER) + [k for k in self._staged if k not in self._STAGE_ORDER]
+        applied = []
+        for k in order:
+            if k in self._staged:
+                v = self._staged.pop(k)
+                self.c.set(k, v)
+                applied.append(k)
+        self._mark_dirty()
+        # 分层生效：悬浮字幕外观统一重放；热键重新注册；管线类改动重启管线
+        if any(k.startswith("overlay_") or k == "show_source" for k in applied):
+            self.main.apply_overlay_from_config()
+        if "overlay_enabled" in applied:
+            self.main.set_overlay_enabled(bool(self.c.get("overlay_enabled")))
+        if "hotkey_enabled" in applied or "hotkey_sequence" in applied:
+            self.main.apply_hotkey_config()
+        if self._PIPELINE_KEYS & set(applied):
+            if self.main.running:
+                self.main.stop_pipeline()
+                self.main.start_pipeline()
+                self.dirty_hint.setText("已保存并应用 · 管线已重启")
+            else:
+                self.dirty_hint.setText("已保存并应用 · 下次开始翻译时生效")
+        else:
+            self.dirty_hint.setText("已保存并应用")
         self.settings_saved.emit()
-        self._flash_saved()
+
+    def _discard_staged(self):
+        """放弃暂存改动：重新从配置加载界面 + 还原悬浮条预览。"""
+        self._staged.clear()
+        self.load_from_config()
+
+    def _reset_defaults(self):
+        """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。"""
+        d = dict(DEFAULTS)
+        self._suspend(lambda: self._set_widgets_from(d))
+        for k in self._STAGE_ORDER:
+            if k in d and self.c.get(k) != d[k]:
+                self._staged[k] = d[k]
+        self._text_color = QColor(d["overlay_text_color"])
+        self._bg_color = QColor(d["overlay_bg_color"])
+        self._outline_color = QColor(d["overlay_outline_color"])
+        self._update_color_button(self.text_color_button, self._text_color)
+        self._update_color_button(self.bg_color_button, self._bg_color)
+        self._update_color_button(self.outline_color_button, self._outline_color)
+        self._load_devices()
+        self._refresh_argos_section()
+        self._update_proxy_manual_enabled()
+        self.hotkey_status.setText("已暂存默认值，点「保存并应用」生效")
+        self._mark_dirty()
+        self._preview_overlay_style()
+
+    def _suspend(self, fn):
+        """挂起暂存记录执行界面重绘。"""
+        prev = getattr(self, "_loading", False)
+        self._loading = True
+        try:
+            fn()
+        finally:
+            self._loading = prev
+
+    def _set_widgets_from(self, values):
+        """用 values（缺省回退配置值）刷新全部控件。"""
+        c = self.c
+
+        def set_combo(combo, key):
+            idx = combo.findData(values.get(key, c.get(key)))
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+
+        set_combo(self.source_combo, "source_type")
+        set_combo(self.model_combo, "asr_model")
+        set_combo(self.asr_lang_combo, "asr_language")
+        set_combo(self.compute_combo, "asr_device")
+        set_combo(self.engine_combo, "engine")
+        set_combo(self.target_combo, "target_lang")
+        set_combo(self.proxy_combo, "proxy_mode")
+        self.proxy_url_edit.setText(str(values.get("proxy_url", c.get("proxy_url")) or ""))
+        self.overlay_check.setChecked(bool(values.get("overlay_enabled", c.get("overlay_enabled"))))
+        self.show_source_check.setChecked(bool(values.get("show_source", c.get("show_source"))))
+        self.overlay_font_spin.setValue(int(values.get("overlay_font_size", c.get("overlay_font_size"))))
+        self.bg_opacity_slider.setValue(int(values.get("overlay_bg_opacity", c.get("overlay_bg_opacity"))))
+        self.bg_opacity_label.setText(f"{self.bg_opacity_slider.value()}%")
+        self.outline_check.setChecked(bool(values.get("overlay_outline", c.get("overlay_outline"))))
+        self.outline_width_spin.setValue(int(values.get("overlay_outline_width", c.get("overlay_outline_width"))))
+        set_combo(self.close_combo, "close_action")
+        self.auto_start_check.setChecked(bool(values.get("auto_start", c.get("auto_start"))))
+        self.max_history_spin.setValue(int(values.get("max_history", c.get("max_history"))))
+        self.hotkey_check.setChecked(bool(values.get("hotkey_enabled", c.get("hotkey_enabled"))))
+        self.hotkey_edit.setKeySequence(str(values.get("hotkey_sequence", c.get("hotkey_sequence") or "Ctrl+Alt+S")))
+
+    def _confirm_discard(self):
+        if not self._staged:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("未保存的修改")
+        box.setText("有未保存的设置修改，确定放弃并关闭吗？")
+        b_discard = box.addButton("放弃修改", QMessageBox.DestructiveRole)
+        box.addButton("返回继续编辑", QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() == b_discard
 
     def _flash_saved(self):
-        self.saved_label.setText("✓ 设置已自动保存")
-        self.saved_label.show()
-        # 连续调整时只保留最后一次计时，避免闪烁
-        timer = getattr(self, "_saved_timer", None)
-        if timer is None:
-            timer = QTimer(self)
-            timer.setSingleShot(True)
-            timer.timeout.connect(self.saved_label.hide)
-            self._saved_timer = timer
-        timer.start(1600)
-
-    def _save_combo(self, key, combo):
-        self._save(key, combo.currentData())
+        # 保存并应用模式下不再使用"自动保存"闪现提示（保留接口兼容）
+        pass
 
     def _on_source_changed(self):
-        self._save_combo("source_type", self.source_combo)
+        self._stage_combo("source_type", self.source_combo)
         # 切换采集来源时重置设备，避免把系统声音的回环设备索引带进麦克风模式（反之亦然）
-        self.c.set("device_index", -1)
+        self._stage("device_index", -1)
         self._load_devices()
 
     def _on_engine_changed(self):
-        self._save_combo("engine", self.engine_combo)
-        self._save_combo("target_lang", self.target_combo)
+        self._stage_combo("engine", self.engine_combo)
+        self._stage_combo("target_lang", self.target_combo)
         self._refresh_argos_section()
 
     # ---------- 网络代理 ----------
 
     def _on_proxy_mode_changed(self):
-        self._save_combo("proxy_mode", self.proxy_combo)
+        self._stage_combo("proxy_mode", self.proxy_combo)
         self._update_proxy_manual_enabled()
 
     def _on_proxy_url_changed(self):
         url = self.proxy_url_edit.text().strip()
         if url != (self.c.get("proxy_url") or ""):
-            self._save("proxy_url", url)
+            self._stage("proxy_url", url)
 
     def _update_proxy_manual_enabled(self):
         manual = self.proxy_combo.currentData() == "manual"
@@ -806,18 +985,19 @@ class SettingsDialog(QDialog):
                 "不影响 MyMemory / Argos 备援通道。")
 
     def _on_overlay_toggle(self, checked):
-        self._save("overlay_enabled", bool(checked))
-        self.main.set_overlay_enabled(checked)
+        self._stage("overlay_enabled", bool(checked))
+        if not getattr(self, "_loading", False):
+            # 悬浮条开关属于即时观感改动：暂存的同时同步主窗口显隐（保存后按配置定稿）
+            self.main.set_overlay_enabled(checked)
 
     def _apply_overlay_style(self, *_):
-        self._save("overlay_font_size", int(self.overlay_font_spin.value()))
-        self._save("overlay_text_color", self._text_color.name())
-        self._save("overlay_bg_color", self._bg_color.name())
-        self._save("overlay_bg_opacity", int(self.bg_opacity_slider.value()))
-        self._save("overlay_outline", bool(self.outline_check.isChecked()))
-        self._save("overlay_outline_width", int(self.outline_width_spin.value()))
-        self._save("overlay_outline_color", self._outline_color.name())
-        self.main.apply_overlay_from_config()
+        self._stage("overlay_font_size", int(self.overlay_font_spin.value()))
+        self._stage("overlay_text_color", self._text_color.name())
+        self._stage("overlay_bg_color", self._bg_color.name())
+        self._stage("overlay_bg_opacity", int(self.bg_opacity_slider.value()))
+        self._stage("overlay_outline", bool(self.outline_check.isChecked()))
+        self._stage("overlay_outline_width", int(self.outline_width_spin.value()))
+        self._stage("overlay_outline_color", self._outline_color.name())
 
     def _pick_color(self, which):
         from PySide6.QtWidgets import QColorDialog
@@ -847,10 +1027,8 @@ class SettingsDialog(QDialog):
         QMessageBox.information(self, "完成", "翻译缓存已清空。")
 
     def sync_overlay_check(self, checked):
-        """悬浮字幕在设置窗口之外被开关（如右键关闭字幕条）时，同步本页复选框。"""
-        self.overlay_check.blockSignals(True)
+        """悬浮字幕在设置窗口之外被开关时，同步本页复选框（外部改动=直接生效）。"""
         self.overlay_check.setChecked(bool(checked))
-        self.overlay_check.blockSignals(False)
 
     def _load_devices(self):
         self.device_combo.blockSignals(True)
@@ -975,15 +1153,19 @@ class SettingsDialog(QDialog):
             self.hide()
             event.ignore()
             return
+        if self._staged and not self._confirm_discard():
+            event.ignore()
+            return
+        # 放弃改动时把悬浮条样式还原为已保存配置
+        if self._staged:
+            self._staged.clear()
+            try:
+                self.main.apply_overlay_from_config()
+            except Exception:
+                pass
         event.accept()
 
     # ---------- 外部联动 ----------
-
-    def sync_overlay_check(self, checked):
-        """悬浮字幕被右键关闭时，同步主窗口的勾选状态。"""
-        self.overlay_check.blockSignals(True)
-        self.overlay_check.setChecked(bool(checked))
-        self.overlay_check.blockSignals(False)
 
     def sync_source_type(self, mode):
         """悬浮条切换输入来源后，同步音频来源下拉框并刷新设备列表。"""
@@ -1000,56 +1182,47 @@ class SettingsDialog(QDialog):
             self.nav.setCurrentRow(index)
 
     def load_from_config(self):
+        """从配置刷新全部控件（挂起暂存记录），并把悬浮条预览还原为已保存值。"""
         c = self.c
+        self._staged.clear()
+        self._loading = True
+        try:
+            def set_combo(combo, key):
+                idx = combo.findData(c.get(key))
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
 
-        def set_combo(combo, key):
-            idx = combo.findData(c.get(key))
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-
-        self.source_combo.blockSignals(True)
-        set_combo(self.source_combo, "source_type")
-        self.source_combo.blockSignals(False)
-        self._load_devices()
-        set_combo(self.model_combo, "asr_model")
-        set_combo(self.asr_lang_combo, "asr_language")
-        set_combo(self.compute_combo, "asr_device")
-        set_combo(self.engine_combo, "engine")
-        set_combo(self.target_combo, "target_lang")
-        set_combo(self.proxy_combo, "proxy_mode")
-        self.proxy_url_edit.setText(str(c.get("proxy_url") or ""))
-        self._update_proxy_manual_enabled()
-        self._refresh_argos_section()
-        self.overlay_check.blockSignals(True)
-        self.overlay_check.setChecked(bool(c.get("overlay_enabled")))
-        self.overlay_check.blockSignals(False)
-        self.show_source_check.setChecked(bool(c.get("show_source")))
-        self.overlay_font_spin.blockSignals(True)
-        self.overlay_font_spin.setValue(int(c.get("overlay_font_size")))
-        self.overlay_font_spin.blockSignals(False)
-        self.bg_opacity_slider.blockSignals(True)
-        self.bg_opacity_slider.setValue(int(c.get("overlay_bg_opacity")))
-        self.bg_opacity_slider.blockSignals(False)
-        self.bg_opacity_label.setText(f"{int(c.get('overlay_bg_opacity'))}%")
-        self.outline_check.blockSignals(True)
-        self.outline_check.setChecked(bool(c.get("overlay_outline")))
-        self.outline_check.blockSignals(False)
-        self.outline_width_spin.blockSignals(True)
-        self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
-        self.outline_width_spin.blockSignals(False)
-        self._text_color = QColor(c.get("overlay_text_color"))
-        self._bg_color = QColor(c.get("overlay_bg_color"))
-        self._outline_color = QColor(c.get("overlay_outline_color"))
-        self._update_color_button(self.text_color_button, self._text_color)
-        self._update_color_button(self.bg_color_button, self._bg_color)
-        self._update_color_button(self.outline_color_button, self._outline_color)
-        set_combo(self.close_combo, "close_action")
-        self.auto_start_check.setChecked(bool(c.get("auto_start")))
-        self.max_history_spin.setValue(int(c.get("max_history")))
-        self.hotkey_check.blockSignals(True)
-        self.hotkey_check.setChecked(bool(c.get("hotkey_enabled")))
-        self.hotkey_check.blockSignals(False)
-        self.hotkey_edit.blockSignals(True)
-        self.hotkey_edit.setKeySequence(str(c.get("hotkey_sequence") or "Ctrl+Alt+S"))
-        self.hotkey_edit.blockSignals(False)
-        self._apply_hotkey()
+            self.source_combo.blockSignals(True)
+            set_combo(self.source_combo, "source_type")
+            self.source_combo.blockSignals(False)
+            self._load_devices()
+            set_combo(self.model_combo, "asr_model")
+            set_combo(self.asr_lang_combo, "asr_language")
+            set_combo(self.compute_combo, "asr_device")
+            set_combo(self.engine_combo, "engine")
+            set_combo(self.target_combo, "target_lang")
+            set_combo(self.proxy_combo, "proxy_mode")
+            self.proxy_url_edit.setText(str(c.get("proxy_url") or ""))
+            self._update_proxy_manual_enabled()
+            self._refresh_argos_section()
+            self.overlay_check.setChecked(bool(c.get("overlay_enabled")))
+            self.show_source_check.setChecked(bool(c.get("show_source")))
+            self.overlay_font_spin.setValue(int(c.get("overlay_font_size")))
+            self.bg_opacity_slider.setValue(int(c.get("overlay_bg_opacity")))
+            self.bg_opacity_label.setText(f"{int(c.get('overlay_bg_opacity'))}%")
+            self.outline_check.setChecked(bool(c.get("overlay_outline")))
+            self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
+            self._text_color = QColor(c.get("overlay_text_color"))
+            self._bg_color = QColor(c.get("overlay_bg_color"))
+            self._outline_color = QColor(c.get("overlay_outline_color"))
+            self._update_color_button(self.text_color_button, self._text_color)
+            self._update_color_button(self.bg_color_button, self._bg_color)
+            self._update_color_button(self.outline_color_button, self._outline_color)
+            set_combo(self.close_combo, "close_action")
+            self.auto_start_check.setChecked(bool(c.get("auto_start")))
+            self.max_history_spin.setValue(int(c.get("max_history")))
+            self.hotkey_check.setChecked(bool(c.get("hotkey_enabled")))
+            self.hotkey_edit.setKeySequence(str(c.get("hotkey_sequence") or "Ctrl+Alt+S"))
+        finally:
+            self._loading = False
+        self._mark_dirty()

@@ -78,11 +78,25 @@ def main():
     print(f"SMOKE: captions={done[0]} expected>={expect}")
     w.set_overlay_enabled(True)
     overlay_ok = w.overlay.isVisible()
+
+    # 设置窗口实例化 + 暂存/应用状态机冒烟（建议8 回归哨兵）
+    from app.ui.settings_dialog import SettingsDialog
+    dlg = SettingsDialog(w)
+    dlg.load_from_config()
+    staged_ok = (dlg._staged == {})
+    dlg._stage("max_history", 250)
+    staged_ok = staged_ok and (dlg._staged.get("max_history") == 250)
+    dlg._apply_staged()
+    applied_ok = (dlg._staged == {}) and (w.config.get("max_history") == 250)
+    dlg._stage("max_history", 200)
+    dlg._apply_staged()  # 还原默认值，不污染配置
+    print(f"SMOKE settings dialog: staged={staged_ok}, applied={applied_ok}")
+
     w.stop_pipeline()
-    if done[0] >= expect and overlay_ok:
-        print(f"SMOKE PASS (captions={done[0]}, overlay OK)")
+    if done[0] >= expect and overlay_ok and staged_ok and applied_ok:
+        print(f"SMOKE PASS (captions={done[0]}, overlay OK, settings dialog OK)")
         sys.exit(0)
-    print(f"SMOKE FAIL (captions={done[0]}, overlay={overlay_ok})")
+    print(f"SMOKE FAIL (captions={done[0]}, overlay={overlay_ok}, staged={staged_ok}, applied={applied_ok})")
     sys.exit(1)
 
 

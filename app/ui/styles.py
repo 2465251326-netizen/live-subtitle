@@ -305,4 +305,13 @@ QLabel#AboutVersion {
     color: #8a91a5;
     background: transparent;
 }
+QFrame#ActionBar {
+    background-color: #12151c;
+    border-top: 1px solid #1e2330;
+}
+QLabel#DirtyHint {
+    font-size: 12px;
+    color: #8a91a5;
+    background: transparent;
+}
 """

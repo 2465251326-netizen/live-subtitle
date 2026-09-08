@@ -339,8 +339,8 @@ class MainWindow(QMainWindow):
         dlg = getattr(self, "_settings_dlg", None)
         if dlg is None:
             dlg = SettingsDialog(self)
-            dlg.load_from_config()
             self._settings_dlg = dlg
+        dlg.load_from_config()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
