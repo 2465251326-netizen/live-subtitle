@@ -159,8 +159,9 @@ class CaptionOverlay(QWidget):
         if self._list_mode:
             self.list_widget.setStyleSheet(
                 "QListWidget#OverlayList { background: transparent; border: none;"
-                f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px; }}"
+                f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px;"
                 "QListWidget#OverlayList::item { padding: 2px 0; }")
+            self._trim_list()
             self._trim_list()
         self.adjustSize()
 
@@ -224,7 +225,9 @@ class CaptionOverlay(QWidget):
             background: transparent;
         }}
         """
-        self.setStyleSheet(qss)
+        # 拼接基础 OVERLAY_QSS（保住 X 关闭按钮/状态行样式）再覆盖正文规则；
+        # 直接 setStyleSheet(qss) 会整体替换，X 按钮退化为系统默认样式（v2.0.1）
+        self.setStyleSheet(OVERLAY_QSS + qss)
         outline_w = outline_width if outline else 0
         self.source_label.set_outline(outline_w, outline_color)
         self.target_label.set_outline(outline_w, outline_color)
@@ -236,9 +239,11 @@ class CaptionOverlay(QWidget):
             # 列表模式高度随字号与保留条数走
             self.list_widget.setFixedHeight(
                 int(self._list_max * (self._font_size * 0.72 + 14)))
+            # v2.0.1：拼进整体样式表而不是独立赋值（此前的双大括号笔误会让
+            # 整段 QSS 解析失败，列表模式字号/颜色全部不生效）
             self.list_widget.setStyleSheet(
                 "QListWidget#OverlayList { background: transparent; border: none;"
-                f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px; }}"
+                f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px;"
                 "QListWidget#OverlayList::item { padding: 2px 0; }")
         self.update()
         self.updateGeometry()

@@ -4,13 +4,17 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
 CACHE_FILE = CONFIG_DIR / "trans_cache.json"
 HF_HOME = CONFIG_DIR / "hf"
 ARGOS_DATA = CONFIG_DIR / "argos"
+# v2.0.1：启动"指针"快照——storage_root 的唯一可信来源。relocate 会把
+# CONFIG_FILE 指向新根，但重启时只从本指针文件读 storage_root；
+# 此前 relocate 忘了回写指针，导致迁移在重启后失效（数据判未缓存重下）
+POINTER_CONFIG_FILE = CONFIG_FILE
 
 DEFAULTS = {
     "source_type": "system",          # system | microphone
@@ -161,6 +165,18 @@ class Config:
         os.environ["ARGOS_DATA_HOME"] = str(ARGOS_DATA)
         os.environ["ARGOS_TRANSLATE_PACKAGES_DIR"] = str(ARGOS_DATA / "packages")
         self._data["storage_root"] = str(new_root)
+        # v2.0.1：先把新 storage_root 写回启动指针文件（默认根下的 config.json）。
+        # 启动时只从指针文件读 storage_root，此前漏写导致迁移重启后失效
+        try:
+            pointer = POINTER_CONFIG_FILE
+            if pointer.resolve() != CONFIG_FILE.resolve():
+                pointer.parent.mkdir(parents=True, exist_ok=True)
+                tmp = pointer.with_suffix(".json.tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self._data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, pointer)
+        except Exception:
+            pass
         self.save()
         try:
             from app.translate import offline_pack as _op
@@ -178,17 +194,32 @@ class Config:
                     if k in saved:
                         self._data[k] = saved[k]
             except Exception:
-                pass
+                # v2.0.1：损坏配置不再无声吞掉——改名留存供排查/恢复，
+                # 否则 storage_root 丢失会让已下载模型被判未缓存全部重下
+                try:
+                    bad = CONFIG_FILE.with_suffix(".json.bad")
+                    os.replace(CONFIG_FILE, bad)
+                    from app import log as app_log
+                    app_log.log("config.corrupt_kept_as_bad", path=str(bad))
+                except Exception:
+                    pass
 
     def save(self):
         try:
-            # 先写临时文件再原子替换，避免写一半崩溃/断电导致配置损坏
+            # 先写临时文件再原子替换，避免写一半崩溃/断电导致配置损坏；
+            # v2.0.1：replace 前加 fsync（掉电时 replace 的元数据可能已落盘
+            # 而内容未落盘），失败时清理 tmp 残留
             tmp = CONFIG_FILE.with_suffix(".json.tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, CONFIG_FILE)
         except Exception:
-            pass
+            try:
+                CONFIG_FILE.with_suffix(".json.tmp").unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def get(self, key):
         return self._data.get(key, DEFAULTS.get(key))

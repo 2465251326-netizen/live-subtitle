@@ -13,8 +13,12 @@ LOG_FILE = LOG_DIR / "app.log"
 
 def write_log(title, text):
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
+        # v2.0.1：动态取 CONFIG_DIR——此前在 import 时固化，存储根迁移后
+        # 日志继续写到旧位置直至重启
+        from app.config import CONFIG_DIR as _cfg_dir
+        log_dir = _cfg_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "app.log", "a", encoding="utf-8") as f:
             f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {title}\n{text}\n")
     except Exception:
         pass

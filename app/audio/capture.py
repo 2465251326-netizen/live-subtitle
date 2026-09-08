@@ -141,6 +141,10 @@ class Segmenter:
                 self._reset()
         return None
 
+    def flush(self):
+        """强制产出缓冲中的语音段（v2.0.1：供停止采集时补发最后一句）。"""
+        return self._flush()
+
     def _flush(self):
         audio = np.concatenate(self.buffer) if self.buffer else np.zeros(0, dtype=np.float32)
         spoken = self.speech_len
@@ -185,14 +189,23 @@ class CaptureThread(QThread):
         self._stop = True
 
     def _resolve_loopback(self, p, default_index):
+        """默认输出的回环设备解析：精确名 → 名称子串 → None（宁可不抓也不乱抓）。
+
+        v2.0.1：旧逻辑在精确/子串都匹配不到时兜底取"第一个回环设备"，
+        多输出设备机器上会静默抓错输出源。"""
         try:
             default_speakers = p.get_device_info_by_index(default_index)
             if default_speakers.get("isLoopbackDevice"):
                 return default_speakers
-            for loopback in p.get_loopback_device_info_generator():
-                if default_speakers["name"] in loopback["name"]:
+            name = default_speakers.get("name") or ""
+            loopbacks = list(p.get_loopback_device_info_generator())
+            for loopback in loopbacks:
+                if loopback.get("name") == name:
                     return loopback
-            return next(p.get_loopback_device_info_generator(), None)
+            for loopback in loopbacks:
+                if name and name in (loopback.get("name") or ""):
+                    return loopback
+            return None
         except Exception:
             return None
 
@@ -213,10 +226,26 @@ class CaptureThread(QThread):
             frames_per_buffer = int(44100 * CHUNK_MS / 1000)
 
             if self.source_type == "system":
-                device = self._resolve_loopback(p, p.get_default_output_device_info()["index"])
-                if device is None:
-                    self.error_occurred.emit("未找到可用的系统声音回环设备")
-                    return
+                # v2.0.1：尊重用户在设置页选定的输出设备（此前 device_index
+                # 只在麦克风分支使用，system 模式下用户选择被静默忽略）
+                if self.device_index is not None and self.device_index >= 0:
+                    try:
+                        device = p.get_device_info_by_index(self.device_index)
+                        if device.get("isLoopbackDevice") and device.get("maxInputChannels", 0) > 0:
+                            device_index = device["index"]
+                        else:
+                            device = None
+                    except Exception:
+                        device = None
+                    if device is None:
+                        self.error_occurred.emit(
+                            "所选输出设备不可用或不是回环设备，请到「设置-音频输入」重新选择。")
+                        return
+                else:
+                    device = self._resolve_loopback(p, p.get_default_output_device_info()["index"])
+                    if device is None:
+                        self.error_occurred.emit("未找到可用的系统声音回环设备")
+                        return
                 device_index = device["index"]
                 channels = min(2, device.get("maxInputChannels", 2))
                 sample_rate = int(device.get("defaultSampleRate", 44100))
@@ -242,6 +271,15 @@ class CaptureThread(QThread):
 
             while not self._stop:
                 try:
+                    # v2.0.1：WASAPI loopback 在输出完全静音时不再产出数据包，
+                    # 阻塞式 read 会让 stop 标志失效（线程卡死、segmenter 悬挂、
+                    # 退出时 QThread 销毁崩溃）。改为轮询可用帧数 + 短睡眠。
+                    avail = stream.get_read_available()
+                    if avail < frames_per_buffer:
+                        if self._stop:
+                            break
+                        time.sleep(0.01)
+                        continue
                     raw = stream.read(frames_per_buffer, exception_on_overflow=False)
                 except OSError as e:
                     self.error_occurred.emit(f"音频读取中断: {friendly_audio_error(e)}")
@@ -277,6 +315,14 @@ class CaptureThread(QThread):
                 seg = self.segmenter.feed(mono16)
                 if seg is not None:
                     self.segment_ready.emit(seg)
+            # v2.0.1：退出前强制 flush——停止前最后一句（尾静音不足判停时长）
+            # 此前被静默丢弃，表现为"说完立刻停会丢最后一句"
+            try:
+                tail = self.segmenter.flush()
+                if tail is not None and not self._stop:
+                    self.segment_ready.emit(tail)
+            except Exception:
+                pass
         except Exception as e:
             self.error_occurred.emit(f"音频采集失败: {friendly_audio_error(e)}")
         finally:

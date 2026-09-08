@@ -130,6 +130,10 @@ class AsrThread(QThread):
                 except queue.Empty:
                     break
             self.queue_in.put_nowait(audio)
+            # v2.0.1：积压丢段不再静默——用户需要知道跳句原因
+            if self.queue_in.qsize() >= 3:
+                self.status_changed.emit(
+                    "识别积压，已跳过较早语音：CPU 较慢时建议换更小模型（如 small/tiny）")
         except Exception:
             pass
 
@@ -182,11 +186,21 @@ class AsrThread(QThread):
             return False
 
     def run(self):
-        if self.model_cached(self.model_size):
-            self.status_changed.emit(f"正在加载 {self.model_size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...")
-        else:
-            self.status_changed.emit(f"正在准备 {self.model_size} 模型（首次运行会自动下载，见状态栏进度）...")
-        if not self._load_model():
+        # v2.0.1：加载阶段整体兜底——此前 import/端点探测/构造只有构造在 try
+        # 内，faster_whisper 损坏等异常让线程静默死亡（error_occurred 不发，
+        # UI 永远停在"正在加载"，下载进度定时器永不停）
+        try:
+            if self.model_cached(self.model_size):
+                self.status_changed.emit(f"正在加载 {self.model_size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...")
+            else:
+                self.status_changed.emit(f"正在准备 {self.model_size} 模型（首次运行会自动下载，见状态栏进度）...")
+            if not self._load_model():
+                return
+        except Exception as e:
+            from app.errors import friendly_error
+            from app import log as app_log
+            app_log.exception("asr.setup_failed", e)
+            self.error_occurred.emit(f"识别引擎启动失败：{friendly_error(e)}")
             return
         if self._stop:
             # 加载期间用户已按停止：直接退出，不再报“就绪”
@@ -250,6 +264,10 @@ class AsrThread(QThread):
         segments, info = self._model.transcribe(audio, **kwargs)
         segs = []
         for seg in segments:
+            # v2.0.1：协作取消点——segments 是惰性生成器，此前一旦开始消费
+            # 就无法中断（14s 音频 CPU 大模型可达数十秒），停止超时后成僵尸线程
+            if self._stop:
+                return
             t = (seg.text or "").strip()
             if not t:
                 continue

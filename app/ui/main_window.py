@@ -92,7 +92,12 @@ class MainWindow(QMainWindow):
         if not self.config.get("wizard_done"):
             QTimer.singleShot(400, self._show_first_run_wizard)
         if self.config.get("auto_start"):
-            QTimer.singleShot(800, self.start_pipeline)
+            # v2.0.1：改为可撤销的成员定时器——启动后 800ms 内手动开始又停止，
+            # 旧 singleShot 到点会把管线再次拉起，与用户操作相反
+            self._auto_start_timer = QTimer(self)
+            self._auto_start_timer.setSingleShot(True)
+            self._auto_start_timer.timeout.connect(self.start_pipeline)
+            self._auto_start_timer.start(800)
 
     def _show_first_run_wizard(self):
         from app.ui.first_run import FirstRunWizard
@@ -224,8 +229,13 @@ class MainWindow(QMainWindow):
         self._install_global_hotkey()
 
     def _clamp_overlay_pos(self, x, y):
-        """把悬浮字幕位置限制在屏幕可用区域内，避免被拖丢/换分辨率后找不回来。"""
-        screen = self.screen() or QGuiApplication.primaryScreen()
+        """把悬浮字幕位置限制在其所在屏幕的可用区域内。
+
+        v2.0.1：此前用主窗口所在屏，多显示器下把字幕条拖到副屏松手即被
+        钳回主屏；现按 overlay 中心点定位屏幕，取不到再回退主窗口所在屏。"""
+        from PySide6.QtGui import QGuiApplication
+        screen = self.overlay.screen() or QGuiApplication.screenAt(
+            self.overlay.geometry().center()) or self.screen()
         geo = screen.availableGeometry()
         w = max(80, self.overlay.width())
         h = max(40, self.overlay.height())
@@ -381,7 +391,8 @@ class MainWindow(QMainWindow):
         box.setAttribute(Qt.WA_DeleteOnClose, True)
         box.show()
 
-    def set_overlay_enabled(self, checked):
+    def set_overlay_visible(self, checked):
+        """仅切换悬浮条显隐（预览用，不落盘）——落盘统一走 set_overlay_enabled。"""
         if checked:
             x, y = self._clamp_overlay_pos(self.config.get("overlay_x"),
                                            self.config.get("overlay_y"))
@@ -389,6 +400,9 @@ class MainWindow(QMainWindow):
             self.overlay.show()
         else:
             self.overlay.hide()
+
+    def set_overlay_enabled(self, checked):
+        self.set_overlay_visible(checked)
         self.config.set("overlay_enabled", bool(checked))
 
     def apply_overlay_from_config(self):
@@ -477,6 +491,9 @@ class MainWindow(QMainWindow):
     def start_pipeline(self):
         if self.running:
             return
+        timer = getattr(self, "_auto_start_timer", None)
+        if timer is not None:
+            timer.stop()  # 用户已手动介入，撤销 auto_start（v2.0.1）
         from app import log as app_log
         app_log.log("pipeline.start", source=self.config.get("source_type"),
                     model=self.config.get("asr_model"), engine=self.config.get("engine"),
@@ -522,7 +539,9 @@ class MainWindow(QMainWindow):
 
         self.capture_thread = CaptureThread(
             c.get("source_type"),
-            int(c.get("device_index") or -1),
+            # v2.0.1：device_index=0 是合法设备（PyAudio 从 0 计数），
+            # `or -1` 会把 0 吞成"默认设备"导致静默错配
+            c.get("device_index") if c.get("device_index") is not None else -1,
             self,
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
@@ -574,6 +593,7 @@ class MainWindow(QMainWindow):
     def _on_low_input(self, quiet):
         """采集线程报告输入信号持续过弱/恢复正常。"""
         if not self.running:
+            # v2.0.1：幽灵回调守卫——停止后仍可能收到已入队的 Queued 信号
             return
         self._low_input_warn = quiet
         if quiet and self.running:
@@ -585,6 +605,8 @@ class MainWindow(QMainWindow):
 
     def _on_muted(self, m):
         """系统静音盲区提示（补充5）：静音且抓系统声音时给出确定性指引。"""
+        if not self.running:
+            return  # v2.0.1：幽灵回调守卫（迟到的 muted 曾覆盖"已停止"状态）
         if m and self.running:
             self._muted_warn = True
             self.engine_status_label.setText(
@@ -600,7 +622,8 @@ class MainWindow(QMainWindow):
         if t is None:
             return
         for name in ("segment_ready", "level_changed", "error_occurred", "low_input",
-                     "text_ready", "status_changed", "result_ready", "model_ready"):
+                     "text_ready", "status_changed", "result_ready", "model_ready",
+                     "muted"):
             sig = getattr(t, name, None)
             if sig is not None:
                 try:
@@ -622,6 +645,7 @@ class MainWindow(QMainWindow):
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
         self._low_input_warn = False
+        self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
         self._stop_model_download_feedback()
         self.stack.setCurrentIndex(0)
 
@@ -664,6 +688,10 @@ class MainWindow(QMainWindow):
             self.translate_thread.submit(text, detected)
 
     def _on_translated(self, source_text, translated, engine, detected, error):
+        # v2.0.1：幽灵回调守卫——停止后仍会收到已入队的翻译结果，
+        # 此前会新增字幕卡片、把界面翻回列表页、悬浮条显示"运行中"
+        if not self.running:
+            return
         self._last_engine_name = engine
         show_source = bool(self.config.get("show_source"))
         card = CaptionCard(source_text)
@@ -678,28 +706,30 @@ class MainWindow(QMainWindow):
         self.session_label.setText(f"本次会话：{self.session_count} 条")
         self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
         self.update_overlay_status()
-        if hasattr(self, "overlay"):
-            self.overlay.set_status(
-                f"运行中 · {'麦克风' if self.config.get('source_type') == 'microphone' else '系统声音'} · {engine} · {self.config.get('asr_model')} 模型",
-                is_error=bool(error))
-        sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
         if self.overlay.isVisible():
             self.overlay.show_caption(source_text, translated or ("[" + engine + " 翻译失败]"),
                                       show_source)
+        sb = self.scroll.verticalScrollBar()
+        sb.setValue(sb.maximum())
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
             item = self.scroll_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
+    def _teardown(self):
+        """退出前的统一清理（v2.0.1）：此前 exit 分支靠 closeEvent 内重入
+        self.close() 触发本段，被 Qt 嵌套 close 抑制，导致退出路径整体失效
+        （窗口隐藏但管线继续跑、托盘退出失灵）。"""
+        hotkey.unregister()
+        self._save_settings()
+        self.stop_pipeline()
+        self.overlay.close()
+        if getattr(self, "tray", None):
+            self.tray.hide()
+
     def closeEvent(self, event):
         if getattr(self, "_quitting", False):
-            hotkey.unregister()
-            self._save_settings()
-            self.stop_pipeline()
-            self.overlay.close()
-            if getattr(self, "tray", None):
-                self.tray.hide()
+            self._teardown()
             event.accept()
             QApplication.quit()
             return
@@ -710,7 +740,9 @@ class MainWindow(QMainWindow):
             return
         if action == "exit":
             self._quitting = True
-            self.close()
+            self._teardown()
+            event.accept()
+            QApplication.quit()
             return
         box = QMessageBox(self)
         box.setWindowTitle("关闭 LiveSubtitle")
@@ -741,7 +773,9 @@ class MainWindow(QMainWindow):
             if remember:
                 self.config.set("close_action", "exit")
             self._quitting = True
-            self.close()
+            self._teardown()
+            event.accept()
+            QApplication.quit()
 
     def _hide_to_tray(self):
         self._save_settings()

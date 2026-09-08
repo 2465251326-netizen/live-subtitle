@@ -767,6 +767,7 @@ class SettingsDialog(QDialog):
         storage_row = QHBoxLayout()
         storage_row.setSpacing(6)
         btn_change = QPushButton("更改位置…")
+        self.storage_change_button = btn_change  # v2.0.1：迁移期间禁用
         btn_change.clicked.connect(self._change_storage_root)
         btn_open = QPushButton("打开目录")
         btn_open.clicked.connect(self._open_storage_dir)
@@ -826,6 +827,12 @@ class SettingsDialog(QDialog):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(cfg.CONFIG_DIR)))
 
     def _change_storage_root(self):
+        # v2.0.1：迁移期间锁死入口——此前可并发触发第二次迁移/开始翻译，
+        # 与迁移线程同时读写同一目录树导致数据错乱
+        if getattr(self, "_storage_worker", None) and self._storage_worker.isRunning():
+            QMessageBox.warning(self, "正在迁移",
+                                "数据迁移正在进行中，请等待完成后再操作。")
+            return
         if getattr(self.main, "running", False):
             QMessageBox.warning(self, "无法更改",
                                 "翻译运行中不能迁移数据，请先停止翻译。")
@@ -847,18 +854,21 @@ class SettingsDialog(QDialog):
         box.exec()
         if box.clickedButton() != b_go:
             return
+        self.storage_change_button.setEnabled(False)
         self._storage_progress = QProgressBar()
         self._storage_progress.setRange(0, 0)  # 忙碌指示
         page_widget = self.storage_hint.parentWidget()
         if page_widget is not None:
             page_widget.layout().addWidget(self._storage_progress)
         self._storage_worker = _StorageMigrateWorker(new)
+        self._storage_worker.progress.connect(lambda m: self.storage_hint.setText(m))
         self._storage_worker.done.connect(self._on_storage_migrated)
         self._storage_worker.fail.connect(self._on_storage_failed)
         self._storage_worker.start()
 
     def _on_storage_migrated(self, new_root):
         self._remove_storage_progress()
+        self.storage_change_button.setEnabled(True)
         self.c.relocate(new_root)
         self._refresh_storage_hint()
         QMessageBox.information(
@@ -867,7 +877,10 @@ class SettingsDialog(QDialog):
 
     def _on_storage_failed(self, msg):
         self._remove_storage_progress()
-        QMessageBox.warning(self, "迁移失败", f"{msg}\n\n原数据未受影响，可重试或更换目标盘。")
+        self.storage_change_button.setEnabled(True)
+        QMessageBox.warning(self, "迁移失败",
+                            f"{msg}\n\n已完成部分已尝试搬回原位置；"
+                            "如仍提示空间不足，请更换目标盘或清理后重试。")
 
     def _remove_storage_progress(self):
         bar = getattr(self, "_storage_progress", None)
@@ -966,8 +979,6 @@ class SettingsDialog(QDialog):
     # ---------- GPU / CUDA 引导（建议4） ----------
 
     def _show_gpu_guidance(self):
-        from app import gpu as gpu_mod
-        info = gpu_mod.detect()
         dlg = QDialog(self)
         dlg.setWindowTitle("GPU / CUDA 环境检测")
         dlg.resize(620, 480)
@@ -975,11 +986,9 @@ class SettingsDialog(QDialog):
         title = QLabel("检测结果")
         title.setObjectName("SettingTitle")
         v.addWidget(title)
-        summary = QLabel(
-            f"NVIDIA 显卡：{info['nvidia_gpu'] or '未检测到'}\n"
-            f"驱动版本：{info['driver'] or '—'}\n"
-            f"CUDA 可用设备数：{info['cuda_devices']}\n"
-            f"运行形态：{'打包版（内置 CPU 推理）' if info['frozen'] else '源码运行'}")
+        # v2.0.1：检测挪到后台线程——nvidia-smi 子进程（超时 8s）+ ctranslate2
+        # CUDA 枚举此前在 GUI 线程同步执行，驱动异常时界面冻结 8 秒以上
+        summary = QLabel("正在检测（显卡 / 驱动 / CUDA 环境，最长约 10 秒）…")
         summary.setObjectName("SettingDesc")
         summary.setWordWrap(True)
         v.addWidget(summary)
@@ -987,21 +996,46 @@ class SettingsDialog(QDialog):
         t = QLabel("配置教程与注意事项")
         t.setObjectName("SettingTitle")
         v.addWidget(t)
-        body = QLabel(gpu_mod.guidance_text(info))
+        body = QLabel("检测完成后显示。")
         body.setObjectName("SettingDesc")
         body.setWordWrap(True)
         v.addWidget(body, 1)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        if not info["frozen"] and info["nvidia_gpu"] and info["cuda_devices"] == 0:
-            install_btn = QPushButton("一键安装 CUDA 版 PyTorch")
-            install_btn.setObjectName("PrimaryButton")
-            install_btn.clicked.connect(lambda: self._install_cuda_torch(dlg, install_btn))
-            btn_row.addWidget(install_btn)
+        install_btn = QPushButton("一键安装 CUDA 版 PyTorch")
+        install_btn.setObjectName("PrimaryButton")
+        install_btn.setVisible(False)
+        install_btn.clicked.connect(lambda: self._install_cuda_torch(dlg, install_btn))
+        btn_row.addWidget(install_btn)
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(dlg.accept)
         btn_row.addWidget(close_btn)
         v.addLayout(btn_row)
+
+        info_box = {}
+
+        def _apply(info):
+            info_box.update(info)
+            summary.setText(
+                f"NVIDIA 显卡：{info['nvidia_gpu'] or '未检测到'}\n"
+                f"驱动版本：{info['driver'] or '—'}\n"
+                f"CUDA 可用设备数：{info['cuda_devices']}\n"
+                f"运行形态：{'打包版（内置 CPU 推理）' if info['frozen'] else '源码运行'}")
+            from app import gpu as gpu_mod
+            body.setText(gpu_mod.guidance_text(info))
+            if not info["frozen"] and info["nvidia_gpu"] and info["cuda_devices"] == 0:
+                install_btn.setVisible(True)
+
+        class _GpuDetectWorker(QThread):
+            done = Signal(dict)
+
+            def run(self):
+                from app import gpu as gpu_mod
+                self.done.emit(gpu_mod.detect())
+
+        self._gpu_worker = _GpuDetectWorker()
+        self._gpu_worker.done.connect(_apply)
+        self._gpu_worker.start()
         dlg.exec()
 
     def _sep(self):
@@ -1206,17 +1240,25 @@ class SettingsDialog(QDialog):
     # overlay_style = 悬浮字幕外观（保存时统一应用一次）；
     # instant = 无需重启、应用时直接生效
     _PIPELINE_KEYS = {"source_type", "device_index", "asr_model", "asr_device",
-                      "asr_language", "engine", "target_lang"}
+                      "asr_language", "engine", "target_lang",
+                      # v2.0.1：这三项是 AsrThread 构造参数，只在管线启动时读取——
+                      # 不加入则运行中保存后"已保存并应用"但实际本会话不生效
+                      "hallucination_filter", "silero_vad", "mishear_map"}
     _OVERLAY_KEYS = {"overlay_enabled", "overlay_font_size", "overlay_text_color",
                      "overlay_bg_color", "overlay_bg_opacity", "overlay_outline",
-                     "overlay_outline_width", "overlay_outline_color", "show_source"}
+                     "overlay_outline_width", "overlay_outline_color", "show_source",
+                     "overlay_list_mode", "overlay_list_max"}
     _STAGE_ORDER = ["source_type", "device_index", "asr_model", "asr_device",
                     "asr_language", "engine", "target_lang", "proxy_mode", "proxy_url",
                     "hotkey_enabled", "hotkey_sequence", "overlay_enabled",
                     "overlay_font_size", "overlay_text_color", "overlay_bg_color",
                     "overlay_bg_opacity", "overlay_outline", "overlay_outline_width",
                     "overlay_outline_color", "show_source", "close_action",
-                    "auto_start", "max_history"]
+                    "auto_start", "max_history",
+                    # v2.0.1：补齐"恢复默认"漏掉的键（此前这四项 UI 显示已恢复
+                    # 默认但保存后永不落盘）
+                    "hallucination_filter", "silero_vad",
+                    "overlay_list_mode", "overlay_list_max", "mishear_map"]
 
     def _stage(self, key, value):
         """暂存改动（不写配置不生效），等用户点「保存并应用」。"""
@@ -1268,6 +1310,13 @@ class SettingsDialog(QDialog):
         """把暂存的改动写入配置并按分层生效。"""
         if not self._staged:
             return
+        # v2.0.1：误听词典 400ms 防抖与保存竞态——输入后立即点保存时，
+        # 此处先 flush 防抖定时器把词典内容补进暂存，否则"已保存并应用"
+        # 提示后脏状态又出现（本轮改动未生效）
+        timer = getattr(self, "_mishear_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self._stage_mishear()
         order = list(self._STAGE_ORDER) + [k for k in self._staged if k not in self._STAGE_ORDER]
         applied = []
         for k in order:
@@ -1298,14 +1347,27 @@ class SettingsDialog(QDialog):
         """放弃暂存改动：重新从配置加载界面 + 还原悬浮条预览。"""
         self._staged.clear()
         self.load_from_config()
+        # v2.0.1：还原悬浮条样式预览（docstring 一直承诺、实际漏做）——
+        # 否则取消后悬浮条保持未保存的新样式
+        try:
+            self.main.apply_overlay_from_config()
+        except Exception:
+            pass
 
     def _reset_defaults(self):
         """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。"""
         d = dict(DEFAULTS)
         self._suspend(lambda: self._set_widgets_from(d))
+        # v2.0.1：误听词典防抖未触发的输入也要按默认值暂存
+        timer = getattr(self, "_mishear_timer", None)
+        if timer is not None:
+            timer.stop()
         for k in self._STAGE_ORDER:
             if k in d and self.c.get(k) != d[k]:
                 self._staged[k] = d[k]
+        # mishear_map 需要显式比较（dict 与 DEFAULTS 的空 dict 可能内容相等但身份不同）
+        if (self.c.get("mishear_map") or {}) != (d.get("mishear_map") or {}):
+            self._staged["mishear_map"] = dict(d.get("mishear_map") or {})
         self._text_color = QColor(d["overlay_text_color"])
         self._bg_color = QColor(d["overlay_bg_color"])
         self._outline_color = QColor(d["overlay_outline_color"])
@@ -1439,8 +1501,9 @@ class SettingsDialog(QDialog):
     def _on_overlay_toggle(self, checked):
         self._stage("overlay_enabled", bool(checked))
         if not getattr(self, "_loading", False):
-            # 悬浮条开关属于即时观感改动：暂存的同时同步主窗口显隐（保存后按配置定稿）
-            self.main.set_overlay_enabled(checked)
+            # v2.0.1：预览只切显隐，不落盘——此前 set_overlay_enabled 内
+            # config.set 直接写配置，取消/关闭无法还原，绕过"保存并应用"契约
+            self.main.set_overlay_visible(checked)
 
     def _apply_overlay_style(self, *_):
         self._stage("overlay_font_size", int(self.overlay_font_spin.value()))
@@ -1502,9 +1565,11 @@ class SettingsDialog(QDialog):
             self._device_map[label] = d["index"]
             self.device_combo.addItem(label, d["index"])
         # 规范化去重：不同 Host API 对同一设备的命名常有截断/大小写差异
+        # v2.0.1：改用 itemData（设备索引）做去重键——此前按文本前 20 字符
+        # 截断去重，不同设备名前缀相同会被误合并，用户选不到目标设备
         seen = set()
         for i in range(self.device_combo.count() - 1, -1, -1):
-            key = self.device_combo.itemText(i).replace(" ", "").lower()[:20]
+            key = self.device_combo.itemData(i)
             if key in seen:
                 self.device_combo.removeItem(i)
             else:
@@ -1522,7 +1587,10 @@ class SettingsDialog(QDialog):
                     self.device_combo.removeItem(i)
                 else:
                     seen.add(label)
-        idx = self.device_combo.findData(self.c.get("device_index"))
+        # v2.0.1：回填优先取暂存值——此前用配置值回填，用户改选未保存后点
+        # "刷新"会把下拉框拉回旧值，与 _staged 脱节
+        preferred = self._staged.get("device_index", self.c.get("device_index"))
+        idx = self.device_combo.findData(preferred)
         if idx >= 0:
             self.device_combo.setCurrentIndex(idx)
         else:
@@ -1531,7 +1599,8 @@ class SettingsDialog(QDialog):
                 self.device_combo.setCurrentIndex(0)
             else:
                 self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
-            self.c.set("device_index", self.device_combo.currentData())
+            if not self._loading:
+                self._stage("device_index", self.device_combo.currentData())
         self.device_combo.blockSignals(False)
 
     def _refresh_argos_section(self):
@@ -1649,6 +1718,11 @@ class SettingsDialog(QDialog):
         self.argos_hint.setText(msg)
 
     def closeEvent(self, event):
+        # v2.0.1：迁移进行中同样只隐藏——进程退出会硬杀迁移线程，留下半迁移状态
+        if getattr(self, "_storage_worker", None) and self._storage_worker.isRunning():
+            self.hide()
+            event.ignore()
+            return
         if getattr(self, "argos_worker", None) and self.argos_worker.isRunning():
             self.hide()
             event.ignore()

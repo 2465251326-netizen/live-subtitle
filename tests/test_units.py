@@ -200,7 +200,38 @@ def test_mymemory_sentence_chunks():
     chunks = MyMemory._split_sentences(text)
     assert len(chunks) >= 2, "长文本应分块"
     assert all(len(c) <= MyMemory.LIMIT_CHARS for c in chunks), "分块不应超过限额"
-    assert " ".join(text.split()) == " ".join(" ".join(chunks).split()), "分块不应丢字"
+    assert "".join(chunks) == text, "零宽切分重组应零丢字"
+
+
+def test_mymemory_split_protects_decimals():
+    from app.translate.translator import MyMemory
+    chunks = MyMemory._split_sentences("pi is 3.14159 in math. ok")
+    assert any("3.14159" in c for c in chunks), "小数点不应被当作句边界"
+
+
+def test_mymemory_rejects_warning_response(monkeypatch=None):
+    from app.translate.translator import MyMemory
+    import app.translate.translator as tmod
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._p = payload
+        def json(self):
+            return self._p
+        def raise_for_status(self):
+            pass
+
+    orig = tmod.requests.get
+    tmod.requests.get = lambda *a, **k: FakeResp(
+        {"responseData": {"translatedText": "MYMEMORY WARNING: USED ALL"},
+         "responseStatus": 200})
+    try:
+        MyMemory.translate("hello", "en", "zh-CN")
+        raise AssertionError("警告串不应被当译文返回")
+    except RuntimeError:
+        pass
+    finally:
+        tmod.requests.get = orig
 
 
 def test_remove_pack_no_crash():
@@ -230,6 +261,32 @@ def test_google_parse_formats():
     # clients5 /translate_a/t 结构
     out2, det2 = GoogleFree._parse([["你好", "en"]])
     assert out2 == "你好" and det2 == "en"
+
+
+def test_zip_slip_backslash_blocked():
+    """v2.0.1 安全回归：反斜杠条目名绕过 zip-slip 校验的攻击必须被拦截。"""
+    import tempfile
+    import pathlib
+    import zipfile
+    from app.translate import offline_pack as op
+    base = pathlib.Path(tempfile.mkdtemp())
+    evil_zip = base / "evil.argosmodel"
+    dest = base / "dest"
+    with zipfile.ZipFile(evil_zip, "w") as zf:
+        zf.writestr("root/model/sent.model", "ok")
+        # 混合分隔符攻击：outer 用 "/"，rel 用 "\" 逃出 dest
+        zf.writestr("root/..\\..\\evil.txt", "pwned")
+    op._extract_pack(evil_zip, dest)
+    assert (dest / "model" / "sent.model").read_text() == "ok", "正常文件应解压"
+    assert not (base.parent / "evil.txt").exists(), "逃逸文件不应存在"
+    assert not (base / "evil.txt").exists(), "逃逸文件不应存在"
+
+
+def test_google_parse_multiline_clients5():
+    from app.translate.translator import GoogleFree
+    # clients5 对多句 q 的多行响应：全部拼接，不截断
+    out, det = GoogleFree._parse([["你好", "en"], ["世界", "en"]])
+    assert out == "你好世界" and det == "en"
 
 
 def test_version_files_sync():

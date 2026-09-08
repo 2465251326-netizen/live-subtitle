@@ -4,6 +4,7 @@
 直接加载推理，无需 argostranslate / torch 依赖。
 """
 import json
+import os
 import shutil
 import threading
 import time
@@ -112,13 +113,19 @@ def list_installed():
 
 
 def dir_size_mb(path) -> float:
-    """递归统计目录体积（MB）；目录不存在返回 0。"""
+    """递归统计目录体积（MB）；目录不存在返回 0。
+
+    v2.0.1：跳过符号链接——HF 缓存快照里的 model.bin 是指向 blobs 的
+    符号链接，stat() 会穿透计入，导致模型体积显示为双倍。
+    """
     total = 0
     p = Path(path)
     if not p.exists():
         return 0.0
     for f in p.rglob("*"):
         try:
+            if f.is_symlink():
+                continue
             if f.is_file():
                 total += f.stat().st_size
         except OSError:
@@ -193,11 +200,23 @@ def _extract_pack(model_path: Path, dest: Path):
         for name in names:
             if name.startswith(inner_root + "/") and name != inner_root + "/":
                 rel = name[len(inner_root) + 1:]
-                # 防 zip-slip：拒绝绝对路径 / 盘符 / 上跳目录
-                pure = PurePosixPath(rel)
-                if pure.is_absolute() or ".." in pure.parts or (len(rel) > 1 and rel[1] == ":"):
+                # 防 zip-slip（v2.0.1 加固）：此前用 PurePosixPath 校验，不把 "\"
+                # 当分隔符，而 WindowsPath 拼接时把 "\" 当分隔符——条目名
+                # "x\..\..\evil" 可绕过 ".." 检测实现任意路径写。现统一归一为
+                # "/" 并拒绝反斜杠，再加 realpath 前缀断言双保险。
+                if "\\" in rel:
                     continue
-                target = tmp / rel
+                rel_norm = rel.replace("\\", "/")
+                pure = PurePosixPath(rel_norm)
+                if pure.is_absolute() or ".." in pure.parts or (len(rel_norm) > 1 and rel_norm[1] == ":"):
+                    continue
+                target = tmp / rel_norm
+                try:
+                    if not Path(os.path.realpath(str(target))).is_relative_to(
+                            Path(os.path.realpath(str(tmp)))):
+                        continue
+                except (OSError, ValueError):
+                    continue
                 if name.endswith("/"):
                     target.mkdir(parents=True, exist_ok=True)
                 else:
@@ -269,6 +288,16 @@ def install_pack(pack: PackInfo, progress_cb=None):
         raise last_err
 
     dest = _pack_dir(pair)
+    # v2.0.1：重装同方向包时，必须先清翻译器缓存再解压——
+    # 运行中的 ctranslate2 握着旧包文件句柄，Windows 上 rmtree(dest) 会失败
+    with _lock:
+        stale = [k for k in _translator_cache if k[0] == pack.from_code]
+        for key in stale:
+            _translator_cache.pop(key, None)
+            try:
+                _cache_order.remove(key)
+            except ValueError:
+                pass
     try:
         _extract_pack(tmp_path, dest)
     except Exception:
@@ -286,17 +315,7 @@ def install_pack(pack: PackInfo, progress_cb=None):
         json.dumps(meta, ensure_ascii=False), encoding="utf-8"
     )
     tmp_path.unlink(missing_ok=True)
-    with _lock:
-        # _translator_cache 与 _cache_order 必须同步清理，
-        # 只清前者会残留失效键，导致新翻译器被错误挤出、模型反复重载
-        stale = [k for k in _translator_cache if k[0] == pack.from_code]
-        for key in stale:
-            _translator_cache.pop(key, None)
-        for key in stale:
-            try:
-                _cache_order.remove(key)
-            except ValueError:
-                pass
+    app_log.log("argos.pack_installed", pair=pair)
     return dest
 
 
@@ -376,6 +395,8 @@ def _split_long(text, limit=400):
 
 def _get_translator(source, target):
     key = (source, target)
+    # 锁内只做缓存查询/登记；ctranslate2 模型加载（数秒）放锁外，
+    # 避免与 remove_pack 的锁互抢冻结 UI 线程（v2.0.1）
     with _lock:
         if key in _translator_cache:
             _cache_order.remove(key)
@@ -384,13 +405,19 @@ def _get_translator(source, target):
         pack_dir = _resolve_pack_dir(source, target)
         if not (pack_dir / "sentencepiece.model").exists():
             return None
-        tr = PackTranslator(pack_dir)
-        _translator_cache[key] = tr
-        _cache_order.append(key)
-        while len(_cache_order) > _CACHE_MAX:
-            old = _cache_order.pop(0)
-            _translator_cache.pop(old, None)
-        return tr
+    tr = PackTranslator(pack_dir)
+    with _lock:
+        # 双检：加载期间可能已被 remove_pack 清场/重装替换
+        if key not in _translator_cache:
+            _translator_cache[key] = tr
+            _cache_order.append(key)
+            while len(_cache_order) > _CACHE_MAX:
+                old = _cache_order.pop(0)
+                _translator_cache.pop(old, None)
+        else:
+            _cache_order.remove(key)
+            _cache_order.append(key)
+        return _translator_cache.get(key, tr)
 
 
 def translate(text, source, target):

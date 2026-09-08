@@ -23,11 +23,19 @@ class TranslationCache:
         self._data = {}
         self._max = max_items
         self._lock = threading.Lock()
-        self._load()
+        # v2.0.1：懒加载——模块导入时 Config 尚未 relocate 到自定义存储根，
+        # 提前 _load 会读错位置，且首次 put 会用默认根的残缺数据覆写自定义根缓存
+        self._loaded = False
 
     def _path(self):
         # 动态读取：支持存储根目录迁移后自动跟随新位置
         return _cfgmod.CACHE_FILE
+
+    def _ensure_loaded(self):
+        if self._loaded:
+            return
+        self._load()
+        self._loaded = True
 
     def _load(self):
         try:
@@ -39,16 +47,24 @@ class TranslationCache:
             self._data = {}
 
     def save(self):
-        try:
-            f = self._path()
-            f.parent.mkdir(parents=True, exist_ok=True)
-            with open(f, "w", encoding="utf-8") as fp:
-                json.dump(self._data, fp, ensure_ascii=False)
-        except Exception:
-            pass
+        # v2.0.1：原子写 + 在锁内调用——此前直接 open("w")，写一半崩溃会截断
+        # 缓存文件；翻译线程 put 与 UI 清缓存并发时可能交叉写坏
+        with self._lock:
+            self._loaded = True
+            try:
+                f = self._path()
+                f.parent.mkdir(parents=True, exist_ok=True)
+                tmp = f.with_suffix(".json.tmp")
+                with open(tmp, "w", encoding="utf-8") as fp:
+                    json.dump(self._data, fp, ensure_ascii=False)
+                import os
+                os.replace(tmp, f)
+            except Exception:
+                pass
 
     def get(self, key):
         with self._lock:
+            self._ensure_loaded()
             v = self._data.get(key)
             if isinstance(v, list):
                 v = tuple(v)
@@ -56,19 +72,38 @@ class TranslationCache:
 
     def put(self, key, value):
         with self._lock:
+            self._ensure_loaded()
             self._data[key] = value
             while len(self._data) > self._max:
                 self._data.pop(next(iter(self._data)))
-        self.save()
+            self._save_locked()
+
+    def _save_locked(self):
+        self._loaded = True
+        try:
+            f = self._path()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as fp:
+                json.dump(self._data, fp, ensure_ascii=False)
+            import os
+            os.replace(tmp, f)
+        except Exception:
+            pass
+
+    def save(self):
+        with self._lock:
+            self._save_locked()
 
     def clear(self):
         with self._lock:
+            self._loaded = True
             self._data.clear()
-        try:
-            if self._path().exists():
-                self._path().unlink()
-        except Exception:
-            pass
+            try:
+                if self._path().exists():
+                    self._path().unlink()
+            except Exception:
+                pass
 
 
 _cache = TranslationCache()
@@ -106,11 +141,18 @@ class GoogleFree:
             if not out:
                 raise ValueError("译文为空")
             return out, (data[2] if len(data) > 2 and isinstance(data[2], str) else None)
-        rows = first
-        if isinstance(rows, list) and rows and isinstance(rows[0], list):
-            rows = rows[0]  # clients5 可能多包一层
-        if isinstance(rows, list) and rows and isinstance(rows[0], str):
-            return rows[0], (rows[1] if len(rows) > 1 and isinstance(rows[1], str) else None)
+        # clients5 /translate_a/t：[[译文, 检测语言], ...]，多句 q 会返回多行——
+        # 全部拼接（此前只取 rows[0] 会截断丢失后续句子）
+        rows = data
+        if rows and isinstance(rows[0], list) and rows[0] and isinstance(rows[0][0], list):
+            rows = rows[0]
+        if rows and all(isinstance(r, list) and r and isinstance(r[0], str) for r in rows):
+            out = "".join(r[0] for r in rows)
+            if not out:
+                raise ValueError("译文为空")
+            det = next((r[1] for r in rows
+                        if len(r) > 1 and isinstance(r[1], str)), None)
+            return out, det
         raise ValueError("Google 响应结构无法解析")
 
     @classmethod
@@ -153,26 +195,26 @@ class MyMemory:
 
     @staticmethod
     def _split_sentences(text, limit=LIMIT_CHARS):
-        """按句末标点切块（v2.0.0）：旧逻辑硬按 480 字符切会把句子拦腰斩断，
-        翻译质量明显受损；现在尽量在句边界分块，超长单句才硬切。"""
-        parts = [p for p in re.split(r"(?<=[.!?。！？；;])\s*", text) if p]
+        """按句末标点切块（v2.0.0 引入、v2.0.1 修正切分规则）。
+
+        中文句末标点（。！？；）后必切；英文 .!? 仅在后面跟空白/行尾时切
+        （保护 "3.14"、"e.g."、URL）。零宽切分保证 "".join(parts) == 原文，
+        重组零丢字。"""
+        parts = [p for p in re.split(r"(?<=[。！？；])|(?<=[.!?])(?=\s+)", text) if p]
         chunks, cur = [], ""
         for p in parts:
-            if len(cur) + len(p) + 1 <= limit or not cur:
-                cur = (cur + " " + p).strip() if cur else p
+            if len(cur) + len(p) <= limit or not cur:
+                cur += p
                 # 单句本身超长：硬切
                 while len(cur) > limit:
                     chunks.append(cur[:limit])
                     cur = cur[limit:]
             else:
                 chunks.append(cur)
-                cur = p[:limit]
-                if len(p) > limit:
-                    rest = p[limit:]
-                    while len(rest) > limit:
-                        chunks.append(rest[:limit])
-                        rest = rest[limit:]
-                    cur = rest
+                cur = p
+                while len(cur) > limit:
+                    chunks.append(cur[:limit])
+                    cur = cur[limit:]
         if cur:
             chunks.append(cur)
         return chunks or [text[:limit]]
@@ -182,7 +224,10 @@ class MyMemory:
         if not source or source == "auto":
             source = GoogleFree.detect_lang(text)
         source = WHISPER_LANG_MAP.get(source, source) or "en"
-        target = "zh-CN" if target.startswith("zh") else target
+        # v2.0.1：繁体目标不再静默降级——zh-TW 原样传给 MyMemory（其支持
+        # zh-TW langpair），失败由备援链接手，而不是偷偷给简体
+        if target.startswith("zh"):
+            target = "zh-TW" if target == "zh-TW" else "zh-CN"
         out_parts = []
         for c in MyMemory._split_sentences(text):
             url = "https://api.mymemory.translated.net/get"
@@ -191,7 +236,14 @@ class MyMemory:
                              proxies=net.proxies())
             r.raise_for_status()
             data = r.json()
-            out_parts.append(data.get("responseData", {}).get("translatedText", ""))
+            txt = data.get("responseData", {}).get("translatedText", "")
+            status = str(data.get("responseStatus", ""))
+            # v2.0.1：配额超限/无效语言对时 MyMemory 返回 HTTP 200 + 英文警告串，
+            # 此前警告被当译文上屏并写入持久缓存（整天命中坏缓存）
+            if status not in ("", "200") or not txt.strip() or "MYMEMORY WARNING" in txt.upper():
+                raise RuntimeError(
+                    f"MyMemory 响应异常（status={status or '空译文'}），已切换备援")
+            out_parts.append(txt)
         return "".join(out_parts), source
 
 
@@ -311,7 +363,10 @@ class TranslateThread(QThread):
             pass
 
     def _do_translate(self, text, detected):
-        key = f"{self._active_engine}:{self.target}:{text}"
+        # v2.0.1：key 加入源语言维度——同文本被 whisper 判为不同源语言时，
+        # 旧 key 会让 MyMemory/Argos 命中错误语言方向的缓存译文
+        norm_src = WHISPER_LANG_MAP.get(detected, detected or "")
+        key = f"{self._active_engine}:{self.target}:{norm_src}:{text}"
         cached = _cache.get(key)
         if cached:
             return cached[0], cached[1]
@@ -364,6 +419,10 @@ class TranslateThread(QThread):
                 if self._active_engine != "argos":
                     try:
                         src_for_argos = WHISPER_LANG_MAP.get(detected, "") if detected and detected != "auto" else ""
+                        # Argos 元数据用 "zh"（ArgosEngine.translate 内部有同样归一），
+                        # 判断处漏做归一曾导致中文源永远不落 Argos 备援（v2.0.1 修）
+                        if src_for_argos.startswith("zh"):
+                            src_for_argos = "zh"
                         tgt_for_argos = "zh" if self.target.startswith("zh") else self.target
                         if src_for_argos and (src_for_argos, tgt_for_argos) in ENGINES["argos"].installed_pairs():
                             fallbacks.append("argos")
