@@ -6,6 +6,23 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 
+def _silero_assets_ok() -> bool:
+    """检测 faster-whisper 自带的 Silero VAD onnx 资产是否存在。
+
+    打包环境若漏打资产（v1.9.0 安装版），vad_filter=True 会让
+    ONNXRuntime 抛英文 NO SUCH FILE；此处兜底自动回退能量 VAD。
+    """
+    try:
+        import os
+        import faster_whisper
+        assets = os.path.join(os.path.dirname(faster_whisper.__file__), "assets")
+        if not os.path.isdir(assets):
+            return False
+        return any(n.endswith(".onnx") for n in os.listdir(assets))
+    except Exception:
+        return False
+
+
 def split_long_caption(text, limit=60):
     """把一段超长识别结果按句末标点二次切分，避免快语速内容出现 14 秒长字幕。"""
     text = text.strip()
@@ -108,14 +125,17 @@ class AsrThread(QThread):
     def _load_model(self):
         if self._model is not None:
             return True
-        from app.config import ensure_hf_endpoint_ready
-        ensure_hf_endpoint_ready()
-        # 模型下载走 huggingface_hub（只认环境变量），下载前同步代理策略
-        try:
-            from app import net as _net
-            _net.apply_proxy_env()
-        except Exception:
-            pass
+        from app.config import HF_HOME
+        cached = self.model_cached(self.model_size)
+        if not cached:
+            # 模型需要联网下载：走 huggingface_hub（只认环境变量），下载前同步代理策略
+            from app.config import ensure_hf_endpoint_ready
+            ensure_hf_endpoint_ready()
+            try:
+                from app import net as _net
+                _net.apply_proxy_env()
+            except Exception:
+                pass
         from faster_whisper import WhisperModel
         device = self.device if self.device in ("cpu", "cuda") else "auto"
         compute_type = "int8" if device in ("cpu", "auto") else "float16"
@@ -124,7 +144,9 @@ class AsrThread(QThread):
                 self.model_size,
                 device=device,
                 compute_type=compute_type,
-                download_root=None,
+                download_root=str(HF_HOME / "hub"),
+                # 缓存完整时离线加载：跳过联网校验，避免代理抖动时卡在「正在加载模型」
+                local_files_only=cached,
             )
             self._device_used = device
             return True
@@ -150,6 +172,10 @@ class AsrThread(QThread):
             self.status_changed.emit("就绪，正在聆听...（GPU · CUDA 加速已生效）")
         else:
             self.status_changed.emit("就绪，正在聆听...（CPU 模式）")
+        if self.silero_vad and not _silero_assets_ok():
+            # 打包资产缺失（v1.9.0 安装包）：回退能量 VAD，原因并入就绪提示
+            self.silero_vad = False
+            self.status_changed.emit("就绪，正在聆听...（Silero VAD 组件缺失，已回退默认切句，请更新安装包）")
         self._warmup()
         while not self._stop:
             try:
@@ -180,8 +206,9 @@ class AsrThread(QThread):
             log_prob_threshold=-1.0,
         )
         # Silero VAD（建议5）：faster-whisper 内置，对段内非语音再过滤一道；
-        # 与能量 VAD 分工——能量 VAD 管切句，Silero 管段内净化，双保险
-        if self.silero_vad:
+        # 与能量 VAD 分工——能量 VAD 管切句，Silero 管段内净化，双保险。
+        # 打包环境资产缺失时自动回退能量 VAD，不让 ONNXRuntime 报错冒给用户
+        if self.silero_vad and _silero_assets_ok():
             kwargs["vad_filter"] = True
             kwargs["vad_parameters"] = {"min_silence_duration_ms": 300}
         with self._lang_lock:
