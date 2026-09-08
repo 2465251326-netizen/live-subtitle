@@ -11,6 +11,13 @@ import re
 import sys
 from pathlib import Path
 
+# CI/Windows 控制台可能是 cp1252/gbk：中文输出会 UnicodeEncodeError，统一强制 UTF-8
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
