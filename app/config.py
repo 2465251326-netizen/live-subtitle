@@ -39,6 +39,7 @@ DEFAULTS = {
     "proxy_url": "",                   # manual 模式的代理地址，如 http://127.0.0.1:10808
     "hotkey_enabled": True,            # 全局热键开关
     "hotkey_sequence": "Ctrl+Alt+S",   # 全局热键组合（开始/停止翻译）
+    "storage_root": "",                # 自定义数据根目录（空 = 默认 ~\.live_subtitle）
 }
 
 LANGUAGES = {
@@ -113,6 +114,16 @@ class Config:
         os.environ.setdefault("ARGOS_TRANSLATE_PACKAGES_DIR", str(ARGOS_DATA / "packages"))
         self._data = dict(DEFAULTS)
         self.load()
+        # 自定义存储根：在创建目录/启动探测之前重定位
+        saved_root = str(self._data.get("storage_root") or "").strip()
+        if saved_root:
+            try:
+                self.relocate(saved_root)
+            except Exception:
+                pass
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        HF_HOME.mkdir(parents=True, exist_ok=True)
+        ARGOS_DATA.mkdir(parents=True, exist_ok=True)
         self._sync_proxy()
         _start_hf_probe()
 
@@ -123,6 +134,31 @@ class Config:
             net.configure(self._data.get("proxy_mode", "system"),
                           self._data.get("proxy_url", ""))
             net.apply_proxy_env()
+        except Exception:
+            pass
+
+    def relocate(self, new_root):
+        """应用新的数据根目录（建议1）：更新模块常量与环境变量并写回配置。
+
+        数据文件本身的搬移由 app/storage.migrate_root 完成，这里只负责
+        「指针」重定位，保证之后所有读写都落到新位置。
+        """
+        global CONFIG_DIR, CONFIG_FILE, CACHE_FILE, HF_HOME, ARGOS_DATA
+        new_root = Path(new_root)
+        new_root.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR = new_root
+        CONFIG_FILE = new_root / "config.json"
+        CACHE_FILE = new_root / "trans_cache.json"
+        HF_HOME = new_root / "hf"
+        ARGOS_DATA = new_root / "argos"
+        os.environ["HF_HOME"] = str(HF_HOME)
+        os.environ["ARGOS_DATA_HOME"] = str(ARGOS_DATA)
+        os.environ["ARGOS_TRANSLATE_PACKAGES_DIR"] = str(ARGOS_DATA / "packages")
+        self._data["storage_root"] = str(new_root)
+        self.save()
+        try:
+            from app.translate import offline_pack as _op
+            _op.PACKS_DIR = ARGOS_DATA / "packs"
         except Exception:
             pass
 

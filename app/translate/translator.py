@@ -7,7 +7,8 @@ import urllib.parse
 import requests
 from PySide6.QtCore import QThread, Signal
 
-from app.config import CACHE_FILE, WHISPER_LANG_MAP
+from app import config as _cfgmod
+from app.config import WHISPER_LANG_MAP
 from app import net
 
 HEADERS = {
@@ -21,22 +22,27 @@ class TranslationCache:
         self._data = {}
         self._max = max_items
         self._lock = threading.Lock()
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         self._load()
+
+    def _path(self):
+        # 动态读取：支持存储根目录迁移后自动跟随新位置
+        return _cfgmod.CACHE_FILE
 
     def _load(self):
         try:
-            if CACHE_FILE.exists():
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                    self._data = json.load(f)
+            f = self._path()
+            if f.exists():
+                with open(f, "r", encoding="utf-8") as fp:
+                    self._data = json.load(fp)
         except Exception:
             self._data = {}
 
     def save(self):
         try:
-            CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False)
+            f = self._path()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            with open(f, "w", encoding="utf-8") as fp:
+                json.dump(self._data, fp, ensure_ascii=False)
         except Exception:
             pass
 
@@ -58,8 +64,8 @@ class TranslationCache:
         with self._lock:
             self._data.clear()
         try:
-            if CACHE_FILE.exists():
-                CACHE_FILE.unlink()
+            if self._path().exists():
+                self._path().unlink()
         except Exception:
             pass
 

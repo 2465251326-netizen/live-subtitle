@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QFrame, QGridLayout, QProgressBar, QSpinBox, QSlider,
     QListWidget, QListWidgetItem, QStackedWidget, QWidget, QMessageBox,
     QScrollArea, QStyle, QStyleOptionSlider, QLineEdit, QKeySequenceEdit,
+    QFileDialog,
 )
 
 from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION, DEFAULTS
@@ -119,6 +120,26 @@ class ProxyProbeWorker(QThread):
         except Exception:
             ok = False
         self.done.emit(bool(ok), net.describe())
+
+
+class _StorageMigrateWorker(QThread):
+    """后台迁移数据目录（模型可能数 GB，不能卡 UI）。"""
+    done = Signal(str)
+    fail = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, new_root, parent=None):
+        super().__init__(parent)
+        self.new_root = new_root
+
+    def run(self):
+        try:
+            from app import storage
+            new_root = storage.migrate_root(
+                self.new_root, progress_cb=lambda m: self.progress.emit(m))
+            self.done.emit(new_root)
+        except Exception as e:
+            self.fail.emit(str(e))
 
 
 def _version_tuple(s):
@@ -606,6 +627,22 @@ class SettingsDialog(QDialog):
         self.hotkey_status.setWordWrap(True)
         page._inner_layout.addWidget(self.hotkey_status)
 
+        self._section(page, "存储位置")
+        self.storage_hint = QLabel("")
+        self.storage_hint.setObjectName("SettingDesc")
+        self.storage_hint.setWordWrap(True)
+        page._inner_layout.addWidget(self.storage_hint)
+        storage_row = QHBoxLayout()
+        storage_row.setSpacing(6)
+        btn_change = QPushButton("更改位置…")
+        btn_change.clicked.connect(self._change_storage_root)
+        btn_open = QPushButton("打开目录")
+        btn_open.clicked.connect(self._open_storage_dir)
+        storage_row.addWidget(btn_change)
+        storage_row.addWidget(btn_open)
+        storage_row.addStretch()
+        page._inner_layout.addLayout(storage_row)
+
         self.close_combo.currentIndexChanged.connect(
             lambda _i: self._stage("close_action", self.close_combo.currentData()))
         self.auto_start_check.toggled.connect(lambda v: self._stage("auto_start", bool(v)))
@@ -629,6 +666,76 @@ class SettingsDialog(QDialog):
             self.hotkey_status.setText(self.main.apply_hotkey_config())
         except Exception:
             pass
+
+    # ---------- 存储位置（建议1） ----------
+
+    def _refresh_storage_hint(self):
+        try:
+            from app import storage
+            u = storage.usage_summary()
+            total = u["hf_mb"] + u["argos_mb"] + u["cache_mb"]
+            free = storage.disk_free_mb(u["root"])
+            self.storage_hint.setText(
+                f"当前：{u['root']}（模型 {u['hf_mb']:.0f} MB · 语言包 {u['argos_mb']:.0f} MB · "
+                f"缓存 {u['cache_mb']:.1f} MB · 共 {total:.0f} MB；该盘剩余 {free / 1024:.1f} GB）")
+        except Exception as e:
+            self.storage_hint.setText(f"占用统计失败：{e}")
+
+    def _open_storage_dir(self):
+        from PySide6.QtCore import QUrl
+        from app import config as cfg
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(cfg.CONFIG_DIR)))
+
+    def _change_storage_root(self):
+        if getattr(self.main, "running", False):
+            QMessageBox.warning(self, "无法更改",
+                                "翻译运行中不能迁移数据，请先停止翻译。")
+            return
+        new = QFileDialog.getExistingDirectory(
+            self, "选择新的数据根目录（模型/语言包将迁移到此目录下）",
+            str(self.c.get("storage_root") or ""))
+        if not new:
+            return
+        from app import config as cfg
+        if Path(new).resolve() == Path(cfg.CONFIG_DIR).resolve():
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("迁移数据")
+        box.setText(f"将把识别模型、语言包与缓存整体迁移到：\n{new}\n\n"
+                    "迁移期间请勿关闭程序（模型可能数 GB，视磁盘速度需数分钟）。")
+        b_go = box.addButton("开始迁移", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() != b_go:
+            return
+        self._storage_progress = QProgressBar()
+        self._storage_progress.setRange(0, 0)  # 忙碌指示
+        page_widget = self.storage_hint.parentWidget()
+        if page_widget is not None:
+            page_widget.layout().addWidget(self._storage_progress)
+        self._storage_worker = _StorageMigrateWorker(new)
+        self._storage_worker.done.connect(self._on_storage_migrated)
+        self._storage_worker.fail.connect(self._on_storage_failed)
+        self._storage_worker.start()
+
+    def _on_storage_migrated(self, new_root):
+        self._remove_storage_progress()
+        self.c.relocate(new_root)
+        self._refresh_storage_hint()
+        QMessageBox.information(
+            self, "迁移完成",
+            f"数据已迁移到：\n{new_root}\n\n重启程序后所有组件将完全使用新位置。")
+
+    def _on_storage_failed(self, msg):
+        self._remove_storage_progress()
+        QMessageBox.warning(self, "迁移失败", f"{msg}\n\n原数据未受影响，可重试或更换目标盘。")
+
+    def _remove_storage_progress(self):
+        bar = getattr(self, "_storage_progress", None)
+        if bar is not None:
+            bar.setParent(None)
+            bar.deleteLater()
+            self._storage_progress = None
 
     # ---------- 识别模型管理 ----------
 
@@ -1351,3 +1458,4 @@ class SettingsDialog(QDialog):
         finally:
             self._loading = False
         self._mark_dirty()
+        self._refresh_storage_hint()
