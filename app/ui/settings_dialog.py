@@ -525,7 +525,7 @@ class SettingsDialog(QDialog):
         self._row(page, "误听修正词典",
                   "对识别结果做精确替换（建议2/建议5 质量调优）；保存并应用后对后续字幕生效。",
                   self.mishear_edit)
-        self.mishear_edit.editingFinished.connect(self._stage_mishear)
+        self.mishear_edit.textChanged.connect(self._mishear_text_changed)
 
         for w, key in ((self.model_combo, "asr_model"), (self.asr_lang_combo, "asr_language"),
                        (self.compute_combo, "asr_device")):
@@ -943,6 +943,16 @@ class SettingsDialog(QDialog):
                 item.setText(f"{label}\n    {status}")
         remove_btn.clicked.connect(do_remove)
         dlg.exec()
+
+    def _mishear_text_changed(self):
+        """QPlainTextEdit 无 editingFinished：textChanged + 400ms 防抖等效。"""
+        timer = getattr(self, "_mishear_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._stage_mishear)
+            self._mishear_timer = timer
+        timer.start(400)
 
     def _stage_mishear(self):
         """解析误听词典文本（每行 错误=正确），只暂存合法行。"""
