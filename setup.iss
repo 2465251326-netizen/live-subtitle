@@ -29,6 +29,9 @@ ArchitecturesAllowed=x64compatible
 MinVersion=10.0
 ChangesEnvironment=no
 
+[Languages]
+Name: "chs"; MessagesFile: "installer\ChineseSimplified.isl"
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
