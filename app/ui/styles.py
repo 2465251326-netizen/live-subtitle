@@ -189,6 +189,23 @@ QLabel#OverlayTarget {
     font-weight: 700;
     background: transparent;
 }
+QLabel#OverlayStatus {
+    color: rgba(255, 255, 255, 150);
+    font-size: 11px;
+    background: transparent;
+}
+QPushButton#OverlayClose {
+    background: transparent;
+    border: none;
+    border-radius: 11px;
+    color: rgba(255, 255, 255, 190);
+    font-size: 12px;
+    padding: 0px;
+}
+QPushButton#OverlayClose:hover {
+    background: rgba(255, 255, 255, 46);
+    color: #ffffff;
+}
 """
 
 SETTING_QSS = """

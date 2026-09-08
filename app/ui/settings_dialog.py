@@ -771,6 +771,28 @@ class SettingsDialog(QDialog):
             return
         event.accept()
 
+    # ---------- 外部联动 ----------
+
+    def sync_overlay_check(self, checked):
+        """悬浮字幕被右键关闭时，同步主窗口的勾选状态。"""
+        self.overlay_check.blockSignals(True)
+        self.overlay_check.setChecked(bool(checked))
+        self.overlay_check.blockSignals(False)
+
+    def sync_source_type(self, mode):
+        """悬浮条切换输入来源后，同步音频来源下拉框并刷新设备列表。"""
+        idx = self.source_combo.findData(mode)
+        if idx >= 0:
+            self.source_combo.blockSignals(True)
+            self.source_combo.setCurrentIndex(idx)
+            self.source_combo.blockSignals(False)
+        self._load_devices()
+
+    def focus_page(self, index):
+        """右键「打开设置」时定位到指定页（0 音频 / 1 识别 / 2 翻译 / 3 显示 / 4 通用）。"""
+        if 0 <= index < self.pages.count():
+            self.nav.setCurrentRow(index)
+
     def load_from_config(self):
         c = self.c
 

@@ -208,7 +208,9 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.session_label)
 
         self.overlay = CaptionOverlay(on_closed=self.on_overlay_closed,
-                                      on_moved=self._on_overlay_moved)
+                                      on_moved=self._on_overlay_moved,
+                                      on_open_settings=self._open_overlay_settings,
+                                      on_toggle_source=self._toggle_source)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -254,6 +256,49 @@ class MainWindow(QMainWindow):
         act = getattr(self, "_tray_toggle_action", None)
         if act is not None:
             act.setText(f"开始 / 停止翻译（{seq}）" if seq else "开始 / 停止翻译")
+
+    def _open_overlay_settings(self):
+        """悬浮条右键「打开设置」：打开设置窗口并定位到「显示」页。"""
+        self._open_settings()
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None:
+            dlg.focus_page(3)
+
+    def _toggle_source(self):
+        """悬浮条右键「切换输入来源」：系统声音 ↔ 麦克风，运行中自动重启采集。"""
+        cur = self.config.get("source_type")
+        new = "microphone" if cur == "system" else "system"
+        self.config.set("source_type", new)
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None:
+            dlg.sync_source_type(new)
+        if self.running:
+            self.stop_pipeline()
+            self.start_pipeline()
+        name = "麦克风" if new == "microphone" else "系统声音"
+        self._set_engine_status(f"已切换输入来源：{name}")
+
+    def update_overlay_status(self):
+        """把运行状态/来源/引擎/模型同步到悬浮条状态行。"""
+        if not hasattr(self, "overlay"):
+            return
+        if getattr(self, "_low_input_warn", False):
+            self.overlay.set_status("信号弱", is_error=True)
+            return
+        if not self.running:
+            self.overlay.set_status("已停止 · 待机中")
+            return
+        src = "麦克风" if self.config.get("source_type") == "microphone" else "系统声音"
+        model = self.config.get("asr_model")
+        eng = getattr(self, "_last_engine_name", "") or "自动"
+        self.overlay.set_status(f"运行中 · {src} · {eng} · {model} 模型")
+
+    def set_overlay_caption_error(self, failed):
+        """字幕翻译失败时让状态行变橙红提醒。"""
+        if hasattr(self, "overlay"):
+            self.overlay.set_status("翻译失败 · 检查网络或切换引擎", is_error=failed)
+            if not failed:
+                self.update_overlay_status()
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(QIcon(str(icon_path())), self)
@@ -455,6 +500,7 @@ class MainWindow(QMainWindow):
 
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
+        self.update_overlay_status()
 
     def _start_model_download_feedback(self, model_size):
         self._model_dl_model = model_size
@@ -547,6 +593,7 @@ class MainWindow(QMainWindow):
         self.asr_thread = None
         self.translate_thread = None
         self.engine_status_label.setText("引擎：已停止")
+        self.update_overlay_status()
 
     def _on_pipeline_error(self, msg):
         if self.running and ("采集" in msg or "回环" in msg or "音频" in msg or "设备" in msg):
@@ -563,6 +610,7 @@ class MainWindow(QMainWindow):
             self.translate_thread.submit(text, detected)
 
     def _on_translated(self, source_text, translated, engine, detected, error):
+        self._last_engine_name = engine
         show_source = bool(self.config.get("show_source"))
         card = CaptionCard(source_text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
@@ -575,6 +623,11 @@ class MainWindow(QMainWindow):
         self.session_count = getattr(self, "session_count", 0) + 1
         self.session_label.setText(f"本次会话：{self.session_count} 条")
         self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
+        self.update_overlay_status()
+        if hasattr(self, "overlay"):
+            self.overlay.set_status(
+                f"运行中 · {'麦克风' if self.config.get('source_type') == 'microphone' else '系统声音'} · {engine} · {self.config.get('asr_model')} 模型",
+                is_error=bool(error))
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         if self.overlay.isVisible():

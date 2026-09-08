@@ -76,11 +76,13 @@ class OutlinedLabel(QLabel):
 
 
 class CaptionOverlay(QWidget):
-    def __init__(self, on_closed=None, on_moved=None):
+    def __init__(self, on_closed=None, on_moved=None,
+                 on_open_settings=None, on_toggle_source=None):
         super().__init__(None)
         # 背景参数必须先于任何可能触发 paintEvent 的调用（setStyleSheet 等）
         self._bg_color = QColor("#0c0e14")
         self._bg_alpha = int(78 * 2.55)
+        self._font_size = 18
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
@@ -93,10 +95,33 @@ class CaptionOverlay(QWidget):
         self._drag_pos = None
         self._on_closed = on_closed
         self._on_moved = on_moved
+        self._on_open_settings = on_open_settings
+        self._on_toggle_source = on_toggle_source
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 12, 22, 14)
-        layout.setSpacing(4)
+        layout.setContentsMargins(22, 10, 14, 14)
+
+        # 顶部行：状态行 + 悬浮 X 关闭按钮（hover 显现）
+        top_row = QHBoxLayout()
+        top_row.setSpacing(6)
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("OverlayStatus")
+        self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        top_row.addWidget(self.status_label, 1)
+        self.close_button = QPushButton("✕")
+        self.close_button.setObjectName("OverlayClose")
+        self.close_button.setFixedSize(22, 22)
+        self.close_button.setCursor(Qt.PointingHandCursor)
+        self.close_button.setToolTip("关闭悬浮字幕")
+        self.close_button.clicked.connect(self._request_close)
+        self.close_button.hide()  # 悬浮条上才显现，避免误点
+        top_row.addWidget(self.close_button, 0, Qt.AlignTop)
+        layout.addLayout(top_row)
+
+        # 状态行与正文保持大间距（apply_style 中随字号重算）
+        self._status_gap = QWidget()
+        self._status_gap.setFixedHeight(int(self._font_size * 1.5))
+        layout.addWidget(self._status_gap)
 
         self.source_label = OutlinedLabel("")
         self.source_label.setObjectName("OverlaySource")
@@ -111,6 +136,23 @@ class CaptionOverlay(QWidget):
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
         self.adjustSize()
+
+    # ---------- 状态行 ----------
+
+    def set_status(self, text, is_error=False):
+        """更新状态行：运行状态 · 输入来源 · 引擎 · 模型；错误时变橙红。"""
+        self.status_label.setText(text)
+        if is_error:
+            self.status_label.setStyleSheet("color: #ff8a5c; font-size: 11px;")
+        else:
+            self.status_label.setStyleSheet("color: rgba(255, 255, 255, 150); font-size: 11px;")
+
+    def _request_close(self):
+        self.hide()
+        if self._on_closed:
+            self._on_closed()
+
+    # ---------- 拖动与悬停 ----------
 
     def paintEvent(self, event):
         # setStyleSheet 会触发提前重绘，属性缺失时跳过本帧
@@ -130,6 +172,7 @@ class CaptionOverlay(QWidget):
         opacity = max(0, min(100, int(bg_opacity)))
         self._bg_color = QColor(bg_color)
         self._bg_alpha = int(opacity * 2.55)
+        self._font_size = max(10, int(font_size))
         qss = f"""
         QLabel#OverlaySource {{
             color: rgba(255, 255, 255, 150);
@@ -149,6 +192,8 @@ class CaptionOverlay(QWidget):
         self.target_label.set_outline(outline_w, outline_color)
         self.target_label.set_fill_color(text_color)
         self.source_label.set_fill_color(QColor(255, 255, 255, 150))
+        # 状态行与正文的间距随字号走，保持"空三格"的宽松观感
+        self._status_gap.setFixedHeight(int(self._font_size * 1.5))
         self.update()
         self.updateGeometry()
         self.adjustSize()
@@ -188,11 +233,24 @@ class CaptionOverlay(QWidget):
         if self._on_moved:
             self._on_moved(self.x(), self.y())
 
+    def enterEvent(self, event):
+        # 悬停时显现右上角 X 按钮；离开时隐藏
+        self.close_button.show()
+
+    def leaveEvent(self, event):
+        self.close_button.hide()
+
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        act_close = menu.addAction("关闭悬浮字幕")
+        act_settings = menu.addAction("打开设置…")
+        act_source = menu.addAction("切换输入来源")
+        act_hide = menu.addAction("隐藏字幕条")
         chosen = menu.exec(event.globalPos())
-        if chosen == act_close:
-            self.hide()
-            if self._on_closed:
-                self._on_closed()
+        if chosen == act_settings:
+            if self._on_open_settings:
+                self._on_open_settings()
+        elif chosen == act_source:
+            if self._on_toggle_source:
+                self._on_toggle_source()
+        elif chosen == act_hide:
+            self._request_close()
