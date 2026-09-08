@@ -31,11 +31,13 @@ class AsrThread(QThread):
     model_ready = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, model_size: str, device: str, language: str, parent=None):
+    def __init__(self, model_size: str, device: str, language: str, parent=None,
+                 hallucination_filter=True):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
         self.language = language
+        self.hallucination_filter = bool(hallucination_filter)
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
         self._model = None
@@ -169,7 +171,20 @@ class AsrThread(QThread):
             kwargs["language"] = lang
 
         segments, info = self._model.transcribe(audio, **kwargs)
-        texts = [seg.text.strip() for seg in segments if seg.text and seg.text.strip()]
+        segs = []
+        for seg in segments:
+            t = (seg.text or "").strip()
+            if not t:
+                continue
+            segs.append((t, float(getattr(seg, "avg_logprob", 0.0) or 0.0),
+                         float(getattr(seg, "no_speech_prob", 0.0) or 0.0)))
+        if self.hallucination_filter:
+            # 幻觉抑制：音乐/噪声段常见特征是"高置信度胡言"或"无语音概率高+低置信度"，
+            # 两者命中其一即丢弃（阈值偏保守，宁可少出一条也不出乱码字幕）
+            texts = [t for (t, lp, ns) in segs
+                     if lp >= -1.2 and not (ns > 0.8 and lp < -0.5)]
+        else:
+            texts = [t for (t, _lp, _ns) in segs]
         if not texts:
             if self.language == "auto":
                 with self._lang_lock:

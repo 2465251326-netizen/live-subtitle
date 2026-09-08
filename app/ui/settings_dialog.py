@@ -397,10 +397,16 @@ class SettingsDialog(QDialog):
         self._row(page, "计算方式",
                   "有 NVIDIA 显卡并配置 CUDA 环境时选「自动」可用 GPU 加速；普通电脑保持 CPU 模式即可实时。",
                   self.compute_combo)
+        self.hallucination_check = QCheckBox()
+        self._row(page, "幻觉抑制",
+                  "自动丢弃音乐/噪声段的胡言乱语字幕（推荐开启；若发现正常语音被误丢可关闭）。",
+                  self.hallucination_check)
 
         for w, key in ((self.model_combo, "asr_model"), (self.asr_lang_combo, "asr_language"),
                        (self.compute_combo, "asr_device")):
             w.currentIndexChanged.connect(lambda _i, w=w, k=key: self._stage_combo(k, w))
+        self.hallucination_check.toggled.connect(
+            lambda v: self._stage("hallucination_filter", bool(v)))
         page._inner_layout.addStretch()
         return page
 
@@ -1097,6 +1103,8 @@ class SettingsDialog(QDialog):
         set_combo(self.model_combo, "asr_model")
         set_combo(self.asr_lang_combo, "asr_language")
         set_combo(self.compute_combo, "asr_device")
+        self.hallucination_check.setChecked(bool(values.get("hallucination_filter",
+                                                            c.get("hallucination_filter", True))))
         set_combo(self.engine_combo, "engine")
         set_combo(self.target_combo, "target_lang")
         set_combo(self.proxy_combo, "proxy_mode")
@@ -1431,6 +1439,7 @@ class SettingsDialog(QDialog):
             set_combo(self.model_combo, "asr_model")
             set_combo(self.asr_lang_combo, "asr_language")
             set_combo(self.compute_combo, "asr_device")
+            self.hallucination_check.setChecked(bool(c.get("hallucination_filter", True)))
             set_combo(self.engine_combo, "engine")
             set_combo(self.target_combo, "target_lang")
             set_combo(self.proxy_combo, "proxy_mode")

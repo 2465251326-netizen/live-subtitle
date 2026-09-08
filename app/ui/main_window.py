@@ -88,8 +88,15 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
         self._load_settings()
+        if not self.config.get("wizard_done"):
+            QTimer.singleShot(400, self._show_first_run_wizard)
         if self.config.get("auto_start"):
             QTimer.singleShot(800, self.start_pipeline)
+
+    def _show_first_run_wizard(self):
+        from app.ui.first_run import FirstRunWizard
+        dlg = FirstRunWizard(self)
+        dlg.exec()
 
     def _build_ui(self):
         central = QWidget()
@@ -474,6 +481,7 @@ class MainWindow(QMainWindow):
             c.get("asr_device"),
             c.get("asr_language"),
             self,
+            hallucination_filter=bool(c.get("hallucination_filter", True)),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(

@@ -40,6 +40,8 @@ DEFAULTS = {
     "hotkey_enabled": True,            # 全局热键开关
     "hotkey_sequence": "Ctrl+Alt+S",   # 全局热键组合（开始/停止翻译）
     "storage_root": "",                # 自定义数据根目录（空 = 默认 ~\.live_subtitle）
+    "wizard_done": False,              # 首次运行向导已完成
+    "hallucination_filter": True,      # 幻觉抑制：过滤音乐/噪声段的胡言乱语
 }
 
 LANGUAGES = {
