@@ -386,6 +386,8 @@ class MainWindow(QMainWindow):
 
     def apply_overlay_from_config(self):
         c = self.config
+        self.overlay.set_list_mode(bool(c.get("overlay_list_mode")),
+                                   int(c.get("overlay_list_max")))
         self.overlay.apply_style(
             font_size=int(c.get("overlay_font_size")),
             text_color=c.get("overlay_text_color"),

@@ -570,6 +570,21 @@ class SettingsDialog(QDialog):
         grid.addWidget(self.outline_color_button, 6, 1)
         page._inner_layout.addLayout(grid)
 
+        self._section(page, "紧凑列表模式")
+        self.list_mode_check = QCheckBox()
+        self._row(page, "悬浮条显示最近多条字幕",
+                  "开启后悬浮条以可滚动列表显示最近几条字幕（适合单屏用户回看历史）。",
+                  self.list_mode_check)
+        self.list_max_spin = QSpinBox()
+        self.list_max_spin.setRange(2, 10)
+        self._row(page, "列表保留条数",
+                  "列表模式下保留的最近字幕条数（2-10 条）。",
+                  self.list_max_spin)
+        self.list_mode_check.toggled.connect(
+            lambda v: self._stage("overlay_list_mode", bool(v)))
+        self.list_max_spin.valueChanged.connect(
+            lambda v: self._stage("overlay_list_max", int(v)))
+
         self.overlay_check.toggled.connect(self._on_overlay_toggle)
         self.show_source_check.toggled.connect(lambda v: self._stage("show_source", bool(v)))
         self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
@@ -1116,6 +1131,8 @@ class SettingsDialog(QDialog):
         self.bg_opacity_label.setText(f"{self.bg_opacity_slider.value()}%")
         self.outline_check.setChecked(bool(values.get("overlay_outline", c.get("overlay_outline"))))
         self.outline_width_spin.setValue(int(values.get("overlay_outline_width", c.get("overlay_outline_width"))))
+        self.list_mode_check.setChecked(bool(values.get("overlay_list_mode", c.get("overlay_list_mode"))))
+        self.list_max_spin.setValue(int(values.get("overlay_list_max", c.get("overlay_list_max"))))
         set_combo(self.close_combo, "close_action")
         self.auto_start_check.setChecked(bool(values.get("auto_start", c.get("auto_start"))))
         self.max_history_spin.setValue(int(values.get("max_history", c.get("max_history"))))
@@ -1453,6 +1470,8 @@ class SettingsDialog(QDialog):
             self.bg_opacity_label.setText(f"{int(c.get('overlay_bg_opacity'))}%")
             self.outline_check.setChecked(bool(c.get("overlay_outline")))
             self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
+            self.list_mode_check.setChecked(bool(c.get("overlay_list_mode")))
+            self.list_max_spin.setValue(int(c.get("overlay_list_max")))
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))
             self._outline_color = QColor(c.get("overlay_outline_color"))

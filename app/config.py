@@ -42,6 +42,8 @@ DEFAULTS = {
     "storage_root": "",                # 自定义数据根目录（空 = 默认 ~\.live_subtitle）
     "wizard_done": False,              # 首次运行向导已完成
     "hallucination_filter": True,      # 幻觉抑制：过滤音乐/噪声段的胡言乱语
+    "overlay_list_mode": False,        # 悬浮条列表模式（最近 N 条滚动）
+    "overlay_list_max": 5,             # 列表模式保留条数
 }
 
 LANGUAGES = {

@@ -5,6 +5,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
+    QListWidget, QListWidgetItem,
 )
 
 from app.ui.styles import OVERLAY_QSS
@@ -135,9 +136,44 @@ class CaptionOverlay(QWidget):
         self.target_label.setWordWrap(True)
         self.target_label.setAlignment(Qt.AlignCenter)
 
+        # 列表模式（补充3）：最近 N 条可滚动字幕
+        self.list_widget = QListWidget()
+        self.list_widget.setObjectName("OverlayList")
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list_widget.hide()
+        self._list_mode = False
+        self._list_max = 5
+
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
+        layout.addWidget(self.list_widget)
         self.adjustSize()
+
+    def set_list_mode(self, enabled, max_items=5):
+        """切换 单条字幕 / 最近N条列表 两种内容形态。"""
+        self._list_mode = bool(enabled)
+        self._list_max = max(2, min(10, int(max_items)))
+        self.source_label.setVisible(not self._list_mode and bool(self.source_label.text()))
+        self.target_label.setVisible(not self._list_mode)
+        self.list_widget.setVisible(self._list_mode)
+        if self._list_mode:
+            self.list_widget.setStyleSheet(
+                "QListWidget#OverlayList { background: transparent; border: none;"
+                f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px; }}"
+                "QListWidget#OverlayList::item { padding: 2px 0; }")
+            self._trim_list()
+        self.adjustSize()
+
+    def _trim_list(self):
+        while self.list_widget.count() > self._list_max:
+            self.list_widget.takeItem(0)
+        if self.list_widget.count():
+            self.list_widget.scrollToBottom()
+
+    def _append_list_item(self, source_text, target_text):
+        text = target_text if not source_text else f"{target_text}　·　{source_text}"
+        self.list_widget.addItem(QListWidgetItem(text))
+        self._trim_list()
 
     # ---------- 状态行 ----------
 
@@ -196,11 +232,24 @@ class CaptionOverlay(QWidget):
         self.source_label.set_fill_color(QColor(255, 255, 255, 150))
         # 状态行与正文的间距随字号走，保持"空三格"的宽松观感
         self._status_gap.setFixedHeight(int(self._font_size * 1.5))
+        if self._list_mode:
+            # 列表模式高度随字号与保留条数走
+            self.list_widget.setFixedHeight(
+                int(self._list_max * (self._font_size * 0.72 + 14)))
+            self.list_widget.setStyleSheet(
+                "QListWidget#OverlayList { background: transparent; border: none;"
+                f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px; }}"
+                "QListWidget#OverlayList::item { padding: 2px 0; }")
         self.update()
         self.updateGeometry()
         self.adjustSize()
 
     def show_caption(self, source_text, target_text, show_source=True):
+        if self._list_mode:
+            self._append_list_item(source_text if show_source else "", target_text)
+            self.adjustSize()
+            self.updateGeometry()
+            return
         self.source_label.setText(source_text if show_source else "")
         self.source_label.setVisible(show_source and bool(source_text))
         self.target_label.setText(target_text)
