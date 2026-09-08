@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QPointF
+from PySide6.QtCore import Qt, QPointF, QTimer
 from PySide6.QtGui import (
     QPainter, QPainterPath, QPen, QBrush, QColor, QTextOption,
     QTextLayout,
@@ -177,15 +177,16 @@ class CaptionOverlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         if self._drag_pos is not None and self._on_moved:
-            from PySide6.QtCore import QTimer
-
-            def _save_final():
-                # 字幕刷新可能触发 adjustSize 微调几何，稳定后再存一次最终位置
-                if self._on_moved:
-                    self._on_moved(self.x(), self.y())
-            self._on_moved(self.x(), self.y())
-            QTimer.singleShot(400, _save_final)
+            # 释放时最后一批 move 事件可能仍在 Qt 事件队列中，x()/y() 读到旧值。
+            # singleShot(0) 在全部待处理事件落地后触发，根治落点偏差；
+            # 400ms 后再存一次，兜底字幕刷新触发 adjustSize 的几何微调。
+            QTimer.singleShot(0, self._save_final_pos)
+            QTimer.singleShot(400, self._save_final_pos)
         self._drag_pos = None
+
+    def _save_final_pos(self):
+        if self._on_moved:
+            self._on_moved(self.x(), self.y())
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
