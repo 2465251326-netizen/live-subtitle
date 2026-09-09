@@ -341,3 +341,12 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 - ✅ smoke_test.py 断言完成后 os._exit 硬退出（先 flush），跳过 Qt 析构雷区；本地同条件复测 exit 0
 - 对照实验同时确认：v2.0.11 修复后 medium→argos 全链路本地正常出字幕（v2.0.8 队列扩容 + v2.0.11 auto→CPU 落地生效）
+
+---
+
+## 十八、v2.0.13 冒烟判定结果文件制（2026-09-09）
+
+> v2.0.12 的 os._exit 在 CI 上仍 PASS 后 exit 1（abort 早于 flush）——放弃与退出码缠斗，改 CI 标准做法：断言结果先落盘 smoke_result.txt，CI 步骤读文件判定 PASS/FAIL，退出码仅参考。
+
+- ✅ smoke_test.py 断言后立即写结果文件 → CI build.yml 读文件判定；.gitignore 补 smoke_result.txt
+- ✅ 本地同条件复测：result=PASS + exit 0

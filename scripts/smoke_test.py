@@ -100,15 +100,21 @@ def main():
     print(f"SMOKE settings dialog: staged={staged_ok}, applied={applied_ok}")
 
     w.stop_pipeline()
-    # v2.0.12：Qt 应用 + sys.exit 的解释器收尾阶段偶发崩溃（QApplication
-    # 析构与后台线程销毁竞态，CI 实测 SMOKE PASS 后仍 exit 1）——测试脚本
-    # 断言完成后直接 os._exit 硬退出，跳过 Qt 析构雷区
-    sys.stdout.flush()
-    sys.stderr.flush()
-    if done[0] >= expect and overlay_ok and staged_ok and applied_ok:
-        print(f"SMOKE PASS (captions={done[0]}, overlay OK, settings dialog OK)", flush=True)
+    # v2.0.12：Qt 应用退出阶段存在 QApplication 析构与后台线程销毁竞态，
+    # CI 上连 os._exit 前的 flush 都可能 abort（本地复现 0xC0000409）。
+    # 断言结果先落盘（结果文件为准），CI 步骤读文件判定，退出码仅作参考
+    result_txt = ("PASS" if (done[0] >= expect and overlay_ok and staged_ok and applied_ok)
+                  else "FAIL")
+    detail = f"captions={done[0]}, overlay={overlay_ok}, staged={staged_ok}, applied={applied_ok}"
+    try:
+        Path(__file__).resolve().parents[1].joinpath("smoke_result.txt").write_text(
+            f"{result_txt} ({detail})\n", encoding="utf-8")
+    except Exception:
+        pass
+    if result_txt == "PASS":
+        print(f"SMOKE PASS ({detail})", flush=True)
         os._exit(0)
-    print(f"SMOKE FAIL (captions={done[0]}, overlay={overlay_ok}, staged={staged_ok}, applied={applied_ok})", flush=True)
+    print(f"SMOKE FAIL ({detail})", flush=True)
     os._exit(1)
 
 

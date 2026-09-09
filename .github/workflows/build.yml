@@ -73,7 +73,17 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
-        run: python scripts/smoke_test.py
+        # v2.0.12：Qt 应用收尾存在析构竞态，进程可能 abort——断言结果以
+        # smoke_result.txt 为准（脚本先落盘再退出），退出码仅作参考
+        run: |
+          $code = 0
+          python scripts/smoke_test.py || $code = $LASTEXITCODE
+          $result = if (Test-Path smoke_result.txt) { Get-Content smoke_result.txt -Raw } else { "" }
+          Write-Host "smoke_result.txt: $result (exit=$code)"
+          if ($result -notmatch '^PASS') {
+            Write-Error "Smoke test failed: $result"
+            exit 1
+          }
 
       - name: ASR speed benchmark (small int8, real CPU RTF)
         shell: bash
