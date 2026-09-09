@@ -384,6 +384,12 @@ class AsrThread(QThread):
                 # 缓存完整时离线加载：跳过联网校验，避免代理抖动时卡在「正在加载模型」
                 local_files_only=cached,
             )
+            # v2.2.1：构造完成后先查 _stop——加载期停止的孤儿线程构造虽已完成，
+            # 但不再入池/复用（否则①停止后 RAM/显存被占住直到进程退出，
+            # ②与重启线程并发构造时败者覆盖胜者的池缓存）
+            if self._stop:
+                self._model = None
+                return False
             self._model._ls_device = device
             with _MODEL_CACHE_LOCK:
                 _MODEL_CACHE.clear()
@@ -397,6 +403,10 @@ class AsrThread(QThread):
                 # v2.0.11：显式 CUDA 加载失败（缺运行时等）回落 CPU，不再依赖 auto 分支
                 try:
                     self._model = WhisperModel(model_ref, device="cpu", compute_type="int8")
+                    # v2.2.1：与主路径同款 _stop 后置检查（构造期可能被停止）
+                    if self._stop:
+                        self._model = None
+                        return False
                     self._model._ls_device = "cpu"
                     with _MODEL_CACHE_LOCK:
                         _MODEL_CACHE.clear()

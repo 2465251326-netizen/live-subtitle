@@ -80,24 +80,46 @@ def _lowpass_coeffs(fc_cycles, taps=_FIR_TAPS):
 
 
 _FIR_CACHE = {}
+# v2.2.1：跨块有状态滤波的尾部缓存（键=orig_sr，值=上块尾部 taps-1 采样）。
+# 逐块独立 convolve(mode="same") 会在每块首尾补零造成 0.65ms 边缘衰减，
+# 30ms 块拼接后形成 33Hz 周期性调制；有状态卷积保持信号连续性。
+_STREAM_TAILS = {}
 
 
-def _anti_alias_filter(mono: np.ndarray, orig_sr: int) -> np.ndarray:
-    """降采样路径的抗混叠低通。
+def _anti_alias_filter(mono: np.ndarray, orig_sr: int, carry_key=None) -> np.ndarray:
+    """降采样路径的抗混叠低通（跨块有状态）。
 
-    截止 = 0.95×新奈奎斯特（16k 目标→约 7.6kHz，保住语音齿音频带），
-    与 librosa resample 的 rolloff=0.945 同量级；63 阶汉宁窗过渡带
-    ≈ fs/19 ≈ 2.5kHz，>9kHz 折返区衰减 40dB+。
+    carry_key 不为 None 时启用跨块尾部衔接：把上一块的尾部样本拼进本块
+    卷积，再把本块尾部存回缓存——块边界不再有补零造成的调制。
     """
     key = orig_sr
     h = _FIR_CACHE.get(key)
     if h is None:
         h = _lowpass_coeffs(0.475 * TARGET_SR / orig_sr)
         _FIR_CACHE[key] = h
-    return np.convolve(mono, h, mode="same")
+    pad = len(h) - 1
+    x = np.asarray(mono, dtype=np.float32)
+    tail = None
+    if carry_key is not None:
+        tail = _STREAM_TAILS.get(carry_key)
+        if tail is not None and len(tail):
+            x = np.concatenate([tail, x])
+    if len(x) <= pad:
+        # 块太短不足以卷积：全部存为尾部，返回空（正常 30ms 块不会走到）
+        if carry_key is not None:
+            _STREAM_TAILS[carry_key] = x
+        return np.zeros(0, dtype=np.float32)
+    y = np.convolve(x, h, mode="valid")
+    if carry_key is not None:
+        _STREAM_TAILS[carry_key] = x[-pad:].copy()
+    else:
+        _STREAM_TAILS.pop(carry_key, None)
+    return y.astype(np.float32)
 
 
-def resample_to_16k(data: np.ndarray, orig_sr: int) -> np.ndarray:
+def resample_to_16k(data: np.ndarray, orig_sr: int, carry_key=None) -> np.ndarray:
+    """重采样到 16k。carry_key 提供时启用跨块有状态滤波（连续流场景），
+    不提供时按独立块处理（测试/基准/一次性调用场景，v2.1.3 行为）。"""
     if data.ndim == 1:
         mono = data
     else:
@@ -109,9 +131,11 @@ def resample_to_16k(data: np.ndarray, orig_sr: int) -> np.ndarray:
     if target_len < 1:
         return np.zeros(0, dtype=np.float32)
     if orig_sr > TARGET_SR:
-        mono = _anti_alias_filter(mono, orig_sr)
-    x_old = np.linspace(0.0, duration, num=mono.shape[0], endpoint=False)
-    x_new = np.linspace(0.0, duration, num=target_len, endpoint=False)
+        mono = _anti_alias_filter(mono, orig_sr, carry_key=carry_key)
+        if mono.shape[0] == 0:
+            return np.zeros(0, dtype=np.float32)
+    x_old = np.linspace(0.0, mono.shape[0] / orig_sr, num=mono.shape[0], endpoint=False)
+    x_new = np.linspace(0.0, mono.shape[0] / orig_sr, num=target_len, endpoint=False)
     return np.interp(x_new, x_old, mono).astype(np.float32)
 
 
@@ -358,7 +382,9 @@ class CaptureThread(QThread):
                     break
                 data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
                 data = data.reshape(-1, channels) if channels > 1 else data.reshape(-1, 1)
-                mono16 = resample_to_16k(data, sample_rate)
+                # v2.2.1：carry_key 让 FIR 抗混叠跨块有状态（本线程唯一，
+                # 键绑定设备索引避免热插拔后串尾）
+                mono16 = resample_to_16k(data, sample_rate, carry_key=f"cap{self.device_index}")
                 if mono16.size == 0:
                     continue
                 level = float(np.max(np.abs(mono16)))
@@ -389,9 +415,12 @@ class CaptureThread(QThread):
                     self.segment_ready.emit(seg)
             # v2.0.1：退出前强制 flush——停止前最后一句（尾静音不足判停时长）
             # 此前被静默丢弃，表现为"说完立刻停会丢最后一句"
+            # v2.2.1：去掉 not self._stop 条件——stop 是循环唯一正常出口，
+            # 旧条件使 flush 在其设计的唯一场景（用户停止）永远不发射；
+            # ASR 侧 stop 先清空队列再投哨兵，此段经信号仍能入队并被消费
             try:
                 tail = self.segmenter.flush()
-                if tail is not None and not self._stop:
+                if tail is not None:
                     self.segment_ready.emit(tail)
             except Exception:
                 pass

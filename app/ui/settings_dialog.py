@@ -247,6 +247,17 @@ class _ModelDetailDialog(QDialog):
             return
         event.accept()
 
+    def reject(self):
+        # v2.2.1：Esc/系统关闭走 reject→done，完全不经过 closeEvent（Qt 官方
+        # 文档确认该路径不可被 closeEvent 拦截）——下载中直接关窗会让运行中
+        # 的 QThread 存活到程序退出时被销毁（qFatal 崩溃），且可双开下载。
+        # 故在 reject 层同样拦截。
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.information(self, "下载进行中",
+                                    "模型正在下载，请先「取消下载」或等待完成后再关闭。")
+            return
+        super().reject()
+
     def _refresh(self):
         from app.asr.engine import AsrThread
         state, mb = AsrThread.model_state(self.code)
@@ -1673,6 +1684,12 @@ class SettingsDialog(QDialog):
             self.main.apply_overlay_from_config()
         except Exception:
             pass
+        # v2.2.1：还原悬浮条显隐预览——此前只还原样式不还原显隐，勾过
+        # 「启用悬浮字幕条」再取消，悬浮条残留显示与配置相反
+        try:
+            self.main.set_overlay_visible(bool(self.c.get("overlay_enabled")))
+        except Exception:
+            pass
 
     def _reset_defaults(self):
         """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。
@@ -2101,6 +2118,11 @@ class SettingsDialog(QDialog):
             self._staged.clear()
             try:
                 self.main.apply_overlay_from_config()
+            except Exception:
+                pass
+            # v2.2.1：放弃改动时同步还原悬浮条显隐（与 _discard_staged 同源修复）
+            try:
+                self.main.set_overlay_visible(bool(self.c.get("overlay_enabled")))
             except Exception:
                 pass
         event.accept()

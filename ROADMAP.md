@@ -448,4 +448,24 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 ---
 
+## 二十九、v2.2.1 后端+UI 深度审计批次（2026-09-10，两路子代理审计 + 人工复验）
+
+### 高危
+- ✅ **零翻译会话退出清空持久翻译缓存**：TranslationCache 懒加载未触发时 save() 把空 dict 落盘覆盖 trans_cache.json（快速开关管线即触发）——_save_locked/save 未加载即 return；新增回归测试（未加载 save 不清空既有文件）
+
+### 中危
+- ✅ storage.migrate_root 拒绝类异常被通用 except 吞掉（专属文案丢失，用户看到错误指引）——_MigrationRefused 单独定义并先行透传
+- ✅ 尾句 flush 永不生效（not self._stop 与循环退出互斥）——去掉该条件
+- ✅ 加载期停止的孤儿线程构造完成后无条件入 _MODEL_CACHE（停止后占内存/显存+与重启线程并发构造互相覆盖池缓存）——构造返回后先查 _stop 再入池（主路径+CUDA 回落路径）
+- ✅ 抗混叠 FIR 逐块独立卷积补零边缘效应（30ms 块拼接 33Hz 周期调制）——跨块有状态滤波（尾部缓存衔接），resample_to_16k 加 carry_key 参数，采集线程按设备索引绑定
+- ✅ 悬浮条占位无视 _show_source（"只显示译文"下原文闪现 1~3s）——单条/列表占位按 _show_source 过滤
+- ✅ _ModelDetailDialog Esc 绕过"下载中"守卫（reject 不走 closeEvent，Qt 官方文档确认）——reject 层同款拦截
+- ✅ 设置"取消/放弃改动"不还原悬浮条显隐预览——_discard_staged 与 closeEvent 补 set_overlay_visible
+
+### 附带
+- v2.1.8 审计的跑马灯相关项（#6/#7）随连续文本流重做自然退役
+- 28 单测全绿 + H1 专项回归测试（未加载 save 不清空既有文件）
+
+---
+
 （历史：v2.1.8 曾发布字幕墙+跑马灯过渡形态，v2.2.0 起被连续文本流取代）

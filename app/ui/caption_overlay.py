@@ -299,15 +299,18 @@ class CaptionOverlay(QWidget):
             return
         if self._list_mode:
             # 列表模式：占位行只在最末条是旧占位时复用
+            # v2.2.1：占位文本按 _show_source 过滤——"只显示译文"时原文不闪现
             it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
             if it is None or "⟳" not in it.text():
-                self.list_widget.addItem(QListWidgetItem(f"⟳ {source_text}"))
+                self.list_widget.addItem(QListWidgetItem(
+                    f"⟳ {source_text}" if self._show_source else "⟳ …"))
                 self._trim_list()
             self.adjustSize()
             self.updateGeometry()
             return
-        self.source_label.setText(source_text)
-        self.source_label.setVisible(True)
+        # v2.2.1：单条路径同样按 _show_source 过滤（"只显示译文"下原文不闪现）
+        self.source_label.setText(source_text if self._show_source else "")
+        self.source_label.setVisible(bool(self._show_source) and bool(source_text))
         if "⟳" not in self.target_label.text():
             self.target_label.setText("⟳ …")
             self.adjustSize()

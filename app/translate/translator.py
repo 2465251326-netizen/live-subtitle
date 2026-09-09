@@ -94,7 +94,11 @@ class TranslationCache:
                 self._last_flush = now
 
     def _save_locked(self):
-        self._loaded = True
+        # v2.2.1：未加载（懒加载未触发，内存还是空 dict）时禁止写盘——
+        # 此前零翻译会话退出时 run() 尾部的 save() 会把空 dict 落盘，
+        # 清空整个持久翻译缓存（用户实测数据丢失）
+        if not self._loaded:
+            return
         try:
             f = self._path()
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +112,9 @@ class TranslationCache:
 
     def save(self):
         with self._lock:
+            if not self._loaded:
+                # v2.2.1：从未加载过就无从保存（未加载即写 = 清空历史缓存）
+                return
             self._save_locked()
             self._dirty_puts = 0
             self._last_flush = time.monotonic()

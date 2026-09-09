@@ -33,6 +33,11 @@ def disk_free_mb(path) -> float:
         return 0.0
 
 
+class _MigrationRefused(RuntimeError):
+    """迁移被拒绝（如目标目录非空）——区别于运行期失败的通用异常，
+    用于在 except 链中先行透传专属文案（v2.2.1）。"""
+
+
 def migrate_root(new_root, progress_cb=None) -> str:
     """把数据目录迁移到新根；返回新根路径字符串。
 
@@ -66,14 +71,18 @@ def migrate_root(new_root, progress_cb=None) -> str:
             # v2.0.6：目标已存在时不再直接删除——用户误选了一个已有 hf/
             # 数据的目录，旧逻辑会先把目标数据 rmtree 掉（静默数据丢失）。
             # 改为拒绝迁移，让用户换空目录或手动清理
+            # v2.2.1：拒绝类异常单独定义并在 except 中先行透传——此前专属
+            # 文案被通用 except 吞掉，用户看到的是错误的"空间不足"指引
             if dst.exists():
-                raise RuntimeError(
+                raise _MigrationRefused(
                     f"目标位置已存在同名内容：{dst}\n"
                     "为避免覆盖删除你的数据，请换一个空目录，或先手动清理该目录再迁移。")
             shutil.move(str(src), str(dst))
             done.append((src, dst))
             if progress_cb:
                 progress_cb(f"已迁移 {src.name}（{i}/{total}）")
+    except _MigrationRefused:
+        raise
     except Exception:
         # 尽力回滚：把已完成项搬回原位，保持"数据在旧根、指针在旧根"的一致状态
         for src, dst in reversed(done):
