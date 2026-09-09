@@ -311,3 +311,13 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ model_repo_id() 统一解析：large-v3-turbo → mobiuslabsgmbh/faster-whisper-large-v3-turbo（匿名列表实测 7 文件含 model.bin，config.json 试下载落地标准缓存布局）；其余尺寸仍为 Systran 官方
 - ✅ 三处协同修复：受控下载（list_repo_files/hf_hub_download）、model_cache_dir（缓存目录名跟随真实仓库）、管线加载（WhisperModel 传完整 CT2 模型 ID，faster-whisper 原生支持）
 - ✅ 下载强制匿名 token=False（防本机过期令牌拖累公开仓库）；401/403 进友好错误映射（附"检查/删除本机 HF 令牌"建议）
+
+---
+
+## 十五、v2.0.10 GPU 引导可读化（2026-09-09，用户三连问驱动）
+
+> 用户问：①无代理能否下载（答：能，HF 镜像自动探测已实测）②计算方式为何只有自动/CPU（答：自动=优先GPU失败回落CPU，文案已直白化）③检测结果的显存建议太笼统。
+
+- ✅ nvidia-smi 查询扩展 memory.total：GPU 弹窗显示显存 + 按显存×模型档位输出四档建议表（可运行性 + 预期速度 + 不足时明确"保持 CPU"）
+- ✅ 计算方式文案直白化："自动（有 NVIDIA 显卡选这个 = GPU 加速）"；真机验证 RTX 2060/6144MB 四档全部判可 GPU
+- ✅ 顺带修 gpu.py:48 死代码残迹

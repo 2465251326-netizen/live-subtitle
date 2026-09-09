@@ -723,9 +723,11 @@ class SettingsDialog(QDialog):
                   self.asr_lang_combo)
         self.compute_combo = QComboBox()
         self.compute_combo.addItem("CPU 模式（通用）", "cpu")
-        self.compute_combo.addItem("自动（优先 GPU）", "auto")
+        # v2.0.9：文案直白化——"自动"本质就是"优先 GPU、失败回落 CPU"
+        self.compute_combo.addItem("自动（有 NVIDIA 显卡选这个 = GPU 加速）", "auto")
         self._row(page, "计算方式",
-                  "有 NVIDIA 显卡并配置 CUDA 环境时选「自动」可用 GPU 加速；普通电脑保持 CPU 模式即可实时。",
+                  "「自动」= 优先用 NVIDIA 显卡加速、不可用时自动回落 CPU；无独显或打包版保持 CPU 模式即可实时。"
+                  "选好后点下方「检测 GPU 环境」确认 GPU 是否生效。",
                   self.compute_combo)
         self.gpu_check_button = QPushButton("检测 GPU 环境")
         self.gpu_check_button.setFixedWidth(140)
@@ -1297,9 +1299,11 @@ class SettingsDialog(QDialog):
 
         def _apply(info):
             info_box.update(info)
+            vram = info.get("vram_mb") or 0
             summary.setText(
                 f"NVIDIA 显卡：{info['nvidia_gpu'] or '未检测到'}\n"
                 f"驱动版本：{info['driver'] or '—'}\n"
+                f"显存：{f'{vram} MB' if vram else '—'}\n"
                 f"CUDA 可用设备数：{info['cuda_devices']}\n"
                 f"运行形态：{'打包版（内置 CPU 推理）' if info['frozen'] else '源码运行'}")
             from app import gpu as gpu_mod
