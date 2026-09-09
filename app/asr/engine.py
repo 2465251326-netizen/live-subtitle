@@ -273,8 +273,14 @@ class AsrThread(QThread):
             # v2.0.4：加载期间用户已停止——端点探测/代理同步完成后直接放弃，
             # 不再进入耗时的 import/构造阶段（此前要等模型加载完才检查 _stop）
             return False
+        # v2.0.11：auto 不再信任 CUDA——get_cuda_device_count 只证明驱动能看见卡，
+        # 不代表 cuDNN/cuBLAS 运行时齐备；缺失时 ctranslate2 推理会**静默挂死**
+        # （本机实测：7s 段 86s 无返回，症状=永远"正在聆听"）。auto 一律走 CPU
+        # （必定可用）；要 GPU 需显式选 cuda 并装好 CUDA 版 PyTorch（gpu.py 引导）
         device = self.device if self.device in ("cpu", "cuda") else "auto"
-        compute_type = "int8" if device in ("cpu", "auto") else "float16"
+        if device == "auto":
+            device = "cpu"
+        compute_type = "int8" if device == "cpu" else "float16"
         # v2.0.6：进程内实例复用——同一 (模型, 设备, 量化) 在池中直接取用，
         # 切输入来源/改识别设置重启管线不再全量重载（CPU 上数秒到数十秒）。
         # 池容量 1，换模型/换设备时旧实例被替换由 GC 释放
@@ -311,14 +317,16 @@ class AsrThread(QThread):
             self._device_used = device
             return True
         except Exception as e:
-            if device == "auto":
+            if device == "cuda":
+                # v2.0.11：显式 CUDA 加载失败（缺运行时等）回落 CPU，不再依赖 auto 分支
                 try:
-                    self._model = WhisperModel(model_repo_id(self.model_size), device="cpu", compute_type="int8")
+                    self._model = WhisperModel(model_ref, device="cpu", compute_type="int8")
                     self._model._ls_device = "cpu"
                     with _MODEL_CACHE_LOCK:
                         _MODEL_CACHE.clear()
                         _MODEL_CACHE[(self.model_size, "cpu", "int8")] = self._model
                     self._device_used = "cpu"
+                    app_log.log("asr.cuda_fallback_cpu", model=self.model_size, err=str(e)[:120])
                     return True
                 except Exception:
                     pass
@@ -353,6 +361,11 @@ class AsrThread(QThread):
         dev = getattr(self, "_device_used", "cpu")
         if dev == "cuda":
             self.status_changed.emit("就绪，正在聆听...（GPU · CUDA 加速已生效）")
+        elif dev == "cpu" and self.device == "auto":
+            # v2.0.11：auto 明确回落为 CPU 时如实告知（此前 auto 显示与
+            # 显式 CPU 无差别，用户不知道 GPU 没用上）
+            self.status_changed.emit("就绪，正在聆听...（CPU 模式 · auto 未启用 GPU："
+                                     "如需加速请显式选 cuda 并安装 CUDA 版 PyTorch，见 GPU 检测引导）")
         else:
             self.status_changed.emit("就绪，正在聆听...（CPU 模式）")
         if self.silero_vad and not _silero_assets_ok():

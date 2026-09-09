@@ -321,3 +321,14 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ nvidia-smi 查询扩展 memory.total：GPU 弹窗显示显存 + 按显存×模型档位输出四档建议表（可运行性 + 预期速度 + 不足时明确"保持 CPU"）
 - ✅ 计算方式文案直白化："自动（有 NVIDIA 显卡选这个 = GPU 加速）"；真机验证 RTX 2060/6144MB 四档全部判可 GPU
 - ✅ 顺带修 gpu.py:48 死代码残迹
+
+---
+
+## 十六、v2.0.11 auto 设备静默挂死根治（2026-09-09，冒烟复现 + kwargs 二分 + 设备看门狗三连定位）
+
+> v2.0.10 CI 冒烟通过但本地必挂。kwargs 逐项二分全部无罪 → 真实 AsrThread 队列追踪：_transcribe 86 秒不返回 → 设备看门狗实锤：auto/cuda 挂死（cublas64_12.dll 缺失），显式 CPU 正常。auto 在有卡无运行时的机器上选择 CUDA → 推理挂死 → 队列塞满零字幕——"翻译没反应"的最终真因。
+
+- ✅ auto 一律走 CPU（必定可用）；就绪提示如实标注"auto 未启用 GPU"及启用路径
+- ✅ 显式 cuda 加载失败自动回落 CPU + asr.cuda_fallback_cpu 日志
+- ✅ 修复验证：同一探针 0 条 → 5 条字幕全产出
+- 教训入档：get_cuda_device_count ≠ 运行时可用；GPU 探测引导应区分"驱动可见"与"推理可用"两态
