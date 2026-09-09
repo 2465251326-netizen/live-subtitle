@@ -91,13 +91,14 @@ def _with_scheme(server):
 
 def system_proxy_info(force=False):
     """返回 (http 代理 URL 或 None, 提示文本)；带 3 秒 TTL 缓存。"""
-    now = time.time()
-    if not force and now - _proxy_cache["at"] < _PROXY_TTL:
-        return _proxy_cache["url"], _proxy_cache["note"]
-    server = _read_registry_proxy()
-    url, note = _parse_proxy_server(server) if server else (None, "")
-    _proxy_cache.update(at=now, url=url, note=note)
-    return url, note
+    with _lock:  # v2.0.3：检查-写入原子化，防止与 configure 的失效竞态
+        now = time.time()
+        if not force and now - _proxy_cache["at"] < _PROXY_TTL:
+            return _proxy_cache["url"], _proxy_cache["note"]
+        server = _read_registry_proxy()
+        url, note = _parse_proxy_server(server) if server else (None, "")
+        _proxy_cache.update(at=now, url=url, note=note)
+        return url, note
 
 
 def system_proxy_url():
@@ -109,10 +110,14 @@ def proxies():
     """返回可直接传给 requests 的 proxies 参数。"""
     with _lock:
         mode, url = _state["mode"], _state["url"]
-    if mode == "manual" and url:
-        if "://" not in url:
-            url = "http://" + url
-        return {"http": url, "https": url}
+    if mode == "manual":
+        if url:
+            if "://" not in url:
+                url = "http://" + url
+            return {"http": url, "https": url}
+        # v2.0.3：手动模式忘填地址时显式直连（此前静默落入"跟随系统"分支，
+        # 与用户显式选择相反且难以察觉）
+        return {"http": None, "https": None}
     if mode == "none":
         return {"http": None, "https": None}
     sys_url = system_proxy_url()

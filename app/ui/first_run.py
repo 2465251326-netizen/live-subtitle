@@ -16,6 +16,8 @@ MODEL_INFO = [
     ("base", "base · 流畅", "145MB · 延迟约 2.5s · 中文较弱"),
     ("small", "small · 推荐", "480MB · 延迟约 3s · 中文良好，4 核以上 CPU 流畅实时"),
     ("medium", "medium · 高精度", "1.5GB · 延迟约 6s · 需高配 CPU 或 GPU"),
+    # v2.0.3：与设置页同步（此前向导缺此模型，已选该模型时向导会静默降级成 small）
+    ("large-v3-turbo", "large-v3-turbo · 顶级", "约 1.6GB · 需 GPU 或高配 CPU"),
 ]
 
 
@@ -150,8 +152,15 @@ class FirstRunWizard(QDialog):
 
     def _finish(self):
         c = self.main.config
+        running = bool(getattr(self.main, "running", False))
         c.set("source_type", "microphone" if self.radio_mic.isChecked() else "system")
-        c.set("device_index", -1)
+        # v2.0.3：仅在仍是默认设备时才写 -1——重跑向导不再覆盖用户已选的指定设备
+        try:
+            was_default = int(c.get("device_index") or -1) == -1
+        except (TypeError, ValueError):
+            was_default = True
+        if was_default:
+            c.set("device_index", -1)
         checked = self.model_group.checkedButton()
         if checked is not None:
             c.set("asr_model", checked.property("model_code"))
@@ -159,4 +168,9 @@ class FirstRunWizard(QDialog):
         dlg = getattr(self.main, "_settings_dlg", None)
         if dlg is not None:
             dlg.load_from_config()
+        # v2.0.3：向导可从设置页在翻译运行中重跑——写完配置要重启管线让
+        # 新 source/model 真正生效（对齐设置页 _PIPELINE_KEYS 语义）
+        if running:
+            self.main.stop_pipeline()
+            self.main.start_pipeline()
         self.accept()

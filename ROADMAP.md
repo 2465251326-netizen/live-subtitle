@@ -236,3 +236,14 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 持久化：config 损坏留存 .bad + fsync / 翻译缓存原子写 + 锁内 + 懒加载（自定义根覆写问题）
 - ✅ 正确性："恢复默认"补 4 键 / 悬浮开关预览不落盘 + 取消还原 / Argos 中文源备援 / clients5 多行截断 / MyMemory 警告串拒收 + zh-TW / 系统声音设备选择生效 / 索引 0 不吞 / 回环解析不乱抓 / GPU 检测后台化 / 设备按索引去重 / 副屏放置 / 防抖竞态 / QSS 双大括号 / X 按钮样式保留
 - ✅ 单测 22 → 26（zip-slip 攻击样本、clients5 多行解析、分块零丢字、损坏配置留存）
+
+---
+
+## 八、v2.0.3 收尾清账（2026-09-09，用户质询"是否全部修好"驱动）
+
+> 用户核对合并战果总账后发现仍有 2 项中危未修 + 1 项半修 + 8 项低危遗留，本版全部清账。至此四路审计发现全部闭环。
+
+- ✅ 孤儿线程根治：_ORPHANS 容器保引用 + setParent(None) + finished→deleteLater + 退出 terminate 兜底 + _toggle_source 等待旧线程退出
+- ✅ 向导三连修：MODEL_INFO 补 large-v3-turbo / device_index 条件重置 / 完成时运行中管线自动重启
+- ✅ detect_lang 失败抛错（不再静默回 "en" 产生乱译缓存）/ 手动代理空地址显式直连
+- ✅ Argos 索引缓存与系统代理缓存原子化 / _split_long 硬切 / 语言包顶层结构校验 / metadata 失败清理

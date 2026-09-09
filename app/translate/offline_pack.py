@@ -49,9 +49,10 @@ _INDEX_TTL = 300.0
 
 
 def fetch_index(timeout=8, use_cache=True):
-    now = time.time()
-    if use_cache and _index_cache["packs"] and now - _index_cache["at"] < _INDEX_TTL:
-        return _index_cache["packs"]
+    with _lock:  # v2.0.3：检查-写入原子化（ArgosWorker 与 available_packages 可并发）
+        now = time.time()
+        if use_cache and _index_cache["packs"] and now - _index_cache["at"] < _INDEX_TTL:
+            return _index_cache["packs"]
     last_err = None
     for src in INDEX_SOURCES:
         try:
@@ -74,8 +75,9 @@ def fetch_index(timeout=8, use_cache=True):
                     )
                 )
             if packs:
-                _index_cache["at"] = time.time()
-                _index_cache["packs"] = packs
+                with _lock:
+                    _index_cache["at"] = time.time()
+                    _index_cache["packs"] = packs
                 return packs
         except Exception as e:
             last_err = e
@@ -192,7 +194,11 @@ def remove_pack(source, target):
 def _extract_pack(model_path: Path, dest: Path):
     with zipfile.ZipFile(model_path) as zf:
         names = zf.namelist()
+        # v2.0.3：校验顶层结构——此前 names[0] 直接当根目录，条目顺序异常时
+        # 前缀过滤会排除所有文件，解压出空目录但仍报"安装成功"
         inner_root = names[0].split("/")[0]
+        if not any(n.startswith(inner_root + "/") and n != inner_root + "/" for n in names):
+            raise RuntimeError("语言包结构异常：缺少模型目录，文件可能已损坏")
         tmp = dest.with_suffix(".extracting")
         if tmp.exists():
             shutil.rmtree(tmp)
@@ -311,9 +317,16 @@ def install_pack(pack: PackInfo, progress_cb=None):
         "to_name": pack.to_name,
         "code": pack.code,
     }
-    (dest / "metadata.json").write_text(
-        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-    )
+    try:
+        (dest / "metadata.json").write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        # v2.0.3：metadata 写失败（磁盘满等）时清理已解压目录 + 下载临时文件，
+        # 避免留下"无 metadata 的死目录"（list_installed 不显示但占磁盘）
+        shutil.rmtree(dest, ignore_errors=True)
+        tmp_path.unlink(missing_ok=True)
+        raise
     tmp_path.unlink(missing_ok=True)
     app_log.log("argos.pack_installed", pair=pair)
     return dest
@@ -390,7 +403,15 @@ def _split_long(text, limit=400):
             buf += seg
     if buf:
         parts.append(buf)
-    return parts
+    # v2.0.3：对仍超限的段做字符级硬切（超长无标点段此前整段进模型）
+    out = []
+    for seg in parts:
+        while len(seg) > limit:
+            out.append(seg[:limit])
+            seg = seg[limit:]
+        if seg:
+            out.append(seg)
+    return out or [text[:limit]]
 
 
 def _get_translator(source, target):

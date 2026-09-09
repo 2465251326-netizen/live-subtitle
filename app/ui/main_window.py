@@ -26,6 +26,16 @@ DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
 MODEL_SIZES_MB = {"tiny": 75, "base": 145, "small": 480, "medium": 1536,
                   "large-v3-turbo": 1600}
 
+# v2.0.3：停止超时的孤儿线程容器——保住 Python 引用防 GC，
+# finished 后 deleteLater 自清理；进程退出前对仍存活的 terminate 兜底
+_ORPHANS: list = []
+
+
+def _orphan_threads() -> list:
+    alive = [t for t in _ORPHANS if t.isRunning()]
+    _ORPHANS[:] = alive
+    return _ORPHANS
+
 
 def icon_path():
     if getattr(sys, "frozen", False):
@@ -295,6 +305,11 @@ class MainWindow(QMainWindow):
             dlg.sync_source_type(new)
         if self.running:
             self.stop_pipeline()
+            # v2.0.3：等旧线程真正退出再重启——此前立即 start 会造成新旧
+            # CaptureThread 并存抢音频设备、新旧 AsrThread 并发加载双份模型
+            for t in (self.capture_thread, self.asr_thread, self.translate_thread):
+                if t and t.isRunning():
+                    t.wait(5000)
             self.start_pipeline()
         name = "麦克风" if new == "microphone" else "系统声音"
         self._set_engine_status(f"已切换输入来源：{name}")
@@ -664,6 +679,16 @@ class MainWindow(QMainWindow):
                 # 不在 GUI 线程长等（模型加载中停止曾最长冻界面 15s）：
                 # 信号已断开，线程收尾放后台自行完成（v1.9.4）
                 t.wait(3000)
+        # v2.0.3：超时仍未退出的线程不再裸丢引用（只剩 parent 关系，MainWindow
+        # 析构时会销毁运行中的 QThread → qFatal 崩溃）。改为摘除 parent、
+        # 挂模块级容器保引用，finished 后 deleteLater 自清理
+        for t in threads:
+            if t and t.isRunning():
+                t.setParent(None)
+                _orphan_threads().append(t)
+                t.finished.connect(t.deleteLater)
+                from app import log as app_log
+                app_log.log("pipeline.orphan_thread", cls=type(t).__name__)
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
@@ -742,6 +767,13 @@ class MainWindow(QMainWindow):
         hotkey.unregister()
         self._save_settings()
         self.stop_pipeline()
+        # v2.0.3：对仍存活的孤儿线程 terminate 兜底——运行中的 QThread 随
+        # MainWindow 析构会 qFatal 崩溃，宁可强杀
+        for t in _orphan_threads():
+            try:
+                t.terminate()
+            except Exception:
+                pass
         self.overlay.close()
         if getattr(self, "tray", None):
             self.tray.hide()

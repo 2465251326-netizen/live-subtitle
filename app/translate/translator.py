@@ -185,8 +185,10 @@ class GoogleFree:
             r = requests.get(url, params=params, headers=HEADERS, timeout=6, proxies=net.proxies())
             data = r.json()
             return data[2] if len(data) > 2 else "en"
-        except Exception:
-            return "en"
+        except Exception as e:
+            # v2.0.3：失败不再静默回 "en"——非英文文本会被按英文方向翻译出
+            # 乱译且写入持久缓存放大；抛出让备援链接手
+            raise RuntimeError(f"语言检测失败: {e}") from e
 
 
 class MyMemory:
