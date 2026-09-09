@@ -364,11 +364,15 @@ class TranslateThread(QThread):
         except Exception:
             pass
 
+    def _cache_key(self, engine, detected, text):
+        """缓存 key 统一构造（读写共用；v2.0.1 起含源语言维度）。"""
+        norm_src = WHISPER_LANG_MAP.get(detected, detected or "")
+        return f"{engine}:{self.target}:{norm_src}:{text}"
+
     def _do_translate(self, text, detected):
         # v2.0.1：key 加入源语言维度——同文本被 whisper 判为不同源语言时，
         # 旧 key 会让 MyMemory/Argos 命中错误语言方向的缓存译文
-        norm_src = WHISPER_LANG_MAP.get(detected, detected or "")
-        key = f"{self._active_engine}:{self.target}:{norm_src}:{text}"
+        key = self._cache_key(self._active_engine, detected, text)
         cached = _cache.get(key)
         if cached:
             return cached[0], cached[1]
@@ -441,7 +445,11 @@ class TranslateThread(QThread):
                         self._active_engine = fb
                         self.status_changed.emit(f"本次会话已固定使用备援引擎 {fb}")
                         error = ""
-                        _cache.put(f"{fb}:{self.target}:{text}", (translated, used_lang))
+                        # v2.0.4：key 与 _do_translate 统一（含源语言维度）——
+                        # 此前缺 norm_src 段与读取侧永不匹配，备援译文
+                        # 只写不读（死缓存白占容量）
+                        _cache.put(self._cache_key(fb, detected, text),
+                                   (translated, used_lang))
                         break
                     except Exception as e2:
                         error = friendly_error(e2)

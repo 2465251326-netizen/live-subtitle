@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.0.3"
+APP_VERSION = "2.0.4"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -181,6 +181,13 @@ class Config:
         try:
             from app.translate import offline_pack as _op
             _op.PACKS_DIR = ARGOS_DATA / "packs"
+        except Exception:
+            pass
+        # v2.0.4：生命周期日志跟随新根——此前 log handler 固化在启动时的
+        # 默认根，迁移后与 write_log（动态取 CONFIG_DIR）分裂两处
+        try:
+            from app import log as _app_log
+            _app_log.rebind(CONFIG_DIR / "logs" / "app.log")
         except Exception:
             pass
 

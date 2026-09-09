@@ -152,6 +152,10 @@ class AsrThread(QThread):
                 _net.apply_proxy_env()
             except Exception:
                 pass
+        if self._stop:
+            # v2.0.4：加载期间用户已停止——端点探测/代理同步完成后直接放弃，
+            # 不再进入耗时的 import/构造阶段（此前要等模型加载完才检查 _stop）
+            return False
         from faster_whisper import WhisperModel
         device = self.device if self.device in ("cpu", "cuda") else "auto"
         compute_type = "int8" if device in ("cpu", "auto") else "float16"

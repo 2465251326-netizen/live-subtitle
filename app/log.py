@@ -64,6 +64,37 @@ def get(path=None):
     return logger
 
 
+def rebind(path):
+    """存储根迁移后改绑全局日志文件（v2.0.4）。
+
+    此前 handler 在启动时固化到默认根：自定义存储根用户迁移后，
+    崩溃/Qt 日志（main.write_log 动态取新 CONFIG_DIR）写新根，
+    生命周期日志（本 handler）留旧根——同一份 app.log 分裂两处，
+    排障漏看一半。relocate 后调用本函数统一改绑到新根。
+    """
+    global _handler
+    target = str(path)
+    with _handler_lock:
+        if _handler is not None and str(getattr(_handler, "_path", "")) == target:
+            return
+        try:
+            import os
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+        except Exception:
+            pass
+        logger = logging.getLogger("ls")
+        if _handler is not None:
+            try:
+                logger.removeHandler(_handler)
+            except Exception:
+                pass
+        handler = _Utf8RotatingHandler(target)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        logger.addHandler(handler)
+        _handler = handler
+
+
 def log(event, **fields):
     """便捷入口：结构化事件一行流（值统一 str()，防 None/Path 拼接报错）。"""
     if fields:

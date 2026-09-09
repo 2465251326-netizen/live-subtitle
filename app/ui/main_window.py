@@ -1,5 +1,6 @@
 import ctypes
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -488,11 +489,24 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "导出字幕", f"已导出 {len(cards)} 条字幕到：\n{path}")
 
     def toggle_running(self):
+        # v2.0.4：热键连按防抖——界面被 stop_pipeline 短暂阻塞时按下的热键
+        # 会在事件队列里排队，恢复后被逐条当作 toggle 处理，造成 start/stop
+        # 毫秒级反复翻转（实机日志实证：pipeline.start 后 4~6ms 即 pipeline.stop），
+        # 最终停在"运行"档、加载线程成孤儿，状态栏被迟到的加载消息永久覆盖
+        now = time.monotonic()
+        if now - getattr(self, "_last_toggle_at", 0.0) < 0.25:
+            return
+        self._last_toggle_at = now
         was_running = self.running
         if was_running:
             self.stop_pipeline()
         else:
             self.start_pipeline()
+        # v2.0.4：启停同步执行往往伴随 GUI 线程短暂阻塞（模型加载期冻结），
+        # 阻塞期间按下的热键此刻恰好排队待发——完成后再盖一次时间戳，
+        # 让这批"冻结期按键"在恢复后的 0.25s 内被吞掉，防止管线被
+        # 排队事件反向拉起（一次按键一个动作）
+        self._last_toggle_at = time.monotonic()
         # 热键/托盘启动时主窗口往往隐藏在托盘、悬浮条也可能关闭，
         # 状态变化必须用系统气泡显式告知，否则用户感知为"无响应"（v1.9.4）
         if not self.isVisible():
@@ -527,10 +541,12 @@ class MainWindow(QMainWindow):
         engine = c.get("engine")
         self.translate_thread = TranslateThread(engine, c.get("target_lang"), self)
         self.translate_thread.result_ready.connect(self._on_translated)
-        self.translate_thread.status_changed.connect(
-            lambda m: self._set_engine_status(f"翻译: {m}"))
+        # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
+        # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"
+        self.translate_thread.status_changed.connect(self._on_translate_status)
         self.translate_thread.start()
 
+        self._asr_ready = False  # v2.0.4：模型加载期停止时缩短等待（见 stop_pipeline）
         self.asr_thread = AsrThread(
             c.get("asr_model"),
             c.get("asr_device"),
@@ -541,10 +557,9 @@ class MainWindow(QMainWindow):
             mishear_map=dict(c.get("mishear_map") or {}),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
-        self.asr_thread.status_changed.connect(
-            lambda m: self._set_engine_status(f"识别: {m}"))
+        self.asr_thread.status_changed.connect(self._on_asr_status)
         self.asr_thread.error_occurred.connect(self._on_pipeline_error)
-        self.asr_thread.model_ready.connect(self._stop_model_download_feedback)
+        self.asr_thread.model_ready.connect(self._on_model_ready)
         self.asr_thread.start()
 
         # 首次使用的模型需要下载（可能上百 MB）：轮询缓存目录增量，
@@ -560,7 +575,7 @@ class MainWindow(QMainWindow):
             self,
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
-        self.capture_thread.level_changed.connect(self.level_bar.setValue)
+        self.capture_thread.level_changed.connect(self._on_level)
         self.capture_thread.error_occurred.connect(self._on_pipeline_error)
         self.capture_thread.low_input.connect(self._on_low_input)
         self.capture_thread.muted.connect(self._on_muted)
@@ -604,6 +619,33 @@ class MainWindow(QMainWindow):
         self._engine_status_text = text
         if not getattr(self, "_low_input_warn", False) and not getattr(self, "_muted_warn", False):
             self.engine_status_label.setText(text)
+
+    def _on_asr_status(self, text):
+        # v2.0.4：幽灵回调守卫 + 过期线程守卫——停止后已入队的迟到状态、
+        # 或重启管线后旧 AsrThread 的残余状态，都不得覆盖当前 UI。
+        # 此前该信号是全项目唯一没有 running 守卫的后端回调（v2.0.1 只补了
+        # low_input/muted/result 三类），热键连按后状态栏永久卡在
+        # "正在加载tiny模型"的根因之一：孤儿加载线程的加载消息在
+        # stop_pipeline 写完"已停止"之后才送达
+        if not self.running or self.sender() is not self.asr_thread:
+            return
+        self._set_engine_status(f"识别: {text}")
+
+    def _on_translate_status(self, text):
+        if not self.running or self.sender() is not self.translate_thread:
+            return
+        self._set_engine_status(f"翻译: {text}")
+
+    def _on_model_ready(self):
+        # v2.0.4：模型就绪标记 + 停止下载进度反馈（原直连拆槽）
+        self._asr_ready = True
+        self._stop_model_download_feedback()
+
+    def _on_level(self, value):
+        # v2.0.4：停止后迟到的电平事件不再点亮音量条
+        if not self.running:
+            return
+        self.level_bar.setValue(value)
 
     def _on_low_input(self, quiet):
         """采集线程报告输入信号持续过弱/恢复正常。"""
@@ -674,11 +716,19 @@ class MainWindow(QMainWindow):
                 t.stop()
         if threads[0]:
             threads[0].wait(2000)
-        for t in threads[1:]:
+        # v2.0.4：模型加载期的 AsrThread 阻塞在 WhisperModel() 构造里，
+        # 响应不了 _stop 标志也到不了队列哨兵，等满 3 秒只会白白冻结 GUI
+        # （阻塞期间按下的热键全部排队，恢复后被逐条当作新 toggle，
+        # start/stop 毫秒级翻转——实机日志实证的根因推手）。
+        # 加载未完成（_asr_ready 为假）时缩短等待，线程交孤儿容器收尾
+        for i, t in enumerate(threads[1:], start=1):
             if t:
+                timeout = 3000
+                if i == 1 and not getattr(self, "_asr_ready", False):
+                    timeout = 500
                 # 不在 GUI 线程长等（模型加载中停止曾最长冻界面 15s）：
                 # 信号已断开，线程收尾放后台自行完成（v1.9.4）
-                t.wait(3000)
+                t.wait(timeout)
         # v2.0.3：超时仍未退出的线程不再裸丢引用（只剩 parent 关系，MainWindow
         # 析构时会销毁运行中的 QThread → qFatal 崩溃）。改为摘除 parent、
         # 挂模块级容器保引用，finished 后 deleteLater 自清理
@@ -689,6 +739,10 @@ class MainWindow(QMainWindow):
                 t.finished.connect(t.deleteLater)
                 from app import log as app_log
                 app_log.log("pipeline.orphan_thread", cls=type(t).__name__)
+                if t is threads[1] and not getattr(self, "_asr_ready", False):
+                    # v2.0.4：加载期停止的专项记录——加载线程随后台完成即静默退出
+                    app_log.log("pipeline.stop_during_model_load",
+                                model=self.config.get("asr_model"))
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
@@ -699,6 +753,10 @@ class MainWindow(QMainWindow):
         from app.errors import friendly_message
         from app import log as app_log
         app_log.log("pipeline.error", detail=str(msg)[:200])
+        if not self.running:
+            # v2.0.4：停止后迟到的管线错误不再覆盖"已停止"（幽灵回调守卫，
+            # 与 _on_asr_status/_on_translate_status 同一策略）
+            return
         msg = friendly_message(str(msg))
         if self.running and ("采集" in msg or "回环" in msg or "音频" in msg or "设备" in msg):
             self.stop_pipeline()

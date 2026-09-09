@@ -790,7 +790,10 @@ class SettingsDialog(QDialog):
     def _rerun_wizard(self):
         """重新打开首启三步向导（默认项即当前配置，一路「下一步」无副作用）。"""
         from app.ui.first_run import FirstRunWizard
-        dlg = FirstRunWizard(self)
+        # v2.0.4：必须传 MainWindow——向导内部访问 self.main.config /
+        # stop_pipeline / start_pipeline（first_run.py），传设置对话框自身
+        # 会在构建模型页时 AttributeError（「重新运行首次向导」必崩）
+        dlg = FirstRunWizard(self.main)
         dlg.exec()
         self.load_from_config()
 

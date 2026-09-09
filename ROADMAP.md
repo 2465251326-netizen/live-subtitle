@@ -247,3 +247,15 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 向导三连修：MODEL_INFO 补 large-v3-turbo / device_index 条件重置 / 完成时运行中管线自动重启
 - ✅ detect_lang 失败抛错（不再静默回 "en" 产生乱译缓存）/ 手动代理空地址显式直连
 - ✅ Argos 索引缓存与系统代理缓存原子化 / _split_long 硬切 / 语言包顶层结构校验 / metadata 失败清理
+
+---
+
+## 九、v2.0.4 热键失灵根治 + 三债清偿（2026-09-09，用户实测热键报告 + 五路并行代码审计）
+
+> 用户实测报告：热键启动后状态栏永久卡在「识别: 正在加载tiny模型」、再次按热键无法关闭翻译。实机日志（app.log）实证 pipeline.start 后 4~6ms 即 pipeline.stop 的毫秒级翻转。同批清偿五路审计发现的三个确定 Bug。
+
+- ✅ **热键"关不掉"根治**（三处叠加缺陷）：① 停止时对加载/下载中的 AsrThread 等满 3s——该阶段线程阻塞在 WhisperModel() 构造里无法响应，白冻 GUI 且让连按热键排队（stop_pipeline 加载期等待缩短至 0.5s，孤儿容器收尾）；② status_changed/level_changed/error_occurred 缺幽灵回调守卫——停止后已入队的「正在加载模型」等迟到状态在写完"已停止"后送达覆盖，状态栏永久卡死过期文案（统一改走带 running+sender 双守卫的槽）；③ 热键无防抖——排队按键恢复后逐条当作新 toggle 造成 start/stop 反复翻转（toggle_running 0.25s 去抖 + 启停完成后二次盖时间戳）
+- ✅ 加载路径停止检查点：端点探测/代理同步完成后、进入 import/构造前检查 _stop，加载期停止快速生效（engine._load_model）
+- ✅ **设置页"重新运行首次向导"必崩**：_rerun_wizard 误传 SettingsDialog 自身（无 config/stop_pipeline 属性），向导构建模型页即 AttributeError——改传 MainWindow
+- ✅ **翻译备援缓存只写不读**：备援成功后的缓存 key 缺源语言维度（v2.0.1 加维度时漏改的写点），与读取侧永不匹配——_cache_key 统一读写构造
+- ✅ **日志双轨分裂**：生命周期日志 handler 启动时固化默认根，存储根迁移后与崩溃日志（动态取新根）分裂两处——log.rebind() + Config.relocate 改绑新根
