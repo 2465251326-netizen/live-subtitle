@@ -646,6 +646,7 @@ class MainWindow(QMainWindow):
         self.level_bar.setValue(0)
         self._low_input_warn = False
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
+        self._fail_streak = 0  # v2.0.2：会话结束时清零连续失败计数
         self._stop_model_download_feedback()
         self.stack.setCurrentIndex(0)
 
@@ -693,6 +694,12 @@ class MainWindow(QMainWindow):
         if not self.running:
             return
         self._last_engine_name = engine
+        # v2.0.2：连续失败升级提示——备援链全灭（如 Google 全通道被封 +
+        # MyMemory 配额尽 + 无离线包）时，不能只让每条字幕各自报错
+        if error:
+            self._fail_streak = getattr(self, "_fail_streak", 0) + 1
+        else:
+            self._fail_streak = 0
         show_source = bool(self.config.get("show_source"))
         card = CaptionCard(source_text)
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
@@ -704,8 +711,20 @@ class MainWindow(QMainWindow):
             card.set_result(translated, engine, detected, show_source)
         self.session_count = getattr(self, "session_count", 0) + 1
         self.session_label.setText(f"本次会话：{self.session_count} 条")
-        self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
+        if error:
+            self._set_engine_status(
+                f"⚠ 翻译失败（连续 {self._fail_streak} 条）：{error}")
+        else:
+            self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
         self.update_overlay_status()
+        if error:
+            # 连续 ≥3 条失败：状态行升级为通道级提示 + 悬浮条橙红常驻，
+            # 直到有成功译文才恢复正常
+            advice = "检查网络/代理节点，或到「设置-翻译」测试通道 / 下载离线语言包"
+            self.overlay.set_status(
+                f"翻译连续失败 {self._fail_streak} 条 · {advice}" if self._fail_streak >= 3
+                else "翻译失败 · 检查网络或切换引擎",
+                is_error=True)
         if self.overlay.isVisible():
             self.overlay.show_caption(source_text, translated or ("[" + engine + " 翻译失败]"),
                                       show_source)
