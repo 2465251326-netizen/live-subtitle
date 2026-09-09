@@ -8,6 +8,24 @@ import shutil
 import subprocess
 
 
+def torch_cuda_state() -> str:
+    """检测 CUDA 运行时载体（PyTorch）的状态（v2.1.2）。
+
+    返回："cuda"=已装 CUDA 版（运行时就绪）/ "cpu"=装了 CPU 版（需升级）/
+    "missing"=未装 PyTorch / "unknown"=检测失败。
+    驱动级 CUDA 可见（nvidia-smi/ctranslate2 枚举）≠ 运行时可用——
+    cuDNN/cuBLAS 动态库随 CUDA 版 PyTorch 分发，以此为运行时就绪判据。
+    """
+    import importlib.util
+    if importlib.util.find_spec("torch") is None:
+        return "missing"
+    try:
+        import torch
+        return "cuda" if getattr(torch.version, "cuda", None) else "cpu"
+    except Exception:
+        return "unknown"
+
+
 def detect() -> dict:
     """汇总 GPU 环境信息，永不抛异常。"""
     import sys
@@ -17,6 +35,7 @@ def detect() -> dict:
         "driver": "",
         "cuda_devices": 0,
         "vram_mb": 0,
+        "torch_cuda": "unknown",
         "frozen": bool(getattr(sys, "frozen", False)),
         "smi_error": "",
     }
@@ -43,6 +62,7 @@ def detect() -> dict:
                     pass
     except Exception as e:
         info["smi_error"] = f"nvidia-smi 查询失败: {e}"
+    info["torch_cuda"] = torch_cuda_state()
     info.update(_cuda_count(info))
     return info
 
@@ -69,12 +89,18 @@ def guidance_text(info: dict) -> str:
                      + ("，满足 CUDA 12.x 要求 ≥525" if drv_ok else "，CUDA 12.x 需驱动 ≥525，请先升级驱动") + "）")
     else:
         lines.append("· 未检测到 NVIDIA 显卡；无独显时 CPU 模式已可实时，无需 GPU 加速")
-    if info["cuda_devices"] > 0:
-        lines.append("· CUDA 运行环境可用：把「计算方式」切到「强制 GPU」即可加速"
-                     "（不可用时自动回落 CPU 并在就绪提示说明原因）")
-    elif info["nvidia_gpu"]:
-        lines.append("· 有 NVIDIA 显卡但 CUDA 运行环境未就绪：源码运行可一键安装 CUDA 版 PyTorch；"
-                     "打包版内置 CPU 推理，请下载 GPU 通道安装包（后续版本提供）")
+    # v2.1.2：按"运行时就绪"三态给结论——驱动可见 ≠ 运行时可用
+    torch_state = info.get("torch_cuda", "unknown")
+    if info.get("nvidia_gpu"):
+        if torch_state == "cuda":
+            lines.append("· CUDA 运行时已就绪（CUDA 版 PyTorch 已安装）："
+                         "把「计算方式」切到「强制 GPU」即可加速")
+        elif torch_state == "cpu":
+            lines.append("· 已装 PyTorch 但是 CPU 版（缺 cuDNN/cuBLAS 运行时）："
+                         "点下方「一键安装 CUDA 版 PyTorch」升级即可")
+        else:
+            lines.append("· 有 NVIDIA 显卡但 CUDA 运行时未安装（cuDNN/cuBLAS 缺失，"
+                         "此状态选择 GPU 推理会挂死）：点下方「一键安装 CUDA 版 PyTorch」")
     if info["frozen"]:
         lines.append("· 当前为打包版：内置 CPU 推理；GPU 需 GPU 通道安装包")
     else:
@@ -88,11 +114,12 @@ def guidance_text(info: dict) -> str:
 
 
 def vram_advice(info: dict):
-    """按检测到的显存容量输出各模型档位的可运行性建议（GPU 就绪时才有意义）。"""
-    gpu_ok = info.get("cuda_devices", 0) > 0
+    """按检测到的显存容量输出各模型档位的可运行性建议（运行时就绪才有意义）。"""
+    gpu_ok = (info.get("cuda_devices", 0) > 0
+              and info.get("torch_cuda") == "cuda")
     vram = info.get("vram_mb") or 0
     if not gpu_ok:
-        return ["· CUDA 未就绪，以下建议在配置好 GPU 后生效"]
+        return ["· CUDA 运行时尚未就绪，以下建议在「一键安装 CUDA 版 PyTorch」后生效"]
     # GPU 显存需求（保守估计，含运行时开销）：tiny/base ≈1.5GB、small ≈2.5GB、
     # medium ≈5GB、large-v3-turbo ≈5GB（fp16）
     tiers = [("tiny / base", 1500, "CPU 已实时，GPU 收益小"),

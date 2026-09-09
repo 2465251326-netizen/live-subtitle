@@ -367,3 +367,14 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 - ✅ 下拉三档：CPU 模式（通用）/ 强制 GPU（需 CUDA 运行时，不可用回落 CPU+就绪提示说明）/ 自动（安全档=CPU）
 - ✅ 三档语义实测验证（cpu→cpu/int8、cuda→cuda/float16、auto/未知值→cpu/int8）；gpu.py 引导文案同步
+
+---
+
+## 二十一、v2.1.2 一键安装按钮条件修正 + 强制GPU运行时预载闭环（2026-09-09，用户"就不能一键安装吗"）
+
+> 用户机器恰是"驱动可见（cuda_devices=1）、运行时缺失"——旧显示条件 cuda_devices==0 把一键安装按钮藏掉了；且装完 torch 后 CTranslate2 默认也找不到 torch 目录里的 cuDNN/cuBLAS（无 DLL 路径注册），缺预载环节。
+
+- ✅ gpu.torch_cuda_state() 三态检测（missing/cpu/unknown→需装；cuda→就绪）；检测摘要+引导文案按三态给准确结论
+- ✅ 按钮条件：非 frozen 且有 N 卡且 torch_cuda != "cuda" → 显示（CPU 版显示"升级为 CUDA 版"）；安装加 --force-reinstall（防 pip 已满足跳过）
+- ✅ engine._torch_cuda_ready()：强制 GPU 加载前 import torch + CUDA matmul 触发 cuBLAS 载入 + cudnn.version() 触发 cuDNN 载入——DLL 进程预载，未就绪则回落 CPU
+- 真机验证：检测输出正确识别"RTX 2060 + 运行时未安装 + 挂死风险警告"

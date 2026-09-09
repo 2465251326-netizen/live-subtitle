@@ -3,6 +3,7 @@
 「保存并应用」模式：改动先暂存（dirty tracking），底部操作栏
 「保存并应用」统一落盘并按层生效——悬浮字幕样式实时预览；
 管线类设置（模型/引擎/音频源）保存后自动重启管线。"""
+import os
 import re
 import sys
 from pathlib import Path
@@ -393,17 +394,24 @@ class _StorageMigrateWorker(QThread):
 
 
 class _CudaInstallWorker(QThread):
-    """后台安装 CUDA 12.1 版 PyTorch（仅源码运行模式提供）。"""
+    """后台安装 CUDA 12.1 版 PyTorch（仅源码运行模式提供）。
+
+    v2.1.2：走代理镜像环境（沿用用户代理配置）+ 安装前清掉已有 CPU 版
+    torch（否则 pip 提示 already satisfied 直接跳过，CPU 版原地不动）。
+    """
     done = Signal(bool, str)
 
     def run(self):
         try:
             import subprocess
+            cmd = [sys.executable, "-m", "pip", "install", "torch",
+                   "--index-url", "https://download.pytorch.org/whl/cu121",
+                   # 显式重装：CPU 版已存在时 pip 不会自行升级换 CUDA 版
+                   "--force-reinstall"]
+            env = os.environ.copy()
             r = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "torch",
-                 "--index-url", "https://download.pytorch.org/whl/cu121"],
-                capture_output=True, text=True, timeout=3600,
-                encoding="utf-8", errors="replace")
+                cmd, capture_output=True, text=True, timeout=3600,
+                encoding="utf-8", errors="replace", env=env)
             if r.returncode == 0:
                 self.done.emit(True, "")
             else:
@@ -1304,16 +1312,29 @@ class SettingsDialog(QDialog):
         def _apply(info):
             info_box.update(info)
             vram = info.get("vram_mb") or 0
+            torch_state = info.get("torch_cuda", "unknown")
+            state_txt = {"cuda": "已装 CUDA 版（运行时就绪）",
+                         "cpu": "已装 CPU 版（缺运行时）",
+                         "missing": "未安装",
+                         "unknown": "未知"}.get(torch_state, "未知")
             summary.setText(
                 f"NVIDIA 显卡：{info['nvidia_gpu'] or '未检测到'}\n"
                 f"驱动版本：{info['driver'] or '—'}\n"
                 f"显存：{f'{vram} MB' if vram else '—'}\n"
                 f"CUDA 可用设备数：{info['cuda_devices']}\n"
+                f"CUDA 运行时（PyTorch）：{state_txt}\n"
                 f"运行形态：{'打包版（内置 CPU 推理）' if info['frozen'] else '源码运行'}")
             from app import gpu as gpu_mod
             body.setText(gpu_mod.guidance_text(info))
-            if not info["frozen"] and info["nvidia_gpu"] and info["cuda_devices"] == 0:
+            # v2.1.2：按钮显示条件修正——此前 cuda_devices==0 才显示，而
+            # "驱动可见、运行时缺失"（cuda_devices=1，最需要装的机器）恰好
+            # 被藏掉。现按运行时三态：missing/cpu 版/未知 → 显示安装按钮
+            if not info["frozen"] and info["nvidia_gpu"] and torch_state != "cuda":
                 install_btn.setVisible(True)
+                install_btn.setText("升级为 CUDA 版 PyTorch" if torch_state == "cpu"
+                                    else "一键安装 CUDA 版 PyTorch")
+            else:
+                install_btn.setVisible(False)
 
         class _GpuDetectWorker(QThread):
             done = Signal(dict)

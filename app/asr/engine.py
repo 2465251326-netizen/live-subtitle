@@ -112,6 +112,31 @@ _MODEL_CACHE = {}
 _MODEL_CACHE_LOCK = threading.Lock()
 
 
+def _torch_cuda_ready() -> bool:
+    """强制 GPU 的运行时前置检查（v2.1.2）。
+
+    1) PyTorch 已装且为 CUDA 版（cuDNN/cuBLAS 随其分发）；
+    2) 初始化 CUDA 并触发 cuBLAS/cuDNN 载入进程——此后 ctranslate2
+       按名解析 DLL 即可命中（未装 torch / CPU 版 torch / 驱动异常均
+       返回 False，而非挂死）。
+    """
+    try:
+        import torch
+    except Exception:
+        return False
+    if not getattr(torch.version, "cuda", None):
+        return False
+    try:
+        if not torch.cuda.is_available():
+            return False
+        x = torch.ones(64, 64, device="cuda")
+        (x @ x).sum().item()          # 触发 cuBLAS 载入进程
+        torch.backends.cudnn.version()  # 触发 cuDNN 载入进程
+        return True
+    except Exception:
+        return False
+
+
 class AsrThread(QThread):
     text_ready = Signal(str, str, str)  # text, whisper_lang, duration
     status_changed = Signal(str)
@@ -300,6 +325,11 @@ class AsrThread(QThread):
         # v2.1.1：三档语义——cpu=强制 CPU；cuda=强制 GPU（加载失败回落 CPU 并
         # 明确提示）；auto=安全档（CPU，等价旧"自动"降级后的行为）
         device = self.device if self.device in ("cpu", "cuda") else "cpu"
+        # v2.1.2：强制 GPU 前置运行时检查 + DLL 预载——torch CUDA 版自带
+        # cuDNN/cuBLAS，import+init 将其载入进程，ctranslate2 按名解析命中；
+        # 未装/CPU 版/驱动异常 → 回落 CPU（就绪提示会说明原因）
+        if device == "cuda" and not _torch_cuda_ready():
+            device = "cpu"
         compute_type = "int8" if device == "cpu" else "float16"
         # v2.0.6：进程内实例复用——同一 (模型, 设备, 量化) 在池中直接取用，
         # 切输入来源/改识别设置重启管线不再全量重载（CPU 上数秒到数十秒）。
