@@ -649,6 +649,12 @@ class MainWindow(QMainWindow):
 
     def _set_engine_status(self, text):
         self._engine_status_text = text
+        # v2.0.8：积压警示置顶——"识别积压"出现后任何后续状态都追加提醒
+        # （此前一句话即被"识别完成/就绪"覆盖，用户从未看到丢段原因）
+        if getattr(self, "_backlog_warn", False) and "识别积压" not in text \
+                and "积压" not in text and "跳过" not in text:
+            text = (text + "　⚠ 积压丢段中：CPU 转写跟不上，"
+                    "建议到「设置-语音识别」换 small/tiny 模型")
         if not getattr(self, "_low_input_warn", False) and not getattr(self, "_muted_warn", False):
             self.engine_status_label.setText(text)
 
@@ -661,6 +667,10 @@ class MainWindow(QMainWindow):
         # stop_pipeline 写完"已停止"之后才送达
         if not self.running or self.sender() is not self.asr_thread:
             return
+        if "识别积压" in text:
+            # v2.0.8：积压提示置顶常驻——此前一句话即被后续状态覆盖，用户
+            # 从未看到丢段原因（实测 8 段提交 0 条字幕的根因提示）
+            self._backlog_warn = True
         self._set_engine_status(f"识别: {text}")
 
     def _on_translate_status(self, text):
@@ -738,6 +748,7 @@ class MainWindow(QMainWindow):
         self._low_input_warn = False
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
         self._fail_streak = 0  # v2.0.2：会话结束时清零连续失败计数
+        self._backlog_warn = False  # v2.0.8：积压警示随会话结束复位
         self._stop_model_download_feedback()
         timer = getattr(self, "_no_segment_timer", None)
         if timer is not None:

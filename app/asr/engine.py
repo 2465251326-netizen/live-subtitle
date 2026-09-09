@@ -98,6 +98,10 @@ class AsrThread(QThread):
         self._lang_lock = threading.Lock()
         self._last_lang = language if language != "auto" else None
         self._discard_streak = 0
+        # v2.0.8：背压重设计——队列上限放宽 + 积压/丢段状态只报一次
+        self.QUEUE_LIMIT = 8
+        self._backlog_reported = False
+        self._dropped_ever = False
 
     def _postprocess(self, text):
         """识别后处理（建议5）：可选的常见误听修正词典（精确子串替换）。"""
@@ -184,17 +188,37 @@ class AsrThread(QThread):
             pass
 
     def submit(self, audio):
+        """语音段入队。
+
+        v2.0.8 重新设计背压：medium CPU 上一段转写 ~10s，快语速内容
+        30s 就能切出 5+ 段，旧"队列 ≥3 丢最旧"会把大多数段静默丢掉
+        （实测 8 段提交 0 条字幕，用户观感=完全没反应）。
+        现在：上限放宽到 8 段（约 2 分钟语音），只在真实超限时丢最旧；
+        丢段/积压状态只发一次，避免刷屏。
+        """
         try:
-            while self.queue_in.qsize() >= 3:
+            dropped = False
+            while self.queue_in.qsize() >= self.QUEUE_LIMIT:
                 try:
                     self.queue_in.get_nowait()
+                    dropped = True
                 except queue.Empty:
                     break
             self.queue_in.put_nowait(audio)
-            # v2.0.1：积压丢段不再静默——用户需要知道跳句原因
-            if self.queue_in.qsize() >= 3:
+            if dropped:
+                self._dropped_ever = True
+                if not self._backlog_reported:
+                    self._backlog_reported = True
+                    self.status_changed.emit(
+                        "识别积压，部分较早语音来不及转写已被跳过："
+                        "CPU 跟不上当前模型，建议换 small/tiny（状态栏持续提醒）")
+                from app import log as app_log
+                app_log.log("asr.segment_dropped", queue=self.queue_in.qsize())
+            elif self.queue_in.qsize() >= self.QUEUE_LIMIT - 2 and not self._backlog_reported:
+                self._backlog_reported = True
                 self.status_changed.emit(
-                    "识别积压，已跳过较早语音：CPU 较慢时建议换更小模型（如 small/tiny）")
+                    "识别积压：转写速度跟不上语音产出，字幕会延迟陆续出现"
+                    "（CPU 较慢建议换 small/tiny）")
         except Exception:
             pass
 
@@ -390,10 +414,21 @@ class AsrThread(QThread):
         else:
             texts = [t for (t, _lp, _ns) in segs]
         if not texts:
+            if segs:
+                # v2.0.8：过滤器主动丢弃不再静默——"零字幕卡聆听"的另一根因，
+                # 用户有权知道段被识别了但被质量过滤掉（而不是应用没反应）
+                self._filtered_streak = getattr(self, "_filtered_streak", 0) + 1
+                if self._filtered_streak == 2:
+                    self.status_changed.emit(
+                        "有语音被识别但质量过滤丢弃（可能为音乐/噪声，或识别语言与内容不符——"
+                        "当前锁定为「" + str(self.language) + "」，可在设置中改为自动检测）")
+            else:
+                self._filtered_streak = 0
             if self.language == "auto":
                 with self._lang_lock:
                     self._last_lang = None
             return
+        self._filtered_streak = 0
         text = "".join(texts) if (info.language or "").startswith("zh") else " ".join(texts)
         text = self._postprocess(text)
         detected = info.language or ""
