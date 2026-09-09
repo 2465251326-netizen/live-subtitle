@@ -48,8 +48,9 @@ def main():
     if track is None:
         print("SMOKE: 未找到预生成音轨, 仅测试管线启停")
         w.stop_pipeline()
-        print("SMOKE PASS (pipeline start/stop)")
-        sys.exit(0)
+        print("SMOKE PASS (pipeline start/stop)", flush=True)
+        sys.stdout.flush()
+        os._exit(0)
 
     seg = Segmenter()
     chunk = 480
@@ -99,11 +100,16 @@ def main():
     print(f"SMOKE settings dialog: staged={staged_ok}, applied={applied_ok}")
 
     w.stop_pipeline()
+    # v2.0.12：Qt 应用 + sys.exit 的解释器收尾阶段偶发崩溃（QApplication
+    # 析构与后台线程销毁竞态，CI 实测 SMOKE PASS 后仍 exit 1）——测试脚本
+    # 断言完成后直接 os._exit 硬退出，跳过 Qt 析构雷区
+    sys.stdout.flush()
+    sys.stderr.flush()
     if done[0] >= expect and overlay_ok and staged_ok and applied_ok:
-        print(f"SMOKE PASS (captions={done[0]}, overlay OK, settings dialog OK)")
-        sys.exit(0)
-    print(f"SMOKE FAIL (captions={done[0]}, overlay={overlay_ok}, staged={staged_ok}, applied={applied_ok})")
-    sys.exit(1)
+        print(f"SMOKE PASS (captions={done[0]}, overlay OK, settings dialog OK)", flush=True)
+        os._exit(0)
+    print(f"SMOKE FAIL (captions={done[0]}, overlay={overlay_ok}, staged={staged_ok}, applied={applied_ok})", flush=True)
+    os._exit(1)
 
 
 if __name__ == "__main__":

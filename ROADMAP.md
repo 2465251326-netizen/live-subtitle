@@ -332,3 +332,12 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 显式 cuda 加载失败自动回落 CPU + asr.cuda_fallback_cpu 日志
 - ✅ 修复验证：同一探针 0 条 → 5 条字幕全产出
 - 教训入档：get_cuda_device_count ≠ 运行时可用；GPU 探测引导应区分"驱动可见"与"推理可用"两态
+
+---
+
+## 十七、v2.0.12 冒烟脚本收尾竞态（2026-09-09）
+
+> v2.0.11 CI 复现"SMOKE PASS 后进程仍 exit 1"；本地 small 模型同款复现（断言全过、exit code -1073740791/0xC0000409 abort）——Qt 应用 + sys.exit 的 QApplication 析构与后台线程销毁竞态，与功能无关。
+
+- ✅ smoke_test.py 断言完成后 os._exit 硬退出（先 flush），跳过 Qt 析构雷区；本地同条件复测 exit 0
+- 对照实验同时确认：v2.0.11 修复后 medium→argos 全链路本地正常出字幕（v2.0.8 队列扩容 + v2.0.11 auto→CPU 落地生效）
