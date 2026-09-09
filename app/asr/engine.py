@@ -42,6 +42,34 @@ def split_long_caption(text, limit=60):
     return merged
 
 
+def download_model_files(model_size, should_stop=None, progress=None):
+    """受控逐文件下载 faster-whisper 模型（v2.0.5）。
+
+    相比 WhisperModel 构造时的内建黑盒下载：每个文件下载之间检查
+    should_stop()，命中即返回 "stopped"（单文件内部无法中断，hf_hub
+    断点续传保证已下载部分下次继续有效）；progress(i, total, name)
+    在调用线程内逐文件回调。使用标准 HF 缓存布局（HF_HOME/hub），
+    完成后 model_cached 即通过，WhisperModel 以 local_files_only 加载。
+    文件列表获取/下载异常向上抛出，由调用方负责友好化与兜底。
+    """
+    from huggingface_hub import list_repo_files, hf_hub_download
+    from app.config import HF_HOME
+    repo = "Systran/faster-whisper-" + model_size
+    files = list_repo_files(repo)
+    total = len(files)
+    for i, name in enumerate(files, 1):
+        if should_stop is not None and should_stop():
+            return "stopped"
+        hf_hub_download(repo_id=repo, filename=name,
+                        cache_dir=str(HF_HOME / "hub"))
+        if progress is not None:
+            try:
+                progress(i, total, name)
+            except Exception:
+                pass
+    return "done"
+
+
 class AsrThread(QThread):
     text_ready = Signal(str, str, str)  # text, whisper_lang, duration
     status_changed = Signal(str)
@@ -101,14 +129,35 @@ class AsrThread(QThread):
         return dir_size_mb(AsrThread.model_cache_dir(model_size))
 
     @staticmethod
+    def model_state(model_size: str):
+        """(状态, 磁盘MB)：full=已缓存可用；partial=有残留但不完整
+        （含半截 model.bin，v1.9.0 事故形态）；missing=本地无数据。"""
+        mb = AsrThread.model_size_mb(model_size)
+        if AsrThread.model_cached(model_size):
+            return "full", mb
+        if mb > 0.5:
+            return "partial", mb
+        return "missing", mb
+
+    @staticmethod
     def remove_model(model_size: str) -> bool:
-        """删除已下载的识别模型缓存目录；返回是否删除了内容。"""
+        """删除识别模型缓存目录（含未完成下载残留）；返回是否删除干净。
+
+        Windows 上正在运行的 ctranslate2/杀软握旧文件句柄会让 rmtree
+        部分失败——重试 + 复核目录确实消失，保证"删除成功"名副其实
+        （v2.0.5；此前 ignore_errors=True 静默半删）。
+        """
         import shutil
+        import time as _t
         d = AsrThread.model_cache_dir(model_size)
-        if d.exists():
+        if not d.exists():
+            return False
+        for _ in range(3):
             shutil.rmtree(d, ignore_errors=True)
-            return True
-        return False
+            if not d.exists():
+                return True
+            _t.sleep(0.5)
+        return not d.exists()
 
     def stop(self):
         self._stop = True
@@ -152,6 +201,20 @@ class AsrThread(QThread):
                 _net.apply_proxy_env()
             except Exception:
                 pass
+            # v2.0.5：受控逐文件下载——每个文件之间可被停止打断（此前
+            # WhisperModel 构造内建下载无法中断，加载期停止要等下载完）；
+            # 列表获取失败时回落内建下载路径，行为与 v2.0.4 一致
+            if not self._stop:
+                try:
+                    outcome = download_model_files(
+                        self.model_size, should_stop=lambda: self._stop)
+                    if outcome == "stopped":
+                        self.status_changed.emit("已停止模型下载（已下载部分保留，下次继续）")
+                        return False
+                    cached = True
+                except Exception:
+                    app_log.exception("asr.controlled_download_failed",
+                                      model=self.model_size)
         if self._stop:
             # v2.0.4：加载期间用户已停止——端点探测/代理同步完成后直接放弃，
             # 不再进入耗时的 import/构造阶段（此前要等模型加载完才检查 _stop）

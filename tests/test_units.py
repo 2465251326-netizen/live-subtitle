@@ -194,6 +194,26 @@ def test_model_cached_rejects_stub():
         AsrThread.model_cache_dir = staticmethod(orig)
 
 
+def test_model_state_missing_partial():
+    import tempfile
+    import pathlib
+    from app.asr.engine import AsrThread
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    orig = AsrThread.model_cache_dir
+    try:
+        AsrThread.model_cache_dir = staticmethod(lambda s: tmp)
+        # 空目录：missing（此前"未下载也显示删除按钮"的判定来源）
+        assert AsrThread.model_state("tiny") == ("missing", 0.0)
+        # 有残留但 model.bin 不完整：partial（v1.9.0 半截文件形态）
+        blobs = tmp / "blobs"
+        blobs.mkdir()
+        (blobs / "x.bin").write_bytes(b"\0" * (2 * 1024 * 1024))
+        state, mb = AsrThread.model_state("tiny")
+        assert state == "partial" and mb > 1.0, "2MB 残留应判 partial"
+    finally:
+        AsrThread.model_cache_dir = staticmethod(orig)
+
+
 def test_mymemory_sentence_chunks():
     from app.translate.translator import MyMemory
     text = "This is a sentence. " * 40

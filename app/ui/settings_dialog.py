@@ -70,6 +70,204 @@ class ClickableSlider(QSlider):
         super().mousePressEvent(event)
 
 
+class ModelDownloadWorker(QThread):
+    """faster-whisper 模型下载/取消 worker（v2.0.5）。
+
+    执行体在 app.asr.engine.download_model_files：逐文件下载、文件之间
+    检查取消标志，使用与运行时加载完全一致的标准 HF 缓存布局
+    （HF_HOME/hub），完成后 model_cached 判定即通过。
+    取消粒度 = 当前文件下载完成后停止（单文件内部无法中断；
+    hf_hub 断点续传保证已下载部分下次继续有效）。
+    """
+
+    progress_text = Signal(str)
+    progress_pct = Signal(int)
+    finished_ok = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, model_size, parent=None):
+        super().__init__(parent)
+        self.model_size = model_size
+        self._cancel = False
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def was_cancelled(self):
+        return self._cancelled
+
+    def run(self):
+        from app.asr.engine import AsrThread, download_model_files
+        if AsrThread.model_cached(self.model_size):
+            self.finished_ok.emit(f"{self.model_size} 模型已就绪")
+            return
+        try:
+            # 与管线路径同款前置：HF 端点（镜像探测）+ 代理环境变量同步
+            from app.config import ensure_hf_endpoint_ready
+            ensure_hf_endpoint_ready()
+            from app import net as _net
+            _net.apply_proxy_env()
+        except Exception:
+            pass
+
+        def _progress(i, total, name):
+            self.progress_text.emit(f"正在下载模型文件（{i}/{total}）：{name}")
+            self.progress_pct.emit(int(i * 100 / max(total, 1)))
+
+        try:
+            outcome = download_model_files(
+                self.model_size, should_stop=lambda: self._cancel,
+                progress=_progress)
+        except Exception as e:
+            if self._cancel:
+                self._cancelled = True
+                self.finished_ok.emit("下载已取消（已下载部分保留，下次继续）")
+                return
+            from app.errors import friendly_error
+            self.failed.emit(f"模型下载失败：{friendly_error(e)}")
+            return
+        if outcome == "stopped" or self._cancel:
+            self._cancelled = True
+            self.finished_ok.emit("下载已取消（已下载部分保留，下次继续）")
+            return
+        self.progress_pct.emit(100)
+        self.finished_ok.emit(f"{self.model_size} 模型下载完成——下次开始翻译即离线可用")
+
+
+class _ModelDetailDialog(QDialog):
+    """单个识别模型的详情/操作弹窗（v2.0.5）。
+
+    内容：模型介绍、当前状态（未下载/不完整/已下载+体积）、
+    下载（逐文件可取消、断点续传、进度条）、删除。
+    下载进行中禁止关闭窗口——worker 以本窗口为 parent，
+    强行关闭会销毁运行中的 QThread（qFatal 风险）。
+    """
+
+    def __init__(self, parent, code, current_model, running):
+        super().__init__(parent)
+        self.code = code
+        self.current_model = current_model
+        self.running = running
+        self.worker = None
+        from app.ui.first_run import MODEL_INFO
+        intro = next((f"{t}：{d}" for c, t, d in MODEL_INFO if c == code), code)
+        self.setWindowTitle(f"模型详情 · {code}")
+        self.resize(480, 250)
+        v = QVBoxLayout(self)
+        title = QLabel(intro)
+        title.setObjectName("SettingTitle")
+        title.setWordWrap(True)
+        v.addWidget(title)
+        self.state_lbl = QLabel()
+        self.state_lbl.setObjectName("SettingDesc")
+        self.state_lbl.setWordWrap(True)
+        v.addWidget(self.state_lbl)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setVisible(False)
+        v.addWidget(self.bar)
+        self.dl_status = QLabel("")
+        self.dl_status.setObjectName("SettingDesc")
+        self.dl_status.setWordWrap(True)
+        self.dl_status.setVisible(False)
+        v.addWidget(self.dl_status)
+        btns = QHBoxLayout()
+        self.dl_btn = QPushButton("下载模型")
+        self.dl_btn.clicked.connect(self._start_download)
+        self.cancel_btn = QPushButton("取消下载")
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self._cancel_download)
+        self.rm_btn = QPushButton("删除模型")
+        self.rm_btn.clicked.connect(self._remove)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.close)
+        btns.addWidget(self.dl_btn)
+        btns.addWidget(self.cancel_btn)
+        btns.addWidget(self.rm_btn)
+        btns.addStretch()
+        btns.addWidget(close_btn)
+        v.addLayout(btns)
+        self._refresh()
+
+    def closeEvent(self, event):
+        if self.worker is not None and self.worker.isRunning():
+            event.ignore()
+            QMessageBox.information(self, "下载进行中",
+                                    "模型正在下载，请先「取消下载」或等待完成后再关闭。")
+            return
+        event.accept()
+
+    def _refresh(self):
+        from app.asr.engine import AsrThread
+        state, mb = AsrThread.model_state(self.code)
+        text = {
+            "missing": "状态：未下载（可点「下载模型」提前下载；首次使用也会自动下载）",
+            "partial": f"状态：下载不完整 · 已占 {mb:.0f} MB（残留半截文件，可删除或重新下载续传）",
+            "full": f"状态：已下载 · {mb:.0f} MB",
+        }[state]
+        if self.code == self.current_model:
+            text += " · 当前使用"
+        self.state_lbl.setText(text)
+        busy = self.worker is not None and self.worker.isRunning()
+        self.dl_btn.setEnabled(state != "full" and not busy)
+        self.rm_btn.setEnabled(state != "missing" and not busy)
+
+    def _start_download(self):
+        if self.worker is not None and self.worker.isRunning():
+            return
+        self.bar.setValue(0)
+        self.bar.setVisible(True)
+        self.dl_status.setText("正在连接下载源（首次可能需探测镜像）...")
+        self.dl_status.setVisible(True)
+        self.cancel_btn.setVisible(True)
+        self.dl_btn.setEnabled(False)
+        self.rm_btn.setEnabled(False)
+        self.worker = ModelDownloadWorker(self.code, self)
+        self.worker.progress_text.connect(self.dl_status.setText)
+        self.worker.progress_pct.connect(self.bar.setValue)
+        self.worker.finished_ok.connect(self._dl_done)
+        self.worker.failed.connect(self._dl_fail)
+        self._refresh()
+        self.worker.start()
+
+    def _cancel_download(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            self.dl_status.setText("正在取消（等待当前文件下载完成，最长可能数十秒）...")
+
+    def _finish_dl(self):
+        self.cancel_btn.setVisible(False)
+        self._refresh()
+
+    def _dl_done(self, msg):
+        self.dl_status.setText(msg)
+        self._finish_dl()
+
+    def _dl_fail(self, msg):
+        self.dl_status.setText(msg)
+        self._finish_dl()
+
+    def _remove(self):
+        from app.asr.engine import AsrThread
+        if self.code == self.current_model and self.running:
+            QMessageBox.warning(self, "无法删除",
+                                "该模型正在使用中，请先停止翻译再删除。")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("删除模型")
+        box.setText(f"确定删除 {self.code} 模型的缓存文件（含未完成的下载残留）吗？")
+        b_yes = box.addButton("删除", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() != b_yes:
+            return
+        AsrThread.remove_model(self.code)
+        self.bar.setVisible(False)
+        self.dl_status.setVisible(False)
+        self._refresh()
+
+
 class ArgosWorker(QThread):
     progress_text = Signal(str)
     progress_pct = Signal(int)
@@ -895,60 +1093,90 @@ class SettingsDialog(QDialog):
     # ---------- 识别模型管理 ----------
 
     def _manage_models(self):
-        """模型管理对话框：显示各模型下载状态与体积，支持删除。"""
+        """模型管理对话框：各模型状态/体积；双击查看详情（下载/删除/进度）。
+
+        v2.0.5：删除按钮仅在所选模型本地确有数据时可用（此前未下载也
+        显示"删除所选模型"却删无可删）；新增双击详情弹窗
+        （介绍/下载/取消下载/进度条，见 _ModelDetailDialog）。
+        """
         from app.asr.engine import AsrThread
 
         dlg = QDialog(self)
         dlg.setWindowTitle("识别模型管理")
-        dlg.resize(480, 320)
+        dlg.resize(500, 360)
         v = QVBoxLayout(dlg)
-        hint = QLabel("模型只在本机运行。删除后下次选择该模型时会自动重新下载。")
+        hint = QLabel("双击模型查看介绍并可下载/删除；模型只在本机运行，删除后下次选择会自动重新下载。")
         hint.setObjectName("SettingDesc")
         hint.setWordWrap(True)
         v.addWidget(hint)
         lst = QListWidget()
         v.addWidget(lst, 1)
         current = str(self.c.get("asr_model"))
-        for code, label in MODELS:
-            cached = AsrThread.model_cached(code)
-            mb = AsrThread.model_size_mb(code)
-            status = (f"已下载 · {mb:.0f} MB" if cached else "未下载（首次选择时自动下载）")
+
+        def status_text(code):
+            state, mb = AsrThread.model_state(code)
+            base = {
+                "missing": "未下载（首次选择时自动下载，也可手动下载）",
+                "partial": f"下载不完整 · 残留 {mb:.0f} MB（可删除或续传）",
+                "full": f"已下载 · {mb:.0f} MB",
+            }[state]
             if code == current:
-                status += " · 当前使用"
-            item = QListWidgetItem(f"{label}\n    {status}")
+                base += " · 当前使用"
+            return base
+
+        def label_of(code):
+            return next(l for c, l in MODELS if c == code)
+
+        for code, label in MODELS:
+            item = QListWidgetItem(f"{label}\n    {status_text(code)}")
             item.setData(Qt.UserRole, code)
             lst.addItem(item)
-        remove_btn = QPushButton("删除所选模型")
-        remove_btn.setEnabled(False)
-        lst.itemSelectionChanged.connect(lambda: remove_btn.setEnabled(bool(lst.selectedItems())))
-        v.addWidget(remove_btn)
+
+        rm_btn = QPushButton("删除所选模型")
+        rm_btn.setEnabled(False)
+
+        def _sync_remove():
+            it = lst.currentItem()
+            enabled = (it is not None
+                       and AsrThread.model_state(it.data(Qt.UserRole))[0] != "missing")
+            rm_btn.setEnabled(enabled)
+
+        def open_detail(item=None):
+            it = item or lst.currentItem()
+            if it is None:
+                return
+            code = it.data(Qt.UserRole)
+            _ModelDetailDialog(dlg, code, current,
+                               getattr(self.main, "running", False)).exec()
+            # 详情窗关闭后刷新该行状态与按钮可用性
+            it.setText(f"{label_of(code)}\n    {status_text(code)}")
+            _sync_remove()
 
         def do_remove():
-            item = lst.currentItem()
-            if item is None:
+            it = lst.currentItem()
+            if it is None:
                 return
-            code = item.data(Qt.UserRole)
+            code = it.data(Qt.UserRole)
             if code == current and getattr(self.main, "running", False):
                 QMessageBox.warning(dlg, "无法删除",
                                     "该模型正在使用中，请先停止翻译再删除。")
                 return
             box = QMessageBox(dlg)
             box.setWindowTitle("删除模型")
-            box.setText(f"确定删除 {code} 模型的缓存文件吗？")
+            box.setText(f"确定删除 {code} 模型的缓存文件（含未完成的下载残留）吗？")
             b_yes = box.addButton("删除", QMessageBox.DestructiveRole)
             box.addButton("取消", QMessageBox.RejectRole)
             box.exec()
             if box.clickedButton() != b_yes:
                 return
             if AsrThread.remove_model(code):
-                row = lst.row(item)
-                cached = AsrThread.model_cached(code)
-                mb = AsrThread.model_size_mb(code)
-                status = (f"已下载 · {mb:.0f} MB" if cached else "未下载（首次选择时自动下载）")
-                if code == current:
-                    status += " · 当前使用"
-                item.setText(f"{label}\n    {status}")
-        remove_btn.clicked.connect(do_remove)
+                it.setText(f"{label_of(code)}\n    {status_text(code)}")
+                _sync_remove()
+
+        lst.itemDoubleClicked.connect(open_detail)
+        lst.itemSelectionChanged.connect(_sync_remove)
+        rm_btn.clicked.connect(do_remove)
+        v.addWidget(rm_btn)
         dlg.exec()
 
     def _mishear_text_changed(self):

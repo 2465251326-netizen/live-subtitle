@@ -259,3 +259,12 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ **设置页"重新运行首次向导"必崩**：_rerun_wizard 误传 SettingsDialog 自身（无 config/stop_pipeline 属性），向导构建模型页即 AttributeError——改传 MainWindow
 - ✅ **翻译备援缓存只写不读**：备援成功后的缓存 key 缺源语言维度（v2.0.1 加维度时漏改的写点），与读取侧永不匹配——_cache_key 统一读写构造
 - ✅ **日志双轨分裂**：生命周期日志 handler 启动时固化默认根，存储根迁移后与崩溃日志（动态取新根）分裂两处——log.rebind() + Config.relocate 改绑新根
+
+---
+
+## 十、v2.0.5 模型管理升级（2026-09-09，用户实测反馈驱动）
+
+- ✅ 模型管理双击详情弹窗（_ModelDetailDialog）：介绍（复用向导 MODEL_INFO）/ 状态三态（未下载/不完整/已下载+体积）/ 手动下载 + 进度条 + **取消下载**（download_model_files 逐文件受控下载，hf 断点续传；下载中禁止关窗防 QThread 销毁）
+- ✅ 管线自动下载同步升级受控路径：加载期停止不再等待下载完成；列表获取失败回落 v2.0.4 内建路径
+- ✅ 删除按钮按 model_state 门控（missing 不可点）——修"未下载也显示删除所选模型"
+- ✅ remove_model 重试+复核（Windows 句柄占用防"半删报成功"）；新增 model_state 单测（25 项）
