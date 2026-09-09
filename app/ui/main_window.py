@@ -820,10 +820,14 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(msg)
 
     def _on_asr_text(self, text, detected, duration):
-        # v2.1.4 流式两段式：识别文本立刻上屏（原文先出、译文占位），
-        # 译文就绪后由 _on_translated 原地补齐——听到哪显示到哪，
-        # 不再干等翻译（medium CPU 10s/段或网络慢时此前界面长时间空白）
+        # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
+        # 译文占位、就绪后原地补齐）；关 = 旧行为（识别+翻译都完成后一次性上屏）
         if not self.running:
+            return
+        if not bool(self.config.get("instant_caption")):
+            self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
+            if self.translate_thread:
+                self.translate_thread.submit(text, detected)
             return
         show_source = bool(self.config.get("show_source"))
         card = CaptionCard(text)
@@ -870,12 +874,20 @@ class MainWindow(QMainWindow):
         else:
             self._fail_streak = 0
         show_source = bool(self.config.get("show_source"))
-        # v2.1.4：优先原地补齐识别时已上屏的占位卡；找不到（管线重启/
-        # 被裁剪等）才新建，兜底兼容旧行为
-        card = self._take_pending(source_text)
-        if card is None:
+        # v2.1.5：流式关（instant_caption=False）时无占位卡，走全新建卡；
+        # 流式开（默认）优先原地补齐识别时已上屏的占位卡，找不到
+        # （管线重启/被裁剪等）才新建，兜底兼容旧行为
+        if not bool(self.config.get("instant_caption")):
             card = CaptionCard(source_text)
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+            # v2.1.5：切回一次性上屏时清掉流式占位队列（防陈旧配对）
+            if getattr(self, "_pending", None):
+                self._pending.clear()
+        else:
+            card = self._take_pending(source_text)
+            if card is None:
+                card = CaptionCard(source_text)
+                self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)
         if error:

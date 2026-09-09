@@ -175,6 +175,7 @@ _FIELD_SPECS = {
     "auto_start":           ("instant", "check"),
     "max_history":          ("instant", "spin"),
     "translate_zh_from_zh": ("instant", "hidden"),
+    "instant_caption":      ("instant", "check"),
     "overlay_x":            ("internal", "hidden"),
     "overlay_y":            ("internal", "hidden"),
     "storage_root":         ("internal", "hidden"),
@@ -947,6 +948,13 @@ class SettingsDialog(QDialog):
         page._inner_layout.addLayout(grid)
 
         self._section(page, "紧凑列表模式")
+        self.instant_caption_check = QCheckBox()
+        self._row(page, "字幕流式上屏（原文先出）",
+                  "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
+                  "关闭：等识别+翻译都完成后一次性显示整条字幕（旧行为）。",
+                  self.instant_caption_check)
+        self.instant_caption_check.toggled.connect(
+            lambda v: self._stage("instant_caption", bool(v)))
         self.list_mode_check = QCheckBox()
         self._row(page, "悬浮条显示最近多条字幕",
                   "开启后悬浮条以可滚动列表显示最近几条字幕（适合单屏用户回看历史）。",
@@ -1734,6 +1742,8 @@ class SettingsDialog(QDialog):
         self.outline_width_spin.setValue(int(values.get("overlay_outline_width", c.get("overlay_outline_width"))))
         self.list_mode_check.setChecked(bool(values.get("overlay_list_mode", c.get("overlay_list_mode"))))
         self.list_max_spin.setValue(int(values.get("overlay_list_max", c.get("overlay_list_max"))))
+        self.instant_caption_check.setChecked(bool(values.get("instant_caption",
+                                                              c.get("instant_caption", True))))
         set_combo(self.close_combo, "close_action")
         self.auto_start_check.setChecked(bool(values.get("auto_start", c.get("auto_start"))))
         self.max_history_spin.setValue(int(values.get("max_history", c.get("max_history"))))
@@ -2138,6 +2148,7 @@ class SettingsDialog(QDialog):
             self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
             self.list_mode_check.setChecked(bool(c.get("overlay_list_mode")))
             self.list_max_spin.setValue(int(c.get("overlay_list_max")))
+            self.instant_caption_check.setChecked(bool(c.get("instant_caption", True)))
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))
             self._outline_color = QColor(c.get("overlay_outline_color"))
