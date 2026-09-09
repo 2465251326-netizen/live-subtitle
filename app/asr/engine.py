@@ -55,6 +55,26 @@ def model_repo_id(model_size: str) -> str:
     return "Systran/faster-whisper-" + model_size
 
 
+def _hf_call(fn, *args, **kwargs):
+    """HF Hub 调用包装（v2.1.0）：优先本机凭据（有有效令牌者享更高速率），
+    认证失败（401/403/过期令牌）自动退回匿名重试。
+
+    v2.0.9 曾无条件 token=False 修 401（本机过期令牌会拖累公开仓库下载），
+    但这让持有效令牌的用户白白失去更高速率；现改为"先试凭据、认证失败
+    再匿名"，两端兼顾。仓库不存在（RepositoryNotFoundError）同样含 401
+    文本，匿名重试后原样抛出，不掩盖真实错误。"""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        msg = str(e)
+        if ("401" in msg or "403" in msg or "Unauthorized" in msg
+                or "Invalid username or password" in msg):
+            anon = dict(kwargs)
+            anon["token"] = False
+            return fn(*args, **anon)
+        raise
+
+
 def download_model_files(model_size, should_stop=None, progress=None):
     """受控逐文件下载 faster-whisper 模型（v2.0.5）。
 
@@ -68,15 +88,15 @@ def download_model_files(model_size, should_stop=None, progress=None):
     from huggingface_hub import list_repo_files, hf_hub_download
     from app.config import HF_HOME
     repo = model_repo_id(model_size)
-    # v2.0.9：强制匿名下载（token=False）——本机存有过期/无效的 HF 令牌时，
-    # huggingface_hub 默认自动附带导致公开仓库也返回 401
-    files = list_repo_files(repo, token=False)
+    # v2.1.0：经 _hf_call 包装——默认带本机凭据（有效令牌享更高速率、
+    # 消除"未认证请求"警告），401/403 自动退回匿名（v2.0.9 场景）
+    files = _hf_call(list_repo_files, repo)
     total = len(files)
     for i, name in enumerate(files, 1):
         if should_stop is not None and should_stop():
             return "stopped"
-        hf_hub_download(repo_id=repo, filename=name,
-                        cache_dir=str(HF_HOME / "hub"), token=False)
+        _hf_call(hf_hub_download, repo, filename=name,
+                 cache_dir=str(HF_HOME / "hub"))
         if progress is not None:
             try:
                 progress(i, total, name)

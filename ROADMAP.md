@@ -350,3 +350,13 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 - ✅ smoke_test.py 断言后立即写结果文件 → CI build.yml 读文件判定；.gitignore 补 smoke_result.txt
 - ✅ 本地同条件复测：result=PASS + exit 0
+
+---
+
+## 十九、v2.1.0 HF 下载智能凭据（2026-09-09，用户指出 CI 警告）
+
+> 用户看到 CI 警告"未认证请求，请设 HF_TOKEN"——v2.0.9 强制 token=False 的代价。
+
+- ✅ _hf_call 包装器：默认带本机凭据（有效令牌享更高速率+消除警告），401/403/Invalid password 自动退回匿名——v2.0.9 场景（过期令牌拖累公开仓库）仍被覆盖
+- ✅ 本机验证：turbo 仓库经包装器拉取成功（7 文件）
+- 版本号从 2.0.x 升为 2.1.0：模型管理/受控下载/积压诊断/GPU 引导四大体系成型
