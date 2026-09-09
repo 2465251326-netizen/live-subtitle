@@ -417,6 +417,26 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 ---
 
+## 二十七、v2.1.8 悬浮窗可缩放 + 只显示译文 + 跑马灯过渡（2026-09-09，用户"要能调大小/只显示译文/旧句淡出"）
+
+- ✅ 四边+四角拖拽调整大小（边缘 10px 热区+光标联动，最小 320×120），手动调整后 _user_resized 禁用 adjustSize 覆盖、尺寸持久化（overlay_w/h），右键"恢复自动大小"
+- ✅ 右键"只显示译文"勾选项 → show_source 取反持久化 + 设置页同步
+- ✅ 跑马灯过渡动画：旧内容淡出 160ms → 换字 → 新内容淡入 200ms（QGraphicsOpacityEffect×2 同步驱动），快速连句合并只保留最新
+- ✅ 修复 _apply_marquee 的 setVisible(None) 崩溃与 stream_append 残留引用；用户 config show_source 恢复
+- ✅ 端到端验收：跑马灯最新句/只显示译文/边缘缩放/尺寸持久全过
+
+---
+
+## 二十八、v2.1.8 悬浮窗可缩放 + 只显示译文 + 跑马灯过渡（2026-09-09，用户"要能调大小/只显示译文/旧句淡出"）
+
+- ✅ 四边+四角拖拽调整大小（边缘 10px 热区+光标联动，最小 320×120），手动调整后 _user_resized 禁用 adjustSize 覆盖、尺寸持久化（overlay_w/h），右键"恢复自动大小"
+- ✅ 右键"只显示译文"勾选项 → show_source 取反持久化 + 设置页同步
+- ✅ 跑马灯过渡动画：旧内容淡出 160ms → 换字 → 新内容淡入 200ms（QGraphicsOpacityEffect×2 同步驱动），快速连句合并只保留最新
+- ✅ 修复 _apply_marquee 的 setVisible(None) 崩溃与 stream_append 残留引用；用户 config show_source 恢复
+- ✅ 端到端验收：跑马灯最新句/只显示译文/边缘缩放/尺寸持久全过
+
+---
+
 ## 二十六、v2.1.7 连续输出样式重做：字幕墙（2026-09-09，用户"太简陋"反馈）
 
 - ✅ QPlainTextEdit 终端日志 → QScrollArea 句块墙：每句一块（原文 0.68x 小字 + 译文大字），按距最新句距离设置透明度渐隐（255→40），最新句 font-weight 700

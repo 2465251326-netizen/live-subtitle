@@ -247,7 +247,9 @@ class MainWindow(QMainWindow):
         self.overlay = CaptionOverlay(on_closed=self.on_overlay_closed,
                                       on_moved=self._on_overlay_moved,
                                       on_open_settings=self._open_overlay_settings,
-                                      on_toggle_source=self._toggle_source)
+                                      on_toggle_source=self._toggle_source,
+                                      on_toggle_translation_only=self._on_toggle_translation_only,
+                                      on_resized=self._on_overlay_resized)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -272,6 +274,24 @@ class MainWindow(QMainWindow):
         self.overlay.move(x, y)
         self.config.set("overlay_x", x)
         self.config.set("overlay_y", y)
+
+    def _on_overlay_resized(self, w, h):
+        """悬浮条尺寸持久化（v2.1.8）：0×0 = 恢复自动大小，清除记录。"""
+        if w > 0 and h > 0:
+            self.config.set("overlay_w", int(w))
+            self.config.set("overlay_h", int(h))
+        else:
+            self.config.set("overlay_w", 0)
+            self.config.set("overlay_h", 0)
+
+    def _on_toggle_translation_only(self, translation_only):
+        """右键"只显示译文"（v2.1.8）：写 show_source 并同步设置页复选框。"""
+        show_source = not bool(translation_only)
+        self.config.set("show_source", show_source)
+        self.overlay._show_source = show_source
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None and hasattr(dlg, "show_source_check"):
+            dlg.show_source_check.setChecked(show_source)
 
     # ---------- 全局热键 ----------
 
@@ -378,6 +398,15 @@ class MainWindow(QMainWindow):
         c = self.config
         x, y = self._clamp_overlay_pos(c.get("overlay_x"), c.get("overlay_y"))
         self.overlay.move(x, y)
+        # v2.1.8：恢复用户手动调整过的悬浮条尺寸（0 = 自动大小）
+        try:
+            ow = int(c.get("overlay_w") or 0)
+            oh = int(c.get("overlay_h") or 0)
+        except (TypeError, ValueError):
+            ow = oh = 0
+        if ow >= self.overlay.MIN_W and oh >= self.overlay.MIN_H:
+            self.overlay.resize(ow, oh)
+            self.overlay._user_resized = True
         self.apply_overlay_from_config()
         if c.get("overlay_enabled"):
             self.overlay.show()
@@ -822,11 +851,12 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(msg)
 
     def _on_asr_text(self, text, detected, duration):
-        # v2.1.5：连续输出模式优先——原文浅色行立刻追加进悬浮条滚动区
         if not self.running:
             return
-        if bool(self.config.get("overlay_stream")) and self.overlay.isVisible():
-            self.overlay.stream_append(text, kind="source")
+        # v2.1.8：连续输出（跑马灯）模式——原文先淡入显示，译文就绪后由
+        # _on_translated 再次淡入替换（统一走 show_pending/_result 路由）
+        if self.overlay.isVisible():
+            self.overlay.show_pending(text)
         # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
         # 译文占位、就绪后原地补齐）；关 = 旧行为（识别+翻译都完成后一次性上屏）
         if not bool(self.config.get("instant_caption")):
@@ -916,12 +946,10 @@ class MainWindow(QMainWindow):
                 else "翻译失败 · 检查网络或切换引擎",
                 is_error=True)
         if self.overlay.isVisible():
-            if bool(self.config.get("overlay_stream")):
-                # v2.1.5 连续输出模式：译文白色行追加（原文行已在 _on_asr_text 落过）
-                self.overlay.stream_append(translated or ("[" + engine + " 翻译失败]"))
-            else:
-                self.overlay.show_pending_result(
-                    source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
+            # v2.1.8：三档路由统一由 overlay.show_pending_result 内部分派
+            # （跑马灯=淡入最新句；列表=占位补齐；单条=直接刷新）
+            self.overlay.show_pending_result(
+                source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
