@@ -5,7 +5,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
-    QListWidget, QListWidgetItem, QPlainTextEdit,
+    QListWidget, QListWidgetItem, QScrollArea,
 )
 
 from app.ui.styles import OVERLAY_QSS
@@ -144,14 +144,25 @@ class CaptionOverlay(QWidget):
         self._list_mode = False
         self._list_max = 5
 
-        # 连续输出模式（v2.1.5）：译文不断累积追加，满了自动换行+滚动
-        self.stream_view = QPlainTextEdit()
+        # 连续输出模式（v2.1.6）：字幕墙样式——逐句块状累积，旧句渐隐，
+        # 最新句全亮，满了自动滚底并淘汰远古句
+        self.stream_view = QScrollArea()
         self.stream_view.setObjectName("OverlayStream")
-        self.stream_view.setReadOnly(True)
-        self.stream_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.stream_view.setFrameShape(QPlainTextEdit.NoFrame)
+        self.stream_view.setWidgetResizable(True)
+        self.stream_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.stream_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.stream_view.setFrameShape(QScrollArea.NoFrame)
         self.stream_view.hide()
+        self._stream_host = QWidget()
+        self._stream_lay = QVBoxLayout(self._stream_host)
+        self._stream_lay.setContentsMargins(4, 2, 8, 6)
+        self._stream_lay.setSpacing(6)
+        self._stream_lay.addStretch()
+        self._stream_host.setObjectName("OverlayStreamHost")
+        self.stream_view.setWidget(self._stream_host)
         self._continuous = False
+        self._stream_blocks = []  # [(原文, 译文block)]，配对补齐用
+        self._STREAM_MAX = 6      # 幕上最多保留的句子数
 
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
@@ -160,31 +171,87 @@ class CaptionOverlay(QWidget):
         self.adjustSize()
 
     def set_continuous_mode(self, enabled):
-        """连续输出模式（v2.1.5）：译文不断累积追加到同一段文字，满了自动
-        换行、自动滚到最新——像滚动字幕终端而非逐句替换。"""
+        """连续输出模式（v2.1.6 样式 v2.1.7 重做）：字幕墙——逐句块状累积，
+        旧句渐隐、最新句全亮，满了自动滚底并淘汰远古句。"""
         self._continuous = bool(enabled)
         if self._continuous:
             self.list_widget.hide()
-        self.stream_view.setVisible(self._continuous)
-        self.source_label.setVisible(not self._continuous and bool(self.source_label.text()) and not self._list_mode)
-        self.target_label.setVisible(not self._continuous and not self._list_mode)
-        self.list_widget.setVisible(self._list_mode and not self._continuous)
-        if self._continuous:
-            self.stream_view.raise_()
+            self.stream_view.show()
+            self.source_label.hide()
+            self.target_label.hide()
+            self._stream_restyle()
+        else:
+            self.stream_view.hide()
+            self.stream_view.setVisible(False)
+            self.source_label.setVisible(not self._list_mode and bool(self.source_label.text()))
+            self.target_label.setVisible(not self._list_mode)
+            self.list_widget.setVisible(self._list_mode)
         self.adjustSize()
 
+    # ---------- 连续输出（字幕墙） ----------
+
+    STREAM_MAX = 6  # 幕上保留的句子数（旧句渐隐后淘汰）
+
+    def _stream_new_block(self, source_text):
+        """新建一个句块：原文小字 + 译文大字（v2.1.7 字幕墙）。"""
+        src = QLabel(source_text)
+        src.setObjectName("StreamSource")
+        src.setWordWrap(True)
+        tgt = QLabel("")
+        tgt.setObjectName("StreamTarget")
+        tgt.setWordWrap(True)
+        w = QWidget()
+        w.setAttribute(Qt.WA_TransparentForMouseEvents)
+        v = QVBoxLayout(w)
+        v.setContentsMargins(2, 0, 0, 0)
+        v.setSpacing(0)
+        v.addWidget(src)
+        v.addWidget(tgt)
+        self._stream_lay.insertWidget(self._stream_lay.count() - 1, w)
+        self._stream_blocks.append((src, tgt, w))
+        return w
+
+    def _stream_restyle(self):
+        """按"距最新句的距离"给各句块设置渐隐透明度 + 自动滚底 + 淘汰。"""
+        n = len(self._stream_blocks)
+        base = getattr(self, "_stream_text_color", QColor("#ffffff"))
+        fs = getattr(self, "_font_size", 18)
+        for i, (src, tgt, _w) in enumerate(self._stream_blocks):
+            dist = n - 1 - i
+            a = max(40, 255 - dist * 56)
+            c = QColor(base); c.setAlpha(a)
+            tgt.setStyleSheet(
+                f"color: rgba({c.red()},{c.green()},{c.blue()},{c.alpha()});"
+                f" font-size: {fs}px; font-weight: {700 if dist == 0 else 500};"
+                " background: transparent;")
+            sc = QColor(255, 255, 255); sc.setAlpha(max(26, 150 - dist * 42))
+            src.setStyleSheet(
+                f"color: rgba({sc.red()},{sc.green()},{sc.blue()},{sc.alpha()});"
+                f" font-size: {max(11, int(fs * 0.68))}px; background: transparent;")
+        while len(self._stream_blocks) > self.STREAM_MAX:
+            _s, _t, w = self._stream_blocks.pop(0)
+            w.setParent(None)
+            w.deleteLater()
+        sb = self.stream_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
     def stream_append(self, text, kind="target"):
-        """连续输出追加（v2.1.5）：原文浅色行 / 译文白色行，自动滚到最新。"""
-        import html as _html
+        """连续输出追加（v2.1.7）：原文先建句块，译文就绪填入并高亮。"""
         if not text:
             return
         if kind == "source":
-            self.stream_view.appendHtml(
-                f"<span style='color: rgba(255,255,255,150);'>{_html.escape(text)}</span>")
+            self._stream_new_block(text)
         else:
-            self.stream_view.appendPlainText(text)
-        sb = self.stream_view.verticalScrollBar()
-        sb.setValue(sb.maximum())
+            tgt = None
+            for _s, t, _w in reversed(self._stream_blocks):
+                if not t.text():
+                    tgt = t
+                    break
+            if tgt is None:
+                self._stream_new_block("")
+                tgt = self._stream_blocks[-1][1]
+            tgt.setText(text)
+        self._stream_restyle()
 
     def set_list_mode(self, enabled, max_items=5):
         """切换 单条字幕 / 最近N条列表 两种内容形态。"""
@@ -290,18 +357,21 @@ class CaptionOverlay(QWidget):
                 f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px;"
                 "QListWidget#OverlayList::item { padding: 2px 0; }")
         if self._continuous:
-            # 连续输出模式（v2.1.5）：固定高度滚动区，随字号走
-            self.stream_view.setFixedHeight(int(self._font_size * 6.5))
+            # 连续输出模式（v2.1.7）：固定高度滚动区 + 句块渐隐样式
+            self._stream_text_color = QColor(text_color)
+            self.stream_view.setFixedHeight(int(self._font_size * 7.5))
             self.stream_view.setStyleSheet(
-                "QPlainTextEdit#OverlayStream { background: transparent; border: none;"
-                f" color: {text_color}; font-size: {max(11, int(font_size * 0.8))}px; }}")
+                "QScrollArea#OverlayStream { background: transparent; border: none; }"
+                "QWidget#OverlayStreamHost { background: transparent; }"
+                "QScrollArea#OverlayStream > QWidget > QWidget { background: transparent; }")
+            self._stream_restyle()
         self.update()
         self.updateGeometry()
         self.adjustSize()
 
     def show_caption(self, source_text, target_text, show_source=True):
         if self._continuous:
-            self.stream_append(target_text)
+            self.stream_append(target_text, kind="target")
             return
         if self._list_mode:
             self._append_list_item(source_text if show_source else "", target_text)
@@ -319,7 +389,7 @@ class CaptionOverlay(QWidget):
 
         队列里还有待翻句时不重复刷占位——等上一句译文落地后自然刷新。"""
         if self._continuous:
-            self.stream_append(source_text)
+            self.stream_append(source_text, kind="source")
             return
         if self._list_mode:
             # 列表模式：占位行只在最末条是旧占位时复用
@@ -338,9 +408,9 @@ class CaptionOverlay(QWidget):
             self.updateGeometry()
 
     def show_pending_result(self, source_text, target_text, show_source=True):
-        """译文就绪：若最末条/当前屏正是这条的占位，则原地补齐而非新条。"""
+        """译文就绪：连续模式填入最新句块；两段式原地补齐占位。"""
         if self._continuous:
-            self.stream_append(target_text)
+            self.stream_append(target_text, kind="target")
             return
         if self._list_mode:
             it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
@@ -361,7 +431,11 @@ class CaptionOverlay(QWidget):
         self.source_label.setText("")
         self.target_label.setText("")
         if self._continuous:
-            self.stream_view.clear()
+            for _s, _t, w in list(self._stream_blocks):
+                w.setParent(None)
+                w.deleteLater()
+            self._stream_blocks.clear()
+            self._stream_restyle()
         self.adjustSize()
 
     def mousePressEvent(self, event):

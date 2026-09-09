@@ -414,3 +414,11 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 悬浮条第三种内容形态：stream_view（QPlainTextEdit 滚动区）——原文浅色行先落、译文白色行随后，累积追加、自动换行、自动滚底；优先级高于列表模式；字号/颜色联动 apply_style；固定高度随字号走
 - ✅ config overlay_stream（默认 False，overlay 档保存即时生效）；主窗口 _on_asr_text/_on_translated 按模式分叉追加
 - ✅ 端到端验证：两轮原文/译文累积正确、关闭恢复逐句替换
+
+---
+
+## 二十六、v2.1.7 连续输出样式重做：字幕墙（2026-09-09，用户"太简陋"反馈）
+
+- ✅ QPlainTextEdit 终端日志 → QScrollArea 句块墙：每句一块（原文 0.68x 小字 + 译文大字），按距最新句距离设置透明度渐隐（255→40），最新句 font-weight 700
+- ✅ STREAM_MAX=6 淘汰机制 + 自动滚底；滚动区鼠标穿透（WA_TransparentForMouseEvents）保拖动；apply_style 联动字号/颜色重排
+- ✅ 端到端验证：8 句 → 6 块渐隐正确、最新 255/最旧 40、clear 全清
