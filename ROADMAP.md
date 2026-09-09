@@ -301,3 +301,13 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 积压警示常驻追加到状态栏（含换模型建议），不再被"识别完成/就绪"覆盖
 - ✅ 幻觉过滤连续丢弃 → 明确提示"可能为音乐/噪声，或识别语言与内容不符"（锁定 en 放中文内容是零字幕高频成因）
 - ✅ 用户操作可实时监控：app.log 已覆盖启停/零产出/低电平/丢段/过滤全链路事件，后续报障直接看日志即可
+
+---
+
+## 十四、v2.0.9 large-v3-turbo 401 根治（2026-09-09，用户实测暴露）
+
+> 用户下载 large-v3-turbo 报 401 Client Error。探针实证：**Systran/faster-whisper-large-v3-turbo 仓库不存在**（HF 对不存在仓库返回 401），该下拉项自 v1.9.2 引入起从未可用——无论内建下载还是 v2.0.5 受控下载都会失败。
+
+- ✅ model_repo_id() 统一解析：large-v3-turbo → mobiuslabsgmbh/faster-whisper-large-v3-turbo（匿名列表实测 7 文件含 model.bin，config.json 试下载落地标准缓存布局）；其余尺寸仍为 Systran 官方
+- ✅ 三处协同修复：受控下载（list_repo_files/hf_hub_download）、model_cache_dir（缓存目录名跟随真实仓库）、管线加载（WhisperModel 传完整 CT2 模型 ID，faster-whisper 原生支持）
+- ✅ 下载强制匿名 token=False（防本机过期令牌拖累公开仓库）；401/403 进友好错误映射（附"检查/删除本机 HF 令牌"建议）

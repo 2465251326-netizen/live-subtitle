@@ -42,6 +42,19 @@ def split_long_caption(text, limit=60):
     return merged
 
 
+def model_repo_id(model_size: str) -> str:
+    """模型对应的 HF 仓库 ID（v2.0.9）。
+
+    large-v3-turbo 的 CTranslate2 权重在社区仓库
+    mobiuslabsgmbh/faster-whisper-large-v3-turbo——Systran 下**不存在**
+    这个仓库（401 Repository Not Found，此前该下拉项从未真正可用，
+    用户实测暴露）。其余尺寸均为官方 Systran 仓库。
+    """
+    if model_size == "large-v3-turbo":
+        return "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+    return "Systran/faster-whisper-" + model_size
+
+
 def download_model_files(model_size, should_stop=None, progress=None):
     """受控逐文件下载 faster-whisper 模型（v2.0.5）。
 
@@ -54,14 +67,16 @@ def download_model_files(model_size, should_stop=None, progress=None):
     """
     from huggingface_hub import list_repo_files, hf_hub_download
     from app.config import HF_HOME
-    repo = "Systran/faster-whisper-" + model_size
-    files = list_repo_files(repo)
+    repo = model_repo_id(model_size)
+    # v2.0.9：强制匿名下载（token=False）——本机存有过期/无效的 HF 令牌时，
+    # huggingface_hub 默认自动附带导致公开仓库也返回 401
+    files = list_repo_files(repo, token=False)
     total = len(files)
     for i, name in enumerate(files, 1):
         if should_stop is not None and should_stop():
             return "stopped"
         hf_hub_download(repo_id=repo, filename=name,
-                        cache_dir=str(HF_HOME / "hub"))
+                        cache_dir=str(HF_HOME / "hub"), token=False)
         if progress is not None:
             try:
                 progress(i, total, name)
@@ -115,7 +130,10 @@ class AsrThread(QThread):
     @staticmethod
     def model_cache_dir(model_size: str):
         from app.config import HF_HOME
-        return HF_HOME / "hub" / ("models--Systran--faster-whisper-" + model_size)
+        from app.asr.engine import model_repo_id
+        # v2.0.9：缓存目录名跟随真实仓库 ID（large-v3-turbo 的权重在
+        # mobiuslabsgmbh 仓库，目录名不再硬编码 Systran 前缀）
+        return HF_HOME / "hub" / ("models--" + model_repo_id(model_size).replace("/", "--"))
 
     @staticmethod
     def model_cached(model_size: str) -> bool:
@@ -271,10 +289,13 @@ class AsrThread(QThread):
             return True
         from faster_whisper import WhisperModel
         import time as _time
+        # v2.0.9：large-v3-turbo 传完整 HF 仓库 ID（faster-whisper 支持任意
+        # CT2 模型 ID），否则它硬编码拼 Systran 仓库必 404
+        model_ref = model_repo_id(self.model_size)
         t0 = _time.perf_counter()
         try:
             self._model = WhisperModel(
-                self.model_size,
+                model_ref,
                 device=device,
                 compute_type=compute_type,
                 download_root=str(HF_HOME / "hub"),
@@ -292,7 +313,7 @@ class AsrThread(QThread):
         except Exception as e:
             if device == "auto":
                 try:
-                    self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+                    self._model = WhisperModel(model_repo_id(self.model_size), device="cpu", compute_type="int8")
                     self._model._ls_device = "cpu"
                     with _MODEL_CACHE_LOCK:
                         _MODEL_CACHE.clear()
