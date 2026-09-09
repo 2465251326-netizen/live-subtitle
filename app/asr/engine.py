@@ -297,9 +297,9 @@ class AsrThread(QThread):
         # 不代表 cuDNN/cuBLAS 运行时齐备；缺失时 ctranslate2 推理会**静默挂死**
         # （本机实测：7s 段 86s 无返回，症状=永远"正在聆听"）。auto 一律走 CPU
         # （必定可用）；要 GPU 需显式选 cuda 并装好 CUDA 版 PyTorch（gpu.py 引导）
-        device = self.device if self.device in ("cpu", "cuda") else "auto"
-        if device == "auto":
-            device = "cpu"
+        # v2.1.1：三档语义——cpu=强制 CPU；cuda=强制 GPU（加载失败回落 CPU 并
+        # 明确提示）；auto=安全档（CPU，等价旧"自动"降级后的行为）
+        device = self.device if self.device in ("cpu", "cuda") else "cpu"
         compute_type = "int8" if device == "cpu" else "float16"
         # v2.0.6：进程内实例复用——同一 (模型, 设备, 量化) 在池中直接取用，
         # 切输入来源/改识别设置重启管线不再全量重载（CPU 上数秒到数十秒）。
@@ -381,6 +381,10 @@ class AsrThread(QThread):
         dev = getattr(self, "_device_used", "cpu")
         if dev == "cuda":
             self.status_changed.emit("就绪，正在聆听...（GPU · CUDA 加速已生效）")
+        elif dev == "cpu" and self.device == "cuda":
+            # v2.1.1：显式"强制 GPU"回落 CPU 时明确告知原因与出路
+            self.status_changed.emit("就绪，正在聆听...（CPU 模式 · 强制 GPU 不可用已回落："
+                                     "请先「检测 GPU 环境」并安装 CUDA 版 PyTorch）")
         elif dev == "cpu" and self.device == "auto":
             # v2.0.11：auto 明确回落为 CPU 时如实告知（此前 auto 显示与
             # 显式 CPU 无差别，用户不知道 GPU 没用上）

@@ -1,7 +1,7 @@
 """GPU / CUDA 环境检测与引导（建议4）。
 
 打包版内置 CPU 推理；源码运行 + NVIDIA 显卡用户可按引导安装 CUDA 版
-PyTorch（提供 cuBLAS/cuDNN 运行时）后选择「自动（优先 GPU）」获得加速。
+PyTorch（提供 cuBLAS/cuDNN 运行时）后选择「强制 GPU」获得加速。
 所有检测均为只读、失败静默降级，绝不影响正常使用。
 """
 import shutil
@@ -70,7 +70,8 @@ def guidance_text(info: dict) -> str:
     else:
         lines.append("· 未检测到 NVIDIA 显卡；无独显时 CPU 模式已可实时，无需 GPU 加速")
     if info["cuda_devices"] > 0:
-        lines.append("· CUDA 运行环境可用：把「计算方式」切到「自动（优先 GPU）」即可加速")
+        lines.append("· CUDA 运行环境可用：把「计算方式」切到「强制 GPU」即可加速"
+                     "（不可用时自动回落 CPU 并在就绪提示说明原因）")
     elif info["nvidia_gpu"]:
         lines.append("· 有 NVIDIA 显卡但 CUDA 运行环境未就绪：源码运行可一键安装 CUDA 版 PyTorch；"
                      "打包版内置 CPU 推理，请下载 GPU 通道安装包（后续版本提供）")

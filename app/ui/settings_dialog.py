@@ -723,11 +723,15 @@ class SettingsDialog(QDialog):
                   self.asr_lang_combo)
         self.compute_combo = QComboBox()
         self.compute_combo.addItem("CPU 模式（通用）", "cpu")
+        self.compute_combo.addItem("强制 GPU（需先装好 CUDA 运行时）", "cuda")
         # v2.0.9：文案直白化——"自动"本质就是"优先 GPU、失败回落 CPU"
-        self.compute_combo.addItem("自动（有 NVIDIA 显卡选这个 = GPU 加速）", "auto")
+        # v2.1.1：三档语义明确化——cpu=强制 CPU / cuda=强制 GPU（失败回落+提示）/
+        # auto=安全档（CPU；等价旧"自动"在缺运行时机器上的行为）
+        self.compute_combo.addItem("自动（安全档 = 优先 CPU 稳定运行）", "auto")
         self._row(page, "计算方式",
-                  "「自动」= 优先用 NVIDIA 显卡加速、不可用时自动回落 CPU；无独显或打包版保持 CPU 模式即可实时。"
-                  "选好后点下方「检测 GPU 环境」确认 GPU 是否生效。",
+                  "「强制 GPU」= 只用 NVIDIA 显卡加速（需先「检测 GPU 环境」并安装 CUDA 版 PyTorch；"
+                  "不可用时自动回落 CPU 并在就绪提示中说明原因）。"
+                  "「自动」= 稳定优先的 CPU 模式。无独显或打包版保持 CPU 即可实时。",
                   self.compute_combo)
         self.gpu_check_button = QPushButton("检测 GPU 环境")
         self.gpu_check_button.setFixedWidth(140)
