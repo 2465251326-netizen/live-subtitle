@@ -73,15 +73,16 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONIOENCODING: utf-8
-        # v2.0.12：Qt 应用收尾存在析构竞态，进程可能 abort——断言结果以
-        # smoke_result.txt 为准（脚本先落盘再退出），退出码仅作参考
+        # v2.0.13：判定以 smoke_result.txt 为准（Qt 收尾竞态可致进程 abort，
+        # 退出码不可信）。pwsh 原生命令非零退出不会中断脚本，但会污染
+        # LASTEXITCODE 导致步骤误判失败——手动清零，成败由结果文件决定
         run: |
-          $code = 0
-          python scripts/smoke_test.py || $code = $LASTEXITCODE
-          $result = if (Test-Path smoke_result.txt) { Get-Content smoke_result.txt -Raw } else { "" }
-          Write-Host "smoke_result.txt: $result (exit=$code)"
+          python scripts/smoke_test.py
+          $global:LASTEXITCODE = 0
+          $result = if (Test-Path smoke_result.txt) { (Get-Content smoke_result.txt -Raw).Trim() } else { "" }
+          Write-Host "smoke_result.txt: '$result'"
           if ($result -notmatch '^PASS') {
-            Write-Error "Smoke test failed: $result"
+            Write-Error "Smoke test failed: result='$result'"
             exit 1
           }
 
