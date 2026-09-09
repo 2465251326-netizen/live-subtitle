@@ -1743,7 +1743,7 @@ class SettingsDialog(QDialog):
         self.list_mode_check.setChecked(bool(values.get("overlay_list_mode", c.get("overlay_list_mode"))))
         self.list_max_spin.setValue(int(values.get("overlay_list_max", c.get("overlay_list_max"))))
         self.instant_caption_check.setChecked(bool(values.get("instant_caption",
-                                                              c.get("instant_caption", True))))
+                                                              c.get("instant_caption"))))
         set_combo(self.close_combo, "close_action")
         self.auto_start_check.setChecked(bool(values.get("auto_start", c.get("auto_start"))))
         self.max_history_spin.setValue(int(values.get("max_history", c.get("max_history"))))
@@ -2148,7 +2148,7 @@ class SettingsDialog(QDialog):
             self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
             self.list_mode_check.setChecked(bool(c.get("overlay_list_mode")))
             self.list_max_spin.setValue(int(c.get("overlay_list_max")))
-            self.instant_caption_check.setChecked(bool(c.get("instant_caption", True)))
+            self.instant_caption_check.setChecked(bool(c.get("instant_caption")))
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))
             self._outline_color = QColor(c.get("overlay_outline_color"))
