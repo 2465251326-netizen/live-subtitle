@@ -70,6 +70,13 @@ def download_model_files(model_size, should_stop=None, progress=None):
     return "done"
 
 
+# v2.0.6：进程内模型实例缓存（容量 1）——切输入来源/改识别设置重启管线
+# 不再全量重载模型（CPU 上数秒到数十秒）。键 = (model_size, device,
+# compute_type)；换模型/设备时旧实例被替换、由 GC 释放显存/内存。
+_MODEL_CACHE = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
 class AsrThread(QThread):
     text_ready = Signal(str, str, str)  # text, whisper_lang, duration
     status_changed = Signal(str)
@@ -146,9 +153,14 @@ class AsrThread(QThread):
         Windows 上正在运行的 ctranslate2/杀软握旧文件句柄会让 rmtree
         部分失败——重试 + 复核目录确实消失，保证"删除成功"名副其实
         （v2.0.5；此前 ignore_errors=True 静默半删）。
+        同时逐出进程内实例缓存（v2.0.6）：否则池中实例仍握着句柄，
+        且"删除后重新下载"会被内存里的旧实例短路。
         """
         import shutil
         import time as _t
+        with _MODEL_CACHE_LOCK:
+            for k in [k for k in _MODEL_CACHE if k[0] == model_size]:
+                _MODEL_CACHE.pop(k, None)
         d = AsrThread.model_cache_dir(model_size)
         if not d.exists():
             return False
@@ -219,9 +231,21 @@ class AsrThread(QThread):
             # v2.0.4：加载期间用户已停止——端点探测/代理同步完成后直接放弃，
             # 不再进入耗时的 import/构造阶段（此前要等模型加载完才检查 _stop）
             return False
-        from faster_whisper import WhisperModel
         device = self.device if self.device in ("cpu", "cuda") else "auto"
         compute_type = "int8" if device in ("cpu", "auto") else "float16"
+        # v2.0.6：进程内实例复用——同一 (模型, 设备, 量化) 在池中直接取用，
+        # 切输入来源/改识别设置重启管线不再全量重载（CPU 上数秒到数十秒）。
+        # 池容量 1，换模型/换设备时旧实例被替换由 GC 释放
+        cache_key = (self.model_size, device, compute_type)
+        with _MODEL_CACHE_LOCK:
+            pooled = _MODEL_CACHE.get(cache_key)
+        if pooled is not None:
+            self._model = pooled
+            self._device_used = getattr(pooled, "_ls_device", device)
+            app_log.log("asr.model_reused", model=self.model_size,
+                        device=self._device_used)
+            return True
+        from faster_whisper import WhisperModel
         import time as _time
         t0 = _time.perf_counter()
         try:
@@ -233,6 +257,10 @@ class AsrThread(QThread):
                 # 缓存完整时离线加载：跳过联网校验，避免代理抖动时卡在「正在加载模型」
                 local_files_only=cached,
             )
+            self._model._ls_device = device
+            with _MODEL_CACHE_LOCK:
+                _MODEL_CACHE.clear()
+                _MODEL_CACHE[cache_key] = self._model
             app_log.log("asr.model_loaded", model=self.model_size, device=device,
                         cached=cached, seconds=round(_time.perf_counter() - t0, 2))
             self._device_used = device
@@ -241,6 +269,10 @@ class AsrThread(QThread):
             if device == "auto":
                 try:
                     self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+                    self._model._ls_device = "cpu"
+                    with _MODEL_CACHE_LOCK:
+                        _MODEL_CACHE.clear()
+                        _MODEL_CACHE[(self.model_size, "cpu", "int8")] = self._model
                     self._device_used = "cpu"
                     return True
                 except Exception:

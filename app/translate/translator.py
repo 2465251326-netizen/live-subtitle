@@ -19,6 +19,10 @@ HEADERS = net.BROWSER_HEADERS
 
 
 class TranslationCache:
+    # v2.0.6：攒批落盘参数（10 条或 5 秒合并写一次）
+    FLUSH_MAX_ITEMS = 10
+    FLUSH_INTERVAL_S = 5.0
+
     def __init__(self, max_items=800):
         self._data = {}
         self._max = max_items
@@ -26,6 +30,8 @@ class TranslationCache:
         # v2.0.1：懒加载——模块导入时 Config 尚未 relocate 到自定义存储根，
         # 提前 _load 会读错位置，且首次 put 会用默认根的残缺数据覆写自定义根缓存
         self._loaded = False
+        self._dirty_puts = 0
+        self._last_flush = time.monotonic()
 
     def _path(self):
         # 动态读取：支持存储根目录迁移后自动跟随新位置
@@ -76,7 +82,16 @@ class TranslationCache:
             self._data[key] = value
             while len(self._data) > self._max:
                 self._data.pop(next(iter(self._data)))
-            self._save_locked()
+            # v2.0.6：攒批落盘——此前每条译文一次 fsync 原子写，实时字幕
+            # 高频场景放大磁盘 IO；改攒 10 条或 5 秒合并写（崩溃最多丢
+            # 这一小批缓存条目，缓存本身可再生）
+            self._dirty_puts += 1
+            now = time.monotonic()
+            if (self._dirty_puts >= self.FLUSH_MAX_ITEMS
+                    or now - self._last_flush >= self.FLUSH_INTERVAL_S):
+                self._save_locked()
+                self._dirty_puts = 0
+                self._last_flush = now
 
     def _save_locked(self):
         self._loaded = True
@@ -94,11 +109,15 @@ class TranslationCache:
     def save(self):
         with self._lock:
             self._save_locked()
+            self._dirty_puts = 0
+            self._last_flush = time.monotonic()
 
     def clear(self):
         with self._lock:
             self._loaded = True
             self._data.clear()
+            self._dirty_puts = 0
+            self._last_flush = time.monotonic()
             try:
                 if self._path().exists():
                     self._path().unlink()
@@ -384,17 +403,41 @@ class TranslateThread(QThread):
         _cache.put(key, result)
         return result
 
+    def _maybe_reprobe_primary(self):
+        """备援期间定期重探主引擎（v2.0.6）。
+
+        此前备援成功后会话级固定（translator 备援切换处），一次 429 抖动
+        就整场走 MyMemory（匿名配额更易耗尽）且永不回主引擎。现在队列空闲
+        时每 60s 静默探测主引擎，恢复即切回；auto 模式的主引擎 = 首次
+        select_engine 的结果（通常 google）。"""
+        if self._stop or self._active_engine == self._primary_engine:
+            return
+        now = time.monotonic()
+        if now - self._last_probe_at < 60.0:
+            return
+        self._last_probe_at = now
+        ok, _detail = probe_engine(self._primary_engine, timeout=2.5)
+        if ok:
+            app_log.log("translate.primary_recovered", engine=self._primary_engine)
+            self.status_changed.emit(f"主引擎 {self._primary_engine} 已恢复，自动切回")
+            self._active_engine = self._primary_engine
+
     def run(self):
         self._active_engine = self.engine_name
         if self.engine_name == "auto":
             self.status_changed.emit("正在探测可用翻译引擎...")
             self._active_engine = select_engine()
             self.status_changed.emit(f"已选用翻译引擎: {self._active_engine}")
+        # v2.0.6：记录"主引擎"——auto 的主选结果或用户显式指定的引擎；
+        # 备援期间队列空闲时定期重探，恢复即切回（见 _maybe_reprobe_primary）
+        self._primary_engine = self._active_engine
+        self._last_probe_at = time.monotonic()
         app_log.log("translate.engine_selected", engine=self._active_engine, target=self.target)
         while not self._stop:
             try:
                 item = self.queue_in.get(timeout=0.5)
             except queue.Empty:
+                self._maybe_reprobe_primary()
                 continue
             if item is None:
                 break

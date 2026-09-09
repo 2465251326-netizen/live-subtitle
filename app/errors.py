@@ -10,7 +10,8 @@ _PATTERNS = [
     # (正则, 中文结论)
     (r"NO SUCH FILE|FileNotFoundError", "本地组件/模型文件缺失"),
     (r"onnxruntime", "Silero VAD 组件加载失败"),
-    (r"429", "接口限流（同一出口 IP 请求过频）"),
+    # v2.0.6：词边界匹配——裸 "429" 会把含 429 的路径/模型名误判为限流
+    (r"\b429\b", "接口限流（同一出口 IP 请求过频）"),
     (r"(?i)timed?\s*out|timeout", "网络超时"),
     (r"ProxyError|Cannot connect to proxy", "代理不可达"),
     (r"SSLError|CERTIFICATE_VERIFY", "网络证书校验失败（代理/防火墙劫持？）"),

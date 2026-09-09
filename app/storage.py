@@ -63,8 +63,13 @@ def migrate_root(new_root, progress_cb=None) -> str:
     try:
         total = len(moves)
         for i, (src, dst) in enumerate(moves, 1):
+            # v2.0.6：目标已存在时不再直接删除——用户误选了一个已有 hf/
+            # 数据的目录，旧逻辑会先把目标数据 rmtree 掉（静默数据丢失）。
+            # 改为拒绝迁移，让用户换空目录或手动清理
             if dst.exists():
-                shutil.rmtree(dst, ignore_errors=True) if dst.is_dir() else dst.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"目标位置已存在同名内容：{dst}\n"
+                    "为避免覆盖删除你的数据，请换一个空目录，或先手动清理该目录再迁移。")
             shutil.move(str(src), str(dst))
             done.append((src, dst))
             if progress_cb:

@@ -62,6 +62,41 @@ def friendly_audio_error(e: Exception) -> str:
     return s
 
 
+_FIR_TAPS = 63
+
+
+def _lowpass_coeffs(fc_cycles, taps=_FIR_TAPS):
+    """加窗（汉宁）sinc 低通系数。fc_cycles 为截止频率/原采样率
+    （cycles/sample，即 H(f)=rect 的半宽 W；如 48k→16k 传 7600/48000）。
+
+    v2.0.6：此前 48k/44.1k→16k 直接 np.interp，>8kHz 的分量（音乐/高频
+    噪声）会混叠进语音带拉低识别率；抽取前先做一次抗混叠低通。
+    系数按 orig_sr 缓存，30ms 块上卷积开销可忽略。
+    """
+    n = np.arange(taps, dtype=np.float64) - (taps - 1) / 2.0
+    h = np.sinc(2.0 * fc_cycles * n) * np.hanning(taps)
+    s = float(np.sum(h))
+    return (h / s).astype(np.float32) if s != 0 else h.astype(np.float32)
+
+
+_FIR_CACHE = {}
+
+
+def _anti_alias_filter(mono: np.ndarray, orig_sr: int) -> np.ndarray:
+    """降采样路径的抗混叠低通。
+
+    截止 = 0.95×新奈奎斯特（16k 目标→约 7.6kHz，保住语音齿音频带），
+    与 librosa resample 的 rolloff=0.945 同量级；63 阶汉宁窗过渡带
+    ≈ fs/19 ≈ 2.5kHz，>9kHz 折返区衰减 40dB+。
+    """
+    key = orig_sr
+    h = _FIR_CACHE.get(key)
+    if h is None:
+        h = _lowpass_coeffs(0.475 * TARGET_SR / orig_sr)
+        _FIR_CACHE[key] = h
+    return np.convolve(mono, h, mode="same")
+
+
 def resample_to_16k(data: np.ndarray, orig_sr: int) -> np.ndarray:
     if data.ndim == 1:
         mono = data
@@ -73,6 +108,8 @@ def resample_to_16k(data: np.ndarray, orig_sr: int) -> np.ndarray:
     target_len = int(duration * TARGET_SR)
     if target_len < 1:
         return np.zeros(0, dtype=np.float32)
+    if orig_sr > TARGET_SR:
+        mono = _anti_alias_filter(mono, orig_sr)
     x_old = np.linspace(0.0, duration, num=mono.shape[0], endpoint=False)
     x_new = np.linspace(0.0, duration, num=target_len, endpoint=False)
     return np.interp(x_new, x_old, mono).astype(np.float32)
@@ -177,16 +214,51 @@ class CaptureThread(QThread):
     QUIET_WARN_S = 12.0
     QUIET_LEVEL = 0.012
 
-    def __init__(self, source_type: str, device_index: int, parent=None):
+    def __init__(self, source_type: str, device_index: int, parent=None,
+                 device_name: str = ""):
         super().__init__(parent)
         self.source_type = source_type
         self.device_index = device_index
+        self.device_name = str(device_name or "")
         self._stop = False
         self.segmenter = Segmenter()
         self._warned_quiet = False
 
     def stop(self):
         self._stop = True
+
+    @staticmethod
+    def resolve_device_index(p, wanted_index, wanted_name, source_type):
+        """按名回查设备索引（v2.0.6）：设备热插拔后 PyAudio 索引会漂移，
+        旧逻辑存索引会静默抓错设备。优先用 device_name 精确匹配当前设备
+        列表（系统声音只匹配回环设备/麦克风只匹配非回环），匹配不到回落
+        旧索引（仍有效说明没漂移），再回落默认设备。返回 (索引, 设备信息)。
+        """
+        try:
+            if source_type == "system":
+                candidates = [d for d in (
+                    p.get_loopback_device_info_generator()
+                    if hasattr(p, "get_loopback_device_info_generator")
+                    else []) if d.get("maxInputChannels", 0) > 0]
+                fallback_default = p.get_default_output_device_info()
+            else:
+                candidates = [p.get_device_info_by_index(i)
+                              for i in range(p.get_device_count())
+                              if p.get_device_info_by_index(i).get("maxInputChannels", 0) > 0
+                              and not p.get_device_info_by_index(i).get("isLoopbackDevice", False)]
+                fallback_default = p.get_default_input_device_info()
+        except Exception:
+            return int(wanted_index or -1), None
+        if wanted_name:
+            for d in candidates:
+                if d.get("name") == wanted_name:
+                    return int(d["index"]), d
+        if wanted_index is not None and int(wanted_index) >= 0:
+            for d in candidates:
+                if int(d.get("index", -1)) == int(wanted_index):
+                    return int(wanted_index), d
+        di = fallback_default.get("index")
+        return (int(di) if di is not None else -1), fallback_default
 
     def _resolve_loopback(self, p, default_index):
         """默认输出的回环设备解析：精确名 → 名称子串 → None（宁可不抓也不乱抓）。
@@ -226,33 +298,33 @@ class CaptureThread(QThread):
             frames_per_buffer = int(44100 * CHUNK_MS / 1000)
 
             if self.source_type == "system":
-                # v2.0.1：尊重用户在设置页选定的输出设备（此前 device_index
-                # 只在麦克风分支使用，system 模式下用户选择被静默忽略）
+                # v2.0.6：按名回查（热插拔后索引漂移防静默抓错源）——
+                # 名称匹配不到再回落索引；-1 走默认输出回环解析
                 if self.device_index is not None and self.device_index >= 0:
-                    try:
-                        device = p.get_device_info_by_index(self.device_index)
-                        if device.get("isLoopbackDevice") and device.get("maxInputChannels", 0) > 0:
-                            device_index = device["index"]
-                        else:
-                            device = None
-                    except Exception:
-                        device = None
-                    if device is None:
+                    dev_index, device = self.resolve_device_index(
+                        p, self.device_index, self.device_name, "system")
+                    if device is None or not device.get("isLoopbackDevice"):
                         self.error_occurred.emit(
                             "所选输出设备不可用或不是回环设备，请到「设置-音频输入」重新选择。")
                         return
+                    device_index = dev_index
                 else:
                     device = self._resolve_loopback(p, p.get_default_output_device_info()["index"])
                     if device is None:
                         self.error_occurred.emit("未找到可用的系统声音回环设备")
                         return
-                device_index = device["index"]
+                    device_index = device["index"]
                 channels = min(2, device.get("maxInputChannels", 2))
                 sample_rate = int(device.get("defaultSampleRate", 44100))
             else:
-                if self.device_index >= 0:
-                    device = p.get_device_info_by_index(self.device_index)
-                    device_index = device["index"]
+                if self.device_index >= 0 or self.device_name:
+                    dev_index, device = self.resolve_device_index(
+                        p, self.device_index, self.device_name, "microphone")
+                    if device is None:
+                        self.error_occurred.emit(
+                            "所选麦克风不可用（可能已被拔出），请到「设置-音频输入」重新选择。")
+                        return
+                    device_index = dev_index
                 else:
                     device = p.get_default_input_device_info()
                     device_index = device["index"]

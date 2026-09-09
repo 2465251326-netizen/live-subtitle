@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.0.5"
+APP_VERSION = "2.0.6"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -19,6 +19,7 @@ POINTER_CONFIG_FILE = CONFIG_FILE
 DEFAULTS = {
     "source_type": "system",          # system | microphone
     "device_index": -1,               # -1 = 默认设备
+    "device_name": "",                # v2.0.6：设备名（热插拔后索引漂移，按名回查）
     "asr_model": "small",             # tiny | base | small | medium
     "asr_device": "cpu",              # cpu | cuda | auto
     "asr_language": "auto",           # auto | en | ja | ko ...

@@ -268,3 +268,13 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 管线自动下载同步升级受控路径：加载期停止不再等待下载完成；列表获取失败回落 v2.0.4 内建路径
 - ✅ 删除按钮按 model_state 门控（missing 不可点）——修"未下载也显示删除所选模型"
 - ✅ remove_model 重试+复核（Windows 句柄占用防"半删报成功"）；新增 model_state 单测（25 项）
+
+---
+
+## 十一、v2.0.6 八项建设性优化（2026-09-09，用户"全部都做"点单驱动）
+
+- ✅ **P0 数据安全**：migrate_root 目标非空拒绝（原 rmtree 会静默删目标数据）；errors.py "429" 词边界匹配
+- ✅ **P1 正确性**：设备按名存储+按名回查（resolve_device_index，热插拔索引漂移不再抓错源；config 新增 device_name）；翻译备援队列空闲每 60s 重探主引擎、恢复自动切回（_maybe_reprobe_primary）；重采样加 63 阶汉宁窗 sinc FIR 抗混叠（截止≈7.6kHz，通带保持经 FFT 单测验证）
+- ✅ **P2 性能/体验**：进程内模型实例缓存（容量 1，键=(model,device,compute_type)，切来源/改设置不再全量重载；remove_model 同步逐出）；TranslationCache 攒批落盘（10 条或 5s，崩溃最多丢一小批可再生缓存）
+- ✅ **P3 结构治理**：_FIELD_SPECS 单一登记表 → _PIPELINE_KEYS/_OVERLAY_KEYS/_STAGE_ORDER 全派生、_reset_defaults 全量遍历——"恢复默认漏键"类结构性 bug 根除
+- ✅ 单测 25→27（抗混叠衰减/通带保持/混叠抑制）

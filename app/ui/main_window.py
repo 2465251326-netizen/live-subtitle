@@ -573,6 +573,8 @@ class MainWindow(QMainWindow):
             # `or -1` 会把 0 吞成"默认设备"导致静默错配
             c.get("device_index") if c.get("device_index") is not None else -1,
             self,
+            # v2.0.6：设备名随行——采集线程按名回查，热插拔索引漂移不再抓错源
+            device_name=str(c.get("device_name") or ""),
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)

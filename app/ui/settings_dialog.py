@@ -135,6 +135,52 @@ class ModelDownloadWorker(QThread):
         self.finished_ok.emit(f"{self.model_size} 模型下载完成——下次开始翻译即离线可用")
 
 
+# ---------- 设置字段声明表（v2.0.6，单一登记处） ----------
+# key: (group, kind)
+#   group:   pipeline=保存后重启管线 | overlay=悬浮字幕外观统一重放 |
+#            instant=直接生效 | internal=不出现在恢复默认/暂存清单
+#   kind:    仅为文档标注控件类型（combo/check/spin/slider/text/keyseq/hidden）
+# 此前 _PIPELINE_KEYS / _OVERLAY_KEYS / _STAGE_ORDER 三处手写清单彼此漂移，
+# v2.0.1"恢复默认漏 4 键"即此根因；现改为一处登记、其余派生：
+# 新增设置项 = 在 DEFAULTS 加键 + 在此加一行，三类清单自动同步。
+_FIELD_SPECS = {
+    "source_type":          ("pipeline", "combo"),
+    "device_index":         ("pipeline", "hidden"),
+    "device_name":          ("pipeline", "hidden"),
+    "asr_model":            ("pipeline", "combo"),
+    "asr_device":           ("pipeline", "combo"),
+    "asr_language":         ("pipeline", "combo"),
+    "hallucination_filter": ("pipeline", "check"),
+    "silero_vad":           ("pipeline", "check"),
+    "mishear_map":          ("pipeline", "mishear"),
+    "engine":               ("pipeline", "combo"),
+    "target_lang":          ("pipeline", "combo"),
+    "proxy_mode":           ("instant", "combo"),
+    "proxy_url":            ("instant", "text"),
+    "hotkey_enabled":       ("instant", "check"),
+    "hotkey_sequence":      ("instant", "keyseq"),
+    "overlay_enabled":      ("overlay", "check"),
+    "show_source":          ("overlay", "check"),
+    "overlay_font_size":    ("overlay", "spin"),
+    "overlay_text_color":   ("overlay", "color"),
+    "overlay_bg_color":     ("overlay", "color"),
+    "overlay_bg_opacity":   ("overlay", "slider"),
+    "overlay_outline":      ("overlay", "check"),
+    "overlay_outline_width": ("overlay", "spin"),
+    "overlay_outline_color": ("overlay", "color"),
+    "overlay_list_mode":    ("overlay", "check"),
+    "overlay_list_max":     ("overlay", "spin"),
+    "close_action":         ("instant", "combo"),
+    "auto_start":           ("instant", "check"),
+    "max_history":          ("instant", "spin"),
+    "translate_zh_from_zh": ("instant", "hidden"),
+    "overlay_x":            ("internal", "hidden"),
+    "overlay_y":            ("internal", "hidden"),
+    "storage_root":         ("internal", "hidden"),
+    "wizard_done":          ("internal", "hidden"),
+}
+
+
 class _ModelDetailDialog(QDialog):
     """单个识别模型的详情/操作弹窗（v2.0.5）。
 
@@ -617,8 +663,7 @@ class SettingsDialog(QDialog):
         wrap = QWidget()
         wrap.setLayout(device_row)
         # 只连接一次；_load_devices 会被反复调用，在其中连接会累积重复信号
-        self.device_combo.currentIndexChanged.connect(
-            lambda _i: self._stage_combo("device_index", self.device_combo))
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         self._row(page, "输入设备",
                   "选择具体设备；更换耳机等设备后点「刷新」重新加载。蓝牙耳机的部分虚拟输出不支持抓取系统声音。",
                   wrap)
@@ -1467,29 +1512,11 @@ class SettingsDialog(QDialog):
 
     # ---------- 暂存与应用（保存并应用模式） ----------
 
-    # 各设置项的分组：pipeline = 保存后需重启采集/识别/翻译管线；
-    # overlay_style = 悬浮字幕外观（保存时统一应用一次）；
-    # instant = 无需重启、应用时直接生效
-    _PIPELINE_KEYS = {"source_type", "device_index", "asr_model", "asr_device",
-                      "asr_language", "engine", "target_lang",
-                      # v2.0.1：这三项是 AsrThread 构造参数，只在管线启动时读取——
-                      # 不加入则运行中保存后"已保存并应用"但实际本会话不生效
-                      "hallucination_filter", "silero_vad", "mishear_map"}
-    _OVERLAY_KEYS = {"overlay_enabled", "overlay_font_size", "overlay_text_color",
-                     "overlay_bg_color", "overlay_bg_opacity", "overlay_outline",
-                     "overlay_outline_width", "overlay_outline_color", "show_source",
-                     "overlay_list_mode", "overlay_list_max"}
-    _STAGE_ORDER = ["source_type", "device_index", "asr_model", "asr_device",
-                    "asr_language", "engine", "target_lang", "proxy_mode", "proxy_url",
-                    "hotkey_enabled", "hotkey_sequence", "overlay_enabled",
-                    "overlay_font_size", "overlay_text_color", "overlay_bg_color",
-                    "overlay_bg_opacity", "overlay_outline", "overlay_outline_width",
-                    "overlay_outline_color", "show_source", "close_action",
-                    "auto_start", "max_history",
-                    # v2.0.1：补齐"恢复默认"漏掉的键（此前这四项 UI 显示已恢复
-                    # 默认但保存后永不落盘）
-                    "hallucination_filter", "silero_vad",
-                    "overlay_list_mode", "overlay_list_max", "mishear_map"]
+    # v2.0.6：三类清单全部由模块级 _FIELD_SPECS 派生（单一登记处），
+    # 不再手写三份彼此漂移的清单
+    _PIPELINE_KEYS = {k for k, (g, _k) in _FIELD_SPECS.items() if g == "pipeline"}
+    _OVERLAY_KEYS = {k for k, (g, _k) in _FIELD_SPECS.items() if g == "overlay"}
+    _STAGE_ORDER = [k for k, (g, _k) in _FIELD_SPECS.items() if g != "internal"]
 
     def _stage(self, key, value):
         """暂存改动（不写配置不生效），等用户点「保存并应用」。"""
@@ -1586,19 +1613,28 @@ class SettingsDialog(QDialog):
             pass
 
     def _reset_defaults(self):
-        """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。"""
+        """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。
+
+        v2.0.6：暂存清单由 _FIELD_SPECS 全量遍历——"恢复默认漏键"类 bug
+        （v2.0.1 曾漏 4 个键）从结构上消除：新设置项进 specs 即自动被
+        恢复默认覆盖，无需再记得改多个清单。
+        """
         d = dict(DEFAULTS)
         self._suspend(lambda: self._set_widgets_from(d))
         # v2.0.1：误听词典防抖未触发的输入也要按默认值暂存
         timer = getattr(self, "_mishear_timer", None)
         if timer is not None:
             timer.stop()
-        for k in self._STAGE_ORDER:
-            if k in d and self.c.get(k) != d[k]:
-                self._staged[k] = d[k]
-        # mishear_map 需要显式比较（dict 与 DEFAULTS 的空 dict 可能内容相等但身份不同）
-        if (self.c.get("mishear_map") or {}) != (d.get("mishear_map") or {}):
-            self._staged["mishear_map"] = dict(d.get("mishear_map") or {})
+        for key, (group, kind) in _FIELD_SPECS.items():
+            if group == "internal":
+                continue
+            cur = self.c.get(key)
+            default = d.get(key)
+            if kind == "mishear":
+                if (cur or {}) != (default or {}):
+                    self._staged[key] = dict(default or {})
+            elif cur != default:
+                self._staged[key] = default
         self._text_color = QColor(d["overlay_text_color"])
         self._bg_color = QColor(d["overlay_bg_color"])
         self._outline_color = QColor(d["overlay_outline_color"])
@@ -1677,7 +1713,16 @@ class SettingsDialog(QDialog):
         self._stage_combo("source_type", self.source_combo)
         # 切换采集来源时重置设备，避免把系统声音的回环设备索引带进麦克风模式（反之亦然）
         self._stage("device_index", -1)
+        self._stage("device_name", "")
         self._load_devices()
+
+    def _on_device_changed(self):
+        """设备选择变更：索引与设备名一起暂存（v2.0.6 按名回查防热插拔漂移）。"""
+        combo = self.device_combo
+        if combo.currentData() is None:
+            return
+        self._stage("device_index", combo.currentData())
+        self._stage("device_name", combo.currentText().replace(" [系统声音]", ""))
 
     def _on_engine_changed(self):
         self._stage_combo("engine", self.engine_combo)
@@ -1820,8 +1865,19 @@ class SettingsDialog(QDialog):
                     seen.add(label)
         # v2.0.1：回填优先取暂存值——此前用配置值回填，用户改选未保存后点
         # "刷新"会把下拉框拉回旧值，与 _staged 脱节
+        # v2.0.6：按名回查——索引会随设备热插拔漂移，先拿暂存/配置里的
+        # device_name 匹配；名字不存在（设备已拔出/改名）时回落旧索引
+        preferred_name = str(self._staged.get("device_name",
+                              self.c.get("device_name") or "") or "")
         preferred = self._staged.get("device_index", self.c.get("device_index"))
-        idx = self.device_combo.findData(preferred)
+        idx = -1
+        if preferred_name:
+            for i in range(self.device_combo.count()):
+                if self.device_combo.itemText(i).replace(" [系统声音]", "") == preferred_name:
+                    idx = i
+                    break
+        if idx < 0:
+            idx = self.device_combo.findData(preferred)
         if idx >= 0:
             self.device_combo.setCurrentIndex(idx)
         else:

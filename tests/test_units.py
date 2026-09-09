@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 
-from app.audio.capture import Segmenter
+from app.audio.capture import Segmenter, resample_to_16k
 from app.translate.translator import TranslationCache, _cache
 
 
@@ -15,6 +15,39 @@ def test_vad_silence():
     s = Segmenter()
     out = [x for ch in [np.zeros(480, dtype=np.float32)] * 40 if (x := s.feed(ch)) is not None]
     assert not out, "纯静音不应触发分段"
+
+
+def test_resample_antialias():
+    """v2.0.6：48k→16k 时 >8kHz 分量应被低通抑制，而非混叠进语音带。"""
+    sr = 48000
+    t = np.arange(sr, dtype=np.float64) / sr
+    # 13kHz 在折返区（混叠后落 3kHz，可与通带基准分离观测）；1kHz 是通带基准
+    sig = (0.5 * np.sin(2 * np.pi * 1000 * t)
+           + 0.5 * np.sin(2 * np.pi * 13000 * t)).astype(np.float32)
+    out = resample_to_16k(sig, sr)
+    assert out.shape[0] == 16000, "重采样长度应正确"
+    assert np.all(np.isfinite(out)), "重采样不得产生 NaN"
+    spec = np.abs(np.fft.rfft(out))
+    freqs = np.fft.rfftfreq(out.shape[0], d=1.0 / 16000)
+
+    def band_amp(lo, hi):
+        m = (freqs >= lo) & (freqs <= hi)
+        return float(spec[m].max())
+
+    base = band_amp(800, 1200)
+    assert base > 0.3 * 8000, "1kHz 通带应基本保留"
+    assert band_amp(2800, 3200) < 0.25 * base, \
+        "13kHz 混叠分量（折叠到 3kHz）应被低通显著抑制"
+
+
+def test_resample_passband_unchanged():
+    """44.1k→16k：通带 440Hz 正弦幅值不应被抗混叠滤波明显衰减。"""
+    sr = 44100
+    t = np.arange(sr, dtype=np.float64) / sr
+    sig = np.sin(2 * np.pi * 440 * t).astype(np.float32)
+    out = resample_to_16k(sig, sr)
+    rms = float(np.sqrt(np.mean(out ** 2)))
+    assert 0.6 < rms < 0.8, f"通带 440Hz 应近似无损，实测 RMS={rms:.3f}"
 
 
 def test_vad_short_noise():
