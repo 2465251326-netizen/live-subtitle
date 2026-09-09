@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.1.5"
+APP_VERSION = "2.1.6"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -52,6 +52,7 @@ DEFAULTS = {
     "mishear_map": {},                 # 误听修正词典 {错: 对}，精确子串替换
     "overlay_list_mode": False,        # 悬浮条列表模式（最近 N 条滚动）
     "overlay_list_max": 5,             # 列表模式保留条数
+    "overlay_stream": False,           # v2.1.5：连续输出模式（译文累积追加，自动换行滚动）
 }
 
 LANGUAGES = {

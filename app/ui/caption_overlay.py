@@ -5,7 +5,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QPlainTextEdit,
 )
 
 from app.ui.styles import OVERLAY_QSS
@@ -144,15 +144,59 @@ class CaptionOverlay(QWidget):
         self._list_mode = False
         self._list_max = 5
 
+        # 连续输出模式（v2.1.5）：译文不断累积追加，满了自动换行+滚动
+        self.stream_view = QPlainTextEdit()
+        self.stream_view.setObjectName("OverlayStream")
+        self.stream_view.setReadOnly(True)
+        self.stream_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.stream_view.setFrameShape(QPlainTextEdit.NoFrame)
+        self.stream_view.hide()
+        self._continuous = False
+
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
         layout.addWidget(self.list_widget)
+        layout.addWidget(self.stream_view)
         self.adjustSize()
+
+    def set_continuous_mode(self, enabled):
+        """连续输出模式（v2.1.5）：译文不断累积追加到同一段文字，满了自动
+        换行、自动滚到最新——像滚动字幕终端而非逐句替换。"""
+        self._continuous = bool(enabled)
+        if self._continuous:
+            self.list_widget.hide()
+        self.stream_view.setVisible(self._continuous)
+        self.source_label.setVisible(not self._continuous and bool(self.source_label.text()) and not self._list_mode)
+        self.target_label.setVisible(not self._continuous and not self._list_mode)
+        self.list_widget.setVisible(self._list_mode and not self._continuous)
+        if self._continuous:
+            self.stream_view.raise_()
+        self.adjustSize()
+
+    def stream_append(self, text, kind="target"):
+        """连续输出追加（v2.1.5）：原文浅色行 / 译文白色行，自动滚到最新。"""
+        import html as _html
+        if not text:
+            return
+        if kind == "source":
+            self.stream_view.appendHtml(
+                f"<span style='color: rgba(255,255,255,150);'>{_html.escape(text)}</span>")
+        else:
+            self.stream_view.appendPlainText(text)
+        sb = self.stream_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def set_list_mode(self, enabled, max_items=5):
         """切换 单条字幕 / 最近N条列表 两种内容形态。"""
         self._list_mode = bool(enabled)
         self._list_max = max(2, min(10, int(max_items)))
+        if getattr(self, "_continuous", False):
+            # v2.1.5：连续输出模式优先级高于列表模式
+            self.list_widget.hide()
+            self.stream_view.show()
+            self.source_label.hide()
+            self.target_label.hide()
+            return
         self.source_label.setVisible(not self._list_mode and bool(self.source_label.text()))
         self.target_label.setVisible(not self._list_mode)
         self.list_widget.setVisible(self._list_mode)
@@ -245,11 +289,20 @@ class CaptionOverlay(QWidget):
                 "QListWidget#OverlayList { background: transparent; border: none;"
                 f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px;"
                 "QListWidget#OverlayList::item { padding: 2px 0; }")
+        if self._continuous:
+            # 连续输出模式（v2.1.5）：固定高度滚动区，随字号走
+            self.stream_view.setFixedHeight(int(self._font_size * 6.5))
+            self.stream_view.setStyleSheet(
+                "QPlainTextEdit#OverlayStream { background: transparent; border: none;"
+                f" color: {text_color}; font-size: {max(11, int(font_size * 0.8))}px; }}")
         self.update()
         self.updateGeometry()
         self.adjustSize()
 
     def show_caption(self, source_text, target_text, show_source=True):
+        if self._continuous:
+            self.stream_append(target_text)
+            return
         if self._list_mode:
             self._append_list_item(source_text if show_source else "", target_text)
             self.adjustSize()
@@ -265,6 +318,9 @@ class CaptionOverlay(QWidget):
         """流式两段式（v2.1.4）：识别文本先上屏（译文位显示转圈占位）。
 
         队列里还有待翻句时不重复刷占位——等上一句译文落地后自然刷新。"""
+        if self._continuous:
+            self.stream_append(source_text)
+            return
         if self._list_mode:
             # 列表模式：占位行只在最末条是旧占位时复用
             it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
@@ -283,6 +339,9 @@ class CaptionOverlay(QWidget):
 
     def show_pending_result(self, source_text, target_text, show_source=True):
         """译文就绪：若最末条/当前屏正是这条的占位，则原地补齐而非新条。"""
+        if self._continuous:
+            self.stream_append(target_text)
+            return
         if self._list_mode:
             it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
             if it is not None and "⟳" in it.text():
@@ -301,6 +360,8 @@ class CaptionOverlay(QWidget):
     def clear_caption(self):
         self.source_label.setText("")
         self.target_label.setText("")
+        if self._continuous:
+            self.stream_view.clear()
         self.adjustSize()
 
     def mousePressEvent(self, event):

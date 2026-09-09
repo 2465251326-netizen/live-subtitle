@@ -171,6 +171,7 @@ _FIELD_SPECS = {
     "overlay_outline_color": ("overlay", "color"),
     "overlay_list_mode":    ("overlay", "check"),
     "overlay_list_max":     ("overlay", "spin"),
+    "overlay_stream":       ("overlay", "check"),
     "close_action":         ("instant", "combo"),
     "auto_start":           ("instant", "check"),
     "max_history":          ("instant", "spin"),
@@ -948,6 +949,13 @@ class SettingsDialog(QDialog):
         page._inner_layout.addLayout(grid)
 
         self._section(page, "紧凑列表模式")
+        self.overlay_stream_check = QCheckBox()
+        self._row(page, "悬浮条连续输出模式",
+                  "开启后悬浮条不再逐句替换，而是不断累积追加：原文浅色行先落，译文白色行随后，"
+                  "满了自动换行、自动滚到最新（优先级高于列表模式，主窗口不受影响）。",
+                  self.overlay_stream_check)
+        self.overlay_stream_check.toggled.connect(
+            lambda v: self._stage("overlay_stream", bool(v)))
         self.instant_caption_check = QCheckBox()
         self._row(page, "字幕流式上屏（原文先出）",
                   "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
@@ -1742,6 +1750,7 @@ class SettingsDialog(QDialog):
         self.outline_width_spin.setValue(int(values.get("overlay_outline_width", c.get("overlay_outline_width"))))
         self.list_mode_check.setChecked(bool(values.get("overlay_list_mode", c.get("overlay_list_mode"))))
         self.list_max_spin.setValue(int(values.get("overlay_list_max", c.get("overlay_list_max"))))
+        self.overlay_stream_check.setChecked(bool(values.get("overlay_stream", c.get("overlay_stream"))))
         self.instant_caption_check.setChecked(bool(values.get("instant_caption",
                                                               c.get("instant_caption"))))
         set_combo(self.close_combo, "close_action")
@@ -2148,6 +2157,7 @@ class SettingsDialog(QDialog):
             self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
             self.list_mode_check.setChecked(bool(c.get("overlay_list_mode")))
             self.list_max_spin.setValue(int(c.get("overlay_list_max")))
+            self.overlay_stream_check.setChecked(bool(c.get("overlay_stream")))
             self.instant_caption_check.setChecked(bool(c.get("instant_caption")))
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))

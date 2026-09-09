@@ -436,6 +436,8 @@ class MainWindow(QMainWindow):
 
     def apply_overlay_from_config(self):
         c = self.config
+        # v2.1.5：连续输出模式优先于列表模式
+        self.overlay.set_continuous_mode(bool(c.get("overlay_stream")))
         self.overlay.set_list_mode(bool(c.get("overlay_list_mode")),
                                    int(c.get("overlay_list_max")))
         self.overlay.apply_style(
@@ -820,10 +822,13 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(msg)
 
     def _on_asr_text(self, text, detected, duration):
-        # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
-        # 译文占位、就绪后原地补齐）；关 = 旧行为（识别+翻译都完成后一次性上屏）
+        # v2.1.5：连续输出模式优先——原文浅色行立刻追加进悬浮条滚动区
         if not self.running:
             return
+        if bool(self.config.get("overlay_stream")) and self.overlay.isVisible():
+            self.overlay.stream_append(text, kind="source")
+        # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
+        # 译文占位、就绪后原地补齐）；关 = 旧行为（识别+翻译都完成后一次性上屏）
         if not bool(self.config.get("instant_caption")):
             self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
             if self.translate_thread:
@@ -840,7 +845,7 @@ class MainWindow(QMainWindow):
             self._pending = []
         self._pending.append((text, card))
         self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
-        if self.overlay.isVisible():
+        if self.overlay.isVisible() and not bool(self.config.get("overlay_stream")):
             self.overlay.show_pending(text)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -911,8 +916,12 @@ class MainWindow(QMainWindow):
                 else "翻译失败 · 检查网络或切换引擎",
                 is_error=True)
         if self.overlay.isVisible():
-            self.overlay.show_pending_result(
-                source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
+            if bool(self.config.get("overlay_stream")):
+                # v2.1.5 连续输出模式：译文白色行追加（原文行已在 _on_asr_text 落过）
+                self.overlay.stream_append(translated or ("[" + engine + " 翻译失败]"))
+            else:
+                self.overlay.show_pending_result(
+                    source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):

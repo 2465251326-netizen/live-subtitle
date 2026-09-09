@@ -406,3 +406,11 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 - ✅ config 新增 instant_caption（默认 True）；设置-显示页「字幕流式上屏（原文先出）」开关（instant 档：保存即时生效，无需重启管线）
 - ✅ _FIELD_SPECS 登记（自动进恢复默认/暂存清单）；开关关闭运行中自动清流式占位队列；两档行为端到端验证
+
+---
+
+## 二十五、v2.1.6 悬浮条连续输出模式（2026-09-09，用户"要连续不间断输出"需求）
+
+- ✅ 悬浮条第三种内容形态：stream_view（QPlainTextEdit 滚动区）——原文浅色行先落、译文白色行随后，累积追加、自动换行、自动滚底；优先级高于列表模式；字号/颜色联动 apply_style；固定高度随字号走
+- ✅ config overlay_stream（默认 False，overlay 档保存即时生效）；主窗口 _on_asr_text/_on_translated 按模式分叉追加
+- ✅ 端到端验证：两轮原文/译文累积正确、关闭恢复逐句替换
