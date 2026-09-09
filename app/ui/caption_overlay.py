@@ -261,6 +261,43 @@ class CaptionOverlay(QWidget):
         self.adjustSize()
         self.updateGeometry()
 
+    def show_pending(self, source_text):
+        """流式两段式（v2.1.4）：识别文本先上屏（译文位显示转圈占位）。
+
+        队列里还有待翻句时不重复刷占位——等上一句译文落地后自然刷新。"""
+        if self._list_mode:
+            # 列表模式：占位行只在最末条是旧占位时复用
+            it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
+            if it is None or "⟳" not in it.text():
+                self.list_widget.addItem(QListWidgetItem(f"⟳ {source_text}"))
+                self._trim_list()
+            self.adjustSize()
+            self.updateGeometry()
+            return
+        self.source_label.setText(source_text)
+        self.source_label.setVisible(True)
+        if "⟳" not in self.target_label.text():
+            self.target_label.setText("⟳ …")
+            self.adjustSize()
+            self.updateGeometry()
+
+    def show_pending_result(self, source_text, target_text, show_source=True):
+        """译文就绪：若最末条/当前屏正是这条的占位，则原地补齐而非新条。"""
+        if self._list_mode:
+            it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
+            if it is not None and "⟳" in it.text():
+                it.setText(f"{target_text}　·　{source_text if show_source else ''}".rstrip("　·"))
+            else:
+                self._append_list_item(source_text if show_source else "", target_text)
+            self._trim_list()
+            self.adjustSize()
+            self.updateGeometry()
+            return
+        if "⟳" in self.target_label.text():
+            self.show_caption(source_text, target_text, show_source)
+        else:
+            self.show_caption(source_text, show_source and source_text or "", show_source)
+
     def clear_caption(self):
         self.source_label.setText("")
         self.target_label.setText("")

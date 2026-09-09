@@ -88,6 +88,10 @@ class CaptionCard(QFrame):
         self.meta_label.setText(note)
         self.source_label.setVisible(show_source)
 
+    def is_pending(self):
+        """是否仍处于"译文未落地"占位态（流式两段式，v2.1.4）。"""
+        return self.target_label.text() in ("...", "⟳ …")
+
     def set_failed(self, msg):
         self.target_label.setText("[翻译失败]")
         self.meta_label.setText(f"{datetime.now().strftime('%H:%M:%S')} · {msg}")
@@ -816,9 +820,42 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(msg)
 
     def _on_asr_text(self, text, detected, duration):
-        self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中...")
+        # v2.1.4 流式两段式：识别文本立刻上屏（原文先出、译文占位），
+        # 译文就绪后由 _on_translated 原地补齐——听到哪显示到哪，
+        # 不再干等翻译（medium CPU 10s/段或网络慢时此前界面长时间空白）
+        if not self.running:
+            return
+        show_source = bool(self.config.get("show_source"))
+        card = CaptionCard(text)
+        card.source_label.setVisible(show_source)
+        card.target_label.setText("⟳ …")
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+        if self.stack.currentIndex() == 0:
+            self.stack.setCurrentIndex(1)
+        if not hasattr(self, "_pending") or self._pending is None:
+            self._pending = []
+        self._pending.append((text, card))
+        self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
+        if self.overlay.isVisible():
+            self.overlay.show_pending(text)
+        sb = self.scroll.verticalScrollBar()
+        sb.setValue(sb.maximum())
         if self.translate_thread:
             self.translate_thread.submit(text, detected)
+
+    def _take_pending(self, source_text):
+        """按原文取出最早的待补齐卡片（流式两段式配对，v2.1.4）。"""
+        pend = getattr(self, "_pending", None) or []
+        for i, (txt, card) in enumerate(pend):
+            if txt == source_text and card.is_pending():
+                pend.pop(i)
+                return card
+        # 原文被 max_history 裁掉等场景：只清记录
+        for i, (txt, card) in enumerate(pend):
+            if txt == source_text:
+                pend.pop(i)
+                return card
+        return None
 
     def _on_translated(self, source_text, translated, engine, detected, error):
         # v2.0.1：幽灵回调守卫——停止后仍会收到已入队的翻译结果，
@@ -833,8 +870,12 @@ class MainWindow(QMainWindow):
         else:
             self._fail_streak = 0
         show_source = bool(self.config.get("show_source"))
-        card = CaptionCard(source_text)
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+        # v2.1.4：优先原地补齐识别时已上屏的占位卡；找不到（管线重启/
+        # 被裁剪等）才新建，兜底兼容旧行为
+        card = self._take_pending(source_text)
+        if card is None:
+            card = CaptionCard(source_text)
+            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)
         if error:
@@ -858,8 +899,8 @@ class MainWindow(QMainWindow):
                 else "翻译失败 · 检查网络或切换引擎",
                 is_error=True)
         if self.overlay.isVisible():
-            self.overlay.show_caption(source_text, translated or ("[" + engine + " 翻译失败]"),
-                                      show_source)
+            self.overlay.show_pending_result(
+                source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
