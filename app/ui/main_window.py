@@ -784,6 +784,10 @@ class MainWindow(QMainWindow):
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
         self._fail_streak = 0  # v2.0.2：会话结束时清零连续失败计数
         self._backlog_warn = False  # v2.0.8：积压警示随会话结束复位
+        if getattr(self, "_pending", None):
+            # v2.2.0：停止时清空流式占位配对——队列里未及翻译的卡片不再等
+            # 迟到译文（下次会话不复用旧卡片）
+            self._pending.clear()
         self._stop_model_download_feedback()
         timer = getattr(self, "_no_segment_timer", None)
         if timer is not None:
@@ -952,10 +956,18 @@ class MainWindow(QMainWindow):
                 source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
+        evicted = []
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
             item = self.scroll_layout.takeAt(0)
             if item.widget():
+                evicted.append(item.widget())
                 item.widget().deleteLater()
+        # v2.2.0：_pending 悬挂引用清理——被裁剪的占位卡随后 deleteLater，
+        # 若仍在 _pending 里，迟到译文调用 set_result 会打在已删 C++ 对象上
+        # 崩溃。同步移除配对记录
+        if evicted and getattr(self, "_pending", None):
+            doomed = {id(w) for w in evicted}
+            self._pending = [(t, c) for (t, c) in self._pending if id(c) not in doomed]
 
     def _teardown(self):
         """退出前的统一清理（v2.0.1）：此前 exit 分支靠 closeEvent 内重入

@@ -75,13 +75,20 @@ jobs:
           }
           $userData = Test-Path "$env:USERPROFILE\.live_subtitle"
           Write-Host "Uninstall OK. User data (models/config) preserved: $userData"
+          # v2.2.0：把日志复制到 workspace 相对路径供 artifact 上传
+          if (Test-Path "$env:USERPROFILE\.live_subtitle\logs") {
+            New-Item -ItemType Directory -Force -Path "live_subtitle_logs" | Out-Null
+            Copy-Item "$env:USERPROFILE\.live_subtitle\logs\*" "live_subtitle_logs\" -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Upload deep test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: deep-test-logs
+          # v2.2.0：$env:USERPROFILE 在 with 里不展开——改为复制到 workspace
+          # 相对路径再上传（workspace 下的路径无环境变量依赖，必定生效）
           path: |
-            $env:USERPROFILE\.live_subtitle\logs\
+            live_subtitle_logs/
           if-no-files-found: ignore
           retention-days: 14

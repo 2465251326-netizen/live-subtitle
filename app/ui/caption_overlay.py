@@ -1,5 +1,5 @@
 from PySide6.QtCore import (
-    Qt, QPointF, QTimer, QPropertyAnimation, QEasingCurve, Property,
+    Qt, QPointF, QTimer,
 )
 from PySide6.QtGui import (
     QPainter, QPainterPath, QPen, QBrush, QColor, QTextOption,
@@ -7,7 +7,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
-    QListWidget, QListWidgetItem, QGraphicsOpacityEffect,
+    QListWidget, QListWidgetItem, QTextBrowser,
 )
 
 from app.ui.styles import OVERLAY_QSS
@@ -171,72 +171,84 @@ class CaptionOverlay(QWidget):
         layout.addWidget(self.list_widget)
         self.adjustSize()
 
-        # 跑马灯过渡（v2.1.8）：旧句淡出(160ms)→换字→新句淡入(200ms)，
-        # 快速连句自动合并只保留最新（"旧句淡出消失"）
-        self._src_effect = QGraphicsOpacityEffect(self.source_label)
-        self.source_label.setGraphicsEffect(self._src_effect)
-        self._tgt_effect = QGraphicsOpacityEffect(self.target_label)
-        self.target_label.setGraphicsEffect(self._tgt_effect)
-        self._stream_anim = QPropertyAnimation(self, b"marqueeOpacity", self)
-        self._stream_anim.setDuration(170)
-        self._stream_anim.setStartValue(1.0)
-        self._stream_anim.setKeyValueAt(0.5, 0.0)
-        self._stream_anim.setEndValue(1.0)
-        self._stream_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._stream_anim.valueChanged.connect(self._on_stream_opacity)
-        self._stream_anim.finished.connect(self._on_stream_anim_done)
-        self._marquee_next = None
-        self._marquee_animating = False
+        # 连续文本流（v2.2.0）：译文不断追加进同一段富文本，自动换行、
+        # 自动滚到最新、超长自动裁掉最旧内容——真正的"连续不间断输出"
+        self.stream_view = QTextBrowser()
+        self.stream_view.setObjectName("OverlayStream")
+        self.stream_view.setReadOnly(True)
+        self.stream_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.stream_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.stream_view.setFrameShape(QTextBrowser.NoFrame)
+        self.stream_view.setOpenExternalLinks(False)
+        self.stream_view.hide()
+        self.stream_view.setContextMenuPolicy(Qt.NoContextMenu)
         self._continuous = False
+        self._stream_parts = []        # [(kind, text)] 追加序列（kind: source/target）
+        self._STREAM_MAX_CHARS = 1200  # 纯文本超过则从头部淘汰旧句
+        self._STREAM_KEEP_CHARS = 700  # 淘汰后保留的尾部字符量
 
-    # ---------- Qt 属性：跑马灯透明度（动画驱动两个标签同步淡入淡出） ----------
+    # ---------- 连续文本流（v2.2.0） ----------
 
-    def _on_stream_opacity(self, v):
-        """动画中间值：同步两个标签的透明度（跑马灯淡出/淡入共享）。"""
-        self._src_effect.setOpacity(float(v))
-        self._tgt_effect.setOpacity(float(v))
+    def _stream_refresh(self):
+        """按 _stream_parts 重建整段富文本并滚到最新。"""
+        import html as _html
+        base = getattr(self, "_stream_text_color", None) or QColor("#ffffff")
+        body = []
+        for kind, text in self._stream_parts:
+            esc = _html.escape(text)
+            if kind == "source":
+                body.append(
+                    f"<span style='color: rgba(255,255,255,145);"
+                    f" font-size: {max(11, int(self._font_size * 0.66))}px;'>"
+                    f"{esc} </span>")
+            else:
+                body.append(
+                    f"<span style='color: {base.name()};"
+                    f" font-size: {self._font_size}px; font-weight: 600;'>"
+                    f"{esc} </span>")
+        self.stream_view.setHtml("".join(body))
+        sb = self.stream_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
-    def _on_stream_anim_done(self):
-        """一轮淡出/淡入动画结束：清动画态；若期间又来新句则继续下一轮。"""
-        self._marquee_animating = False
-        self._src_effect.setOpacity(1.0)
-        self._tgt_effect.setOpacity(1.0)
-        if self._marquee_next is not None:
-            self._marquee_advance()
-
-    def _get_marquee_opacity(self):
-        return self._src_effect.opacity()
-
-    def _set_marquee_opacity(self, v):
-        self._src_effect.setOpacity(float(v))
-        self._tgt_effect.setOpacity(float(v))
-
-    marqueeOpacity = Property(
-        float, _get_marquee_opacity, _set_marquee_opacity)
+    def stream_append(self, text, kind="target"):
+        """连续输出追加（v2.2.0）：译文/原文不断累积进同一段富文本，
+        自动换行、自动滚到最新；纯文本超长时从头部淘汰最旧句子。"""
+        import html as _html  # noqa: F401（保持与旧签名一致）
+        if not text:
+            return
+        self._stream_parts.append((kind, text))
+        plain = sum(len(t) for _k, t in self._stream_parts)
+        while plain > self._STREAM_MAX_CHARS and len(self._stream_parts) > 2:
+            k, t = self._stream_parts.pop(0)
+            plain -= len(t)
+        self._stream_refresh()
 
     # ---------- 模式切换 ----------
 
     def set_continuous_mode(self, enabled):
-        """跑马灯模式（v2.1.8）：只显示最新一句，旧句淡出消失，新句淡入。"""
+        """连续文本流模式（v2.2.0）：译文/原文不断累积追加到同一段文字，
+        自动换行、自动滚到最新、超长自动裁剪最旧——真正不间断的连续输出。"""
         self._continuous = bool(enabled)
-        if self._continuous:
-            self.list_widget.hide()
-            self.source_label.show()
-            self.target_label.show()
-        else:
-            self.source_label.setVisible(not self._list_mode and bool(self.source_label.text()))
-            self.target_label.setVisible(not self._list_mode)
-            self.list_widget.setVisible(self._list_mode)
+        self.list_widget.setVisible(self._list_mode and not self._continuous)
+        self.source_label.setVisible(not self._continuous and not self._list_mode)
+        self.target_label.setVisible(not self._continuous and not self._list_mode)
+        self.stream_view.setVisible(self._continuous)
+        self._stream_refresh()
         self.adjustSize()
 
+    def _clear_stream(self):
+        self._stream_parts.clear()
+        self.stream_view.setHtml("")
+
     def set_list_mode(self, enabled, max_items=5):
-        """切换 单条字幕 / 最近N条列表 两种内容形态（跑马灯开启时优先级更高）。"""
+        """切换单条字幕 / 最近N条列表两种内容形态（连续流开启时优先级更高）。"""
         self._list_mode = bool(enabled)
         self._list_max = max(2, min(10, int(max_items)))
-        if getattr(self, "_continuous", False):
+        if self._continuous:
             self.list_widget.hide()
-            self.source_label.show()
-            self.target_label.show()
+            self.stream_view.show()
+            self.source_label.hide()
+            self.target_label.hide()
             return
         self.source_label.setVisible(not self._list_mode and bool(self.source_label.text()))
         self.target_label.setVisible(not self._list_mode)
@@ -262,36 +274,10 @@ class CaptionOverlay(QWidget):
 
     # ---------- 字幕内容 ----------
 
-    def _marquee_show(self, source_text, target_text):
-        """跑马灯：旧内容淡出→换字→新内容淡入；快速连句自动合并为最新。"""
-        self._marquee_next = (source_text, target_text)
-        if self._marquee_animating:
-            return
-        self._marquee_advance()
-
-    def _marquee_advance(self):
-        nxt = self._marquee_next
-        if nxt is None:
-            self._marquee_animating = False
-            return
-        self._marquee_next = None
-        self._marquee_animating = True
-        self._apply_marquee(*nxt)
-        self._stream_anim.stop()
-        self._stream_anim.start()
-
-    def _apply_marquee(self, source_text, target_text):
-        show_source = bool(self._show_source) and bool(source_text)
-        # 跑马灯永远显示最新一句：译文为主行，原文按 show_source 显示
-        self.source_label.setText(source_text if show_source else "")
-        self.source_label.setVisible(show_source)
-        self.target_label.setText(target_text or "")
-        self.adjustSize()
-
     def show_caption(self, source_text, target_text, show_source=True):
         self._show_source = bool(show_source)
         if self._continuous:
-            self._marquee_show(source_text, target_text)
+            self.stream_append(target_text, kind="target")
             return
         if self._list_mode:
             self._append_list_item(source_text if show_source else "", target_text)
@@ -307,10 +293,9 @@ class CaptionOverlay(QWidget):
     def show_pending(self, source_text):
         """流式两段式（v2.1.4）：识别文本先上屏（译文稍后补齐）。
 
-        跑马灯模式：直接显示最新识别文本（旧句淡出消失）。
-        不改动 _show_source（此处未知，沿用 show_caption/_result 已知值）。"""
+        连续流模式：原文浅色小字立刻追加进文本流（"听到哪显示到哪"）。"""
         if self._continuous:
-            self._marquee_show(source_text, "")
+            self.stream_append(source_text, kind="source")
             return
         if self._list_mode:
             # 列表模式：占位行只在最末条是旧占位时复用
@@ -329,10 +314,10 @@ class CaptionOverlay(QWidget):
             self.updateGeometry()
 
     def show_pending_result(self, source_text, target_text, show_source=True):
-        """译文就绪：跑马灯淡入最新译文；两段式原地补齐占位。"""
+        """译文就绪：连续流模式追加译文（白色主文）；两段式原地补齐占位。"""
         self._show_source = bool(show_source)
         if self._continuous:
-            self._marquee_show(source_text, target_text)
+            self.stream_append(target_text, kind="target")
             return
         if self._list_mode:
             it = self.list_widget.item(self.list_widget.count() - 1) if self.list_widget.count() else None
@@ -352,6 +337,7 @@ class CaptionOverlay(QWidget):
     def clear_caption(self):
         self.source_label.setText("")
         self.target_label.setText("")
+        self._clear_stream()
         self.adjustSize()
 
     # ---------- 状态行 ----------
@@ -424,6 +410,17 @@ class CaptionOverlay(QWidget):
                 f" color: #ffffff; font-size: {max(11, int(self._font_size * 0.72))}px;"
                 "QListWidget#OverlayList::item { padding: 2px 0; }")
             self._trim_list()
+        if self._continuous:
+            # v2.2.0 连续文本流：固定高度滚动区 + 文档默认样式随字号/颜色
+            self._stream_text_color = QColor(text_color)
+            self.stream_view.setFixedHeight(int(self._font_size * 7.5))
+            self.stream_view.setStyleSheet(
+                "QTextBrowser#OverlayStream { background: transparent; border: none; }")
+            doc = self.stream_view.document()
+            doc.setDefaultStyleSheet(
+                f"body {{ color: {text_color}; font-size: {self._font_size}px;"
+                " font-family: 'Microsoft YaHei UI'; }")
+            self._stream_refresh()
         self.update()
         self.updateGeometry()
         self.adjustSize()
