@@ -33,7 +33,16 @@ _ORPHANS: list = []
 
 
 def _orphan_threads() -> list:
-    alive = [t for t in _ORPHANS if t.isRunning()]
+    alive = []
+    for t in _ORPHANS:
+        try:
+            if t.isRunning():
+                alive.append(t)
+        except RuntimeError:
+            # v2.0.7：deleteLater 销毁 C++ 对象后，Python 壳上调用 isRunning
+            # 会抛 "Internal C++ object already deleted"——线程已终结，跳过。
+            # 此前该异常会从 stop_pipeline 一路炸出去，中断后续清理
+            pass
     _ORPHANS[:] = alive
     return _ORPHANS
 
@@ -583,9 +592,30 @@ class MainWindow(QMainWindow):
         self.capture_thread.muted.connect(self._on_muted)
         self.capture_thread.start()
 
+        # v2.0.7：30 秒零产出指引——"一直显示正在聆听"时给用户明确抓手
+        # （音量条是否有波动 / 设备是否在放声音），而不是干等
+        self._no_segment_hint_done = False
+        self._no_segment_timer = QTimer(self)
+        self._no_segment_timer.setSingleShot(True)
+        self._no_segment_timer.timeout.connect(self._no_segment_hint)
+        self._no_segment_timer.start(30000)
+
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
         self.update_overlay_status()
+
+    def _no_segment_hint(self):
+        """管线运行 30 秒仍零字幕时的一次性指引（v2.0.7）。"""
+        if not self.running or getattr(self, "_no_segment_hint_done", True):
+            return
+        self._no_segment_hint_done = True
+        if getattr(self, "_asr_ready", False) and getattr(self, "session_count", 0) == 0:
+            from app import log as app_log
+            app_log.log("pipeline.no_segments_30s", source=self.config.get("source_type"))
+            self._set_engine_status(
+                "已开始 30 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
+                "系统音量/应用音量未静音，或到「设置-音频输入」更换设备")
+            self.update_overlay_status()
 
     def _start_model_download_feedback(self, model_size):
         self._model_dl_model = model_size
@@ -651,6 +681,8 @@ class MainWindow(QMainWindow):
 
     def _on_low_input(self, quiet):
         """采集线程报告输入信号持续过弱/恢复正常。"""
+        from app import log as app_log
+        app_log.log("capture.low_input", quiet=bool(quiet))
         if not self.running:
             # v2.0.1：幽灵回调守卫——停止后仍可能收到已入队的 Queued 信号
             return
@@ -707,6 +739,10 @@ class MainWindow(QMainWindow):
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
         self._fail_streak = 0  # v2.0.2：会话结束时清零连续失败计数
         self._stop_model_download_feedback()
+        timer = getattr(self, "_no_segment_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._no_segment_hint_done = True
         self.stack.setCurrentIndex(0)
 
         threads = (self.capture_thread, self.asr_thread, self.translate_thread)

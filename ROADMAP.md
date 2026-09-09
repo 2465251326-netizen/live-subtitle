@@ -278,3 +278,15 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ **P2 性能/体验**：进程内模型实例缓存（容量 1，键=(model,device,compute_type)，切来源/改设置不再全量重载；remove_model 同步逐出）；TranslationCache 攒批落盘（10 条或 5s，崩溃最多丢一小批可再生缓存）
 - ✅ **P3 结构治理**：_FIELD_SPECS 单一登记表 → _PIPELINE_KEYS/_OVERLAY_KEYS/_STAGE_ORDER 全派生、_reset_defaults 全量遍历——"恢复默认漏键"类结构性 bug 根除
 - ✅ 单测 25→28（抗混叠衰减/通带保持/混叠抑制 + 缓存攒批落盘；翻译线程退出 flush 攒批缓存）
+
+---
+
+## 十二、v2.0.7 用户实测双问题 + 日志揪出的两个崩溃（2026-09-09）
+
+> 用户报告：① 离线语言包可重复下载；② 离线翻译"不工作、一直显示正在聆听"。实机日志三连实锤。
+
+- ✅ **语言包重复下载**：日志 20:49:31/20:49:53 两次 pack_installed——已装方向从下载下拉排除 + 点击硬校验 + worker 兜底三重防重复
+- ✅ **shiboken 崩溃**（日志头部 RuntimeError: Internal C++ object already deleted）：_orphan_threads 巡查捕获已 deleteLater 的 Python 壳，不再中断 stop_pipeline
+- ✅ **每次 stop 孤儿化 AsrThread**（日志 5/6 次 stop 后均出现，含 1 秒短会话）：warmup 标记在模型实例上只跑一次 + 停止后跳过
+- ✅ **"一直聆听"可诊断**：30 秒零产出指引（状态栏明确抓手 + pipeline.no_segments_30s 日志）+ low_input 落日志（capture.low_input）
+- 用户实测数据点：device_name 按名回查精确命中（Realtek Loopback）；Argos 引擎 0.24s 正常出译文——离线翻译本体健康，"不工作"实为采集零段 + 状态不可诊断的组合观感

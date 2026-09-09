@@ -314,6 +314,8 @@ class AsrThread(QThread):
             # 打包资产缺失（v1.9.0 安装包）：回退能量 VAD，原因并入就绪提示
             self.silero_vad = False
             self.status_changed.emit("就绪，正在聆听...（Silero VAD 组件缺失，已回退默认切句，请更新安装包）")
+        if self._stop:
+            return
         self._warmup()
         while not self._stop:
             try:
@@ -331,9 +333,17 @@ class AsrThread(QThread):
                 self.status_changed.emit(f"识别异常：{friendly_error(e)}")
 
     def _warmup(self):
+        # v2.0.7：复用实例只预热一次（实例标记）；停止后不再空跑——
+        # 此前 warmup 不可中断，1 秒的管线停止也要等它跑完（日志实证
+        # 每次 stop 都有 AsrThread 被孤儿化）
+        if getattr(self._model, "_ls_warmed", False):
+            return
+        if self._stop:
+            return
         try:
             audio = np.zeros(8000, dtype=np.float32)
             list(self._model.transcribe(audio, beam_size=1)[0])
+            self._model._ls_warmed = True
         except Exception:
             pass
 

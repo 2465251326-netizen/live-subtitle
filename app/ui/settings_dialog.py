@@ -327,6 +327,11 @@ class ArgosWorker(QThread):
 
     def run(self):
         try:
+            # v2.0.7：worker 侧兜底——进入下载前再查一次已装方向，防 UI 层
+            # 刷新时序窗口内的重复安装（实测同一包 22 秒内装了两次）
+            if (self.from_code, self.to_code) in set(ArgosEngine.installed_pairs()):
+                self.finished_ok.emit("该方向语言包已安装，无需重复下载")
+                return
             self.progress_text.emit("正在获取语言包索引...")
             packs = ArgosEngine.available_packages()
             match = [p for p in packs if p.from_code == self.from_code and p.to_code == self.to_code]
@@ -1906,6 +1911,8 @@ class SettingsDialog(QDialog):
         tgt_name = LANGUAGES.get(tgt, argos_tgt)
         self.argos_combo.clear()
         # v2.0.0：候选源语言从翻译目标列表派生（单一数据源），不再手写副本漏项
+        # v2.0.7：已安装的方向不再进下载列表（此前仅标"（已安装）"仍可重复
+        # 下载，实测 22 秒内同一语言包被装了两次）——已装项在下方列表管理
         installed = set(ArgosEngine.installed_pairs())
         seen = set()
         for code in TARGET_LANGS:
@@ -1913,10 +1920,14 @@ class SettingsDialog(QDialog):
             if argos_src in seen or argos_src == argos_tgt:
                 continue
             seen.add(argos_src)
-            name = LANGUAGES.get(code, argos_src)
             if (argos_src, argos_tgt) in installed:
-                name += "（已安装）"
-            self.argos_combo.addItem(name, argos_src)
+                continue
+            self.argos_combo.addItem(LANGUAGES.get(code, argos_src), argos_src)
+        if self.argos_combo.count() == 0:
+            self.argos_combo.addItem("该目标语言的方向均已安装", None)
+            self.argos_download_button.setEnabled(False)
+        elif not self.argos_download_button.isEnabled():
+            self.argos_download_button.setEnabled(True)
         self.argos_download_button.setText(f"下载所选 → {tgt_name} 语言包")
         if installed:
             self.argos_hint.setText(
@@ -1975,6 +1986,14 @@ class SettingsDialog(QDialog):
             return
         tgt = self.target_combo.currentData() or "zh-CN"
         argos_tgt = "zh" if tgt.startswith("zh") else tgt
+        # v2.0.7：硬校验防重复下载（UI 列表已排除已装方向，此处兜底防
+        # 刷新时序窗口内的重复点击——实测同一语言包 22 秒内被装了两次）
+        if (code, argos_tgt) in set(ArgosEngine.installed_pairs()):
+            QMessageBox.information(
+                self, "无需重复下载",
+                f"{LANGUAGES.get(code, code)} → {LANGUAGES.get(tgt, argos_tgt)} 方向的语言包已安装。")
+            self._refresh_argos_section()
+            return
         tgt_name = LANGUAGES.get(tgt, argos_tgt)
         self.argos_download_button.setEnabled(False)
         self.argos_combo.setEnabled(False)
