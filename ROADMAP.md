@@ -277,4 +277,4 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ **P1 正确性**：设备按名存储+按名回查（resolve_device_index，热插拔索引漂移不再抓错源；config 新增 device_name）；翻译备援队列空闲每 60s 重探主引擎、恢复自动切回（_maybe_reprobe_primary）；重采样加 63 阶汉宁窗 sinc FIR 抗混叠（截止≈7.6kHz，通带保持经 FFT 单测验证）
 - ✅ **P2 性能/体验**：进程内模型实例缓存（容量 1，键=(model,device,compute_type)，切来源/改设置不再全量重载；remove_model 同步逐出）；TranslationCache 攒批落盘（10 条或 5s，崩溃最多丢一小批可再生缓存）
 - ✅ **P3 结构治理**：_FIELD_SPECS 单一登记表 → _PIPELINE_KEYS/_OVERLAY_KEYS/_STAGE_ORDER 全派生、_reset_defaults 全量遍历——"恢复默认漏键"类结构性 bug 根除
-- ✅ 单测 25→27（抗混叠衰减/通带保持/混叠抑制）
+- ✅ 单测 25→28（抗混叠衰减/通带保持/混叠抑制 + 缓存攒批落盘；翻译线程退出 flush 攒批缓存）

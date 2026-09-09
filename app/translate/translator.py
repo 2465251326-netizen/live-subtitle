@@ -498,3 +498,8 @@ class TranslateThread(QThread):
                         error = friendly_error(e2)
                         app_log.exception("translate.fallback_failed", e2, engine=fb)
             self.result_ready.emit(text, translated, used_engine, detected, error)
+        # v2.0.6：退出前 flush 攒批缓存（stop 哨兵/break 落到此处）
+        try:
+            _cache.save()
+        except Exception:
+            pass

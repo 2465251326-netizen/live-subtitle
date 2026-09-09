@@ -76,8 +76,32 @@ def test_vad_normal_segment():
 
 def test_cache_persist():
     _cache.put("ci:zh-CN:hello world", ("你好世界", "en"))
+    # v2.0.6 攒批落盘：put 不再立即写盘，显式 flush 后才保证持久化
+    _cache.save()
     c2 = TranslationCache()
     assert c2.get("ci:zh-CN:hello world") == ("你好世界", "en"), "缓存应持久化重载"
+
+
+def test_cache_batched_flush():
+    """v2.0.6：攒批窗口内连续 put 不写盘，save() 一次性落盘。"""
+    import tempfile
+    import pathlib
+    import app.translate.translator as tr
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    orig_path_fn = tr.TranslationCache._path
+    try:
+        c = tr.TranslationCache()
+        tr.TranslationCache._path = lambda self: tmp / "cache.json"
+        c._loaded = True  # 跳过懒加载（测试不依赖真实配置路径）
+        for i in range(9):
+            c.put(f"k{i}", (f"v{i}", "en"))
+        assert not (tmp / "cache.json").exists(), "9 条 < 阈值 10，不应已写盘"
+        c.put("k9", ("v9", "en"))  # 第 10 条触发自动落盘
+        assert (tmp / "cache.json").exists(), "攒满 10 条应触发自动落盘"
+        c2 = tr.TranslationCache()  # 读取实例不设 _loaded，走真实懒加载路径
+        assert c2.get("k9") == ("v9", "en"), "自动落盘后新实例应可读到"
+    finally:
+        tr.TranslationCache._path = orig_path_fn
 
 
 def test_target_langs_coverage():
