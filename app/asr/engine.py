@@ -113,25 +113,51 @@ _MODEL_CACHE_LOCK = threading.Lock()
 
 
 def _torch_cuda_ready() -> bool:
-    """强制 GPU 的运行时前置检查（v2.1.2）。
+    """强制 GPU 的运行时前置检查 + DLL 预载（v2.1.2/v2.1.3）。
 
-    1) PyTorch 已装且为 CUDA 版（cuDNN/cuBLAS 随其分发）；
-    2) 初始化 CUDA 并触发 cuBLAS/cuDNN 载入进程——此后 ctranslate2
-       按名解析 DLL 即可命中（未装 torch / CPU 版 torch / 驱动异常均
-       返回 False，而非挂死）。
+    运行时来源（二选一）：
+    - CUDA 版 PyTorch（一键安装/手动装，DLL 在 torch/lib）；
+    - NVIDIA 独立运行时包 nvidia-cublas-cu12 / nvidia-cudnn-cu12
+      （纯二进制轮子不挑 Python 版本——PyTorch 官方源最高只发布到
+      Python 3.13，3.14 用户走这条路，v2.1.3 实测）。
+    机制（本机实测踩坑记录）：ctranslate2 运行时按名 LoadLibrary 加载
+    cublas64_12.dll，走标准搜索顺序（PATH），**add_dll_directory 注册的
+    目录不在其中**——必须把 DLL 目录前置进 PATH。然后用 ctypes 直接
+    加载两个 DLL 验证（比 get_cuda_device_count 枚举更贴近真实推理）。
     """
+    import os
+    candidates = []
     try:
-        import torch
+        import torch as _t
+        if getattr(_t.version, "cuda", None):
+            candidates.append(os.path.join(os.path.dirname(_t.__file__), "lib"))
     except Exception:
+        pass
+    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec(pkg)
+            if spec and spec.submodule_search_locations:
+                base = list(spec.submodule_search_locations)[0]
+                candidates.append(os.path.join(base, "bin"))
+        except Exception:
+            pass
+    found = [d for d in candidates if os.path.isdir(d)]
+    if not found:
         return False
-    if not getattr(torch.version, "cuda", None):
-        return False
+    for d in found:
+        try:
+            os.add_dll_directory(os.path.abspath(d))
+        except Exception:
+            pass
+        # 关键：前置进 PATH——标准 LoadLibrary 搜索顺序才会命中
+        path = os.environ.get("PATH", "")
+        if d not in path:
+            os.environ["PATH"] = os.path.abspath(d) + os.pathsep + path
     try:
-        if not torch.cuda.is_available():
-            return False
-        x = torch.ones(64, 64, device="cuda")
-        (x @ x).sum().item()          # 触发 cuBLAS 载入进程
-        torch.backends.cudnn.version()  # 触发 cuDNN 载入进程
+        import ctypes
+        ctypes.WinDLL("cublas64_12.dll")
+        ctypes.WinDLL("cudnn64_9.dll")
         return True
     except Exception:
         return False

@@ -378,3 +378,14 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 - ✅ 按钮条件：非 frozen 且有 N 卡且 torch_cuda != "cuda" → 显示（CPU 版显示"升级为 CUDA 版"）；安装加 --force-reinstall（防 pip 已满足跳过）
 - ✅ engine._torch_cuda_ready()：强制 GPU 加载前 import torch + CUDA matmul 触发 cuBLAS 载入 + cudnn.version() 触发 cuDNN 载入——DLL 进程预载，未就绪则回落 CPU
 - 真机验证：检测输出正确识别"RTX 2060 + 运行时未安装 + 挂死风险警告"
+
+---
+
+## 二十二、v2.1.3 GPU 运行时安装双方案 + DLL 加载机制修正（2026-09-09，用户安装失败驱动）
+
+> 用户一键安装报 `from versions: none`——PyTorch 官方源无 Python 3.14 轮子（本机 3.14.7）。且 v2.1.2 的 add_dll_directory 预载无效：CTranslate2 按名 LoadLibrary 走 PATH 搜索顺序（本地复现：枚举过、推理仍 cublas 缺失挂死）。
+
+- ✅ 一键安装双方案：py≤3.13 → CUDA 版 PyTorch；py≥3.14 → nvidia-cublas-cu12==12.1.3.1 + nvidia-cudnn-cu12==9.1.1.17 --no-deps（约 700MB，py3-none-win_amd64 纯轮子）
+- ✅ DLL 加载修正：运行时目录前置进 PATH + ctypes.WinDLL 直接加载验证（add_dll_directory 不影响标准搜索顺序，本地实测关键差异）
+- ✅ 真机验收：medium+cuda+float16 真实音轨 40 秒 5 条字幕全出（此前 0 条挂死）；本机运行时已通过独立包方式装好
+- 大文件下载教训：用户网络对 pip 直连大文件不稳（WinError 32×3），curl 断点续传循环 11 轮完成 648MB——一键安装后续可考虑内置断点续传

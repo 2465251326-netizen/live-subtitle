@@ -394,20 +394,30 @@ class _StorageMigrateWorker(QThread):
 
 
 class _CudaInstallWorker(QThread):
-    """后台安装 CUDA 12.1 版 PyTorch（仅源码运行模式提供）。
+    """后台安装 CUDA 推理运行时（仅源码运行模式提供）。
 
-    v2.1.2：走代理镜像环境（沿用用户代理配置）+ 安装前清掉已有 CPU 版
-    torch（否则 pip 提示 already satisfied 直接跳过，CPU 版原地不动）。
+    v2.1.3：按 Python 版本智能选择方案——
+    - Python ≤ 3.13：装 CUDA 版 PyTorch（约 2GB，官方 cu121 源）；
+    - Python ≥ 3.14：PyTorch 官方源无对应轮子（用户实测 from versions:
+      none），改装 NVIDIA 独立运行时包 nvidia-cublas-cu12 +
+      nvidia-cudnn-cu12（约 700MB，PyPI 纯二进制轮子不挑 Python 版本）。
+    两者都提供 CTranslate2 需要的 cuBLAS/cuDNN 动态库。
     """
     done = Signal(bool, str)
 
     def run(self):
         try:
             import subprocess
-            cmd = [sys.executable, "-m", "pip", "install", "torch",
-                   "--index-url", "https://download.pytorch.org/whl/cu121",
-                   # 显式重装：CPU 版已存在时 pip 不会自行升级换 CUDA 版
-                   "--force-reinstall"]
+            py_minor = sys.version_info[1]
+            if py_minor <= 13:
+                cmd = [sys.executable, "-m", "pip", "install", "torch",
+                       "--index-url", "https://download.pytorch.org/whl/cu121",
+                       # 显式重装：CPU 版已存在时 pip 不会自行升级换 CUDA 版
+                       "--force-reinstall"]
+            else:
+                cmd = [sys.executable, "-m", "pip", "install",
+                       "nvidia-cublas-cu12==12.1.3.1", "nvidia-cudnn-cu12==9.1.1.17",
+                       "--no-deps"]
             env = os.environ.copy()
             r = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=3600,
@@ -1297,7 +1307,7 @@ class SettingsDialog(QDialog):
         v.addWidget(body, 1)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        install_btn = QPushButton("一键安装 CUDA 版 PyTorch")
+        install_btn = QPushButton("一键安装 CUDA 推理运行时")
         install_btn.setObjectName("PrimaryButton")
         install_btn.setVisible(False)
         install_btn.clicked.connect(lambda: self._install_cuda_torch(dlg, install_btn))
@@ -1331,8 +1341,8 @@ class SettingsDialog(QDialog):
             # 被藏掉。现按运行时三态：missing/cpu 版/未知 → 显示安装按钮
             if not info["frozen"] and info["nvidia_gpu"] and torch_state != "cuda":
                 install_btn.setVisible(True)
-                install_btn.setText("升级为 CUDA 版 PyTorch" if torch_state == "cpu"
-                                    else "一键安装 CUDA 版 PyTorch")
+                install_btn.setText("升级为 CUDA 版运行时" if torch_state == "cpu"
+                                    else "一键安装 CUDA 推理运行时")
             else:
                 install_btn.setVisible(False)
 
@@ -1355,7 +1365,7 @@ class SettingsDialog(QDialog):
         return sep
 
     def _install_cuda_torch(self, parent_dlg, btn):
-        """仅源码模式提供：后台安装 CUDA 12.1 版 PyTorch（提供 cuDNN/cuBLAS）。"""
+        """仅源码模式提供：后台安装 CUDA 推理运行时（cuDNN/cuBLAS）。"""
         box = QMessageBox(self)
         box.setWindowTitle("确认安装")
         box.setText("将从 PyTorch 官方源下载并安装 CUDA 12.1 版 PyTorch（约 2GB+）。\n"
@@ -1373,16 +1383,18 @@ class SettingsDialog(QDialog):
 
     def _on_cuda_done(self, ok, msg, btn):
         btn.setEnabled(True)
-        btn.setText("一键安装 CUDA 版 PyTorch")
+        btn.setText("一键安装 CUDA 推理运行时")
         if ok:
             QMessageBox.information(self, "安装完成",
-                                    "CUDA 版 PyTorch 已安装。\n请重启 LiveSubtitle，"
-                                    "然后在「计算方式」选择「自动（优先 GPU）」。")
+                                    "CUDA 推理运行时（cuDNN/cuBLAS）已安装。\n"
+                                    "请重启 LiveSubtitle，然后在「计算方式」选择「强制 GPU」。")
         else:
             QMessageBox.warning(self, "安装失败",
                                 f"{msg}\n\n可稍后重试，或手动执行：\n"
-                                "pip install torch --index-url "
-                                "https://download.pytorch.org/whl/cu121")
+                                "Python ≤ 3.13：pip install torch --index-url "
+                                "https://download.pytorch.org/whl/cu121\n"
+                                "Python ≥ 3.14：pip install nvidia-cublas-cu12==12.1.3.1 "
+                                "nvidia-cudnn-cu12==9.1.1.17 --no-deps")
 
     # ---------- GPU / CUDA 引导结束 ----------
 

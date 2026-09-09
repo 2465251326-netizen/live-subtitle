@@ -4,6 +4,14 @@
 
 ## 更新日志
 
+### v2.1.3
+
+**修复**
+
+- **一键安装按 Python 版本智能选择方案**：PyTorch 官方源最高只发布到 Python 3.13，3.14 用户安装必报 `from versions: none`（用户实测）——现 ≥3.14 自动改装 **NVIDIA 独立运行时包**（`nvidia-cublas-cu12` + `nvidia-cudnn-cu12`，约 700MB，纯二进制轮子不挑 Python 版本）；≤3.13 仍装 CUDA 版 PyTorch
+- **GPU DLL 加载机制修正**：此前 `add_dll_directory` 注册的目录不在 CTranslate2 标准 `LoadLibrary` 搜索路径里（它按名加载 `cublas64_12.dll` 走 PATH）——现把运行时目录**前置进 PATH** + `ctypes.WinDLL` 直接加载验证；本地实测同一 GPU 验收探针从"0 条挂死"变为"**40 秒 5 条字幕全出**"（medium/float16）
+- 安装按钮/完成提示文案统一为"CUDA 推理运行时"
+
 ### v2.1.2
 
 **修复**
