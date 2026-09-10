@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-10 E2E 实测会话（v2.2.10，第三节任务已闭环；修正 argos 包目录名笔误；新增无头验证经验）
+> 最后更新：2026-09-10 E2E 实测会话 + v2.2.11 发布（第三节任务闭环；修正 argos 包目录名笔误；六项体验修复与 SRT 导出）
 
 ---
 
@@ -11,7 +11,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.2.10**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.2.11**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -19,7 +19,7 @@
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
 python tests/test_units.py                   # 28 项单元测试
-python tests/test_integration.py             # 20 项集成测试
+python tests/test_integration.py             # 21 项集成测试
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
 # 更新 README.md 更新日志（项目惯例：`### vX.Y.Z` 段落）
@@ -50,7 +50,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 1. 本会话模型**不能读图**（read_image 只回元数据）——验证 UI 内容用：UIA 导出控件树（结构/数量/几何）、`trans_cache.json` 键值差、**像素统计**（LockBits 数亮像素/差分）。
 2. Qt 自绘控件（字幕卡/悬浮条/按钮）**UIA Name 全空**，只能拿 ControlType+Rect——数"Custom 卡片的个数变化"是有效证据。
 3. `System.Windows.Automation` 在 pwsh7 加载不了；用 **PS5.1**（GAC）跑 UIA dump 脚本可行（见 `tests/deep_windows.py`）。PS5.1 不认 LF 行尾的 `@'...'@` here-string，含 here-string 的 .ps1 必须 CRLF。
-4. 独立进程 `RegisterHotKey(0x4003, vk)` 探测热键占用（err=1409 即被占）；Ctrl+Alt+O 首轮失效为启动瞬间被第三方占用（重试即恢复），**注册失败时速览卡文案仍显示组合键**（小瑕疵，待改）。
+4. 独立进程 `RegisterHotKey(0x4003, vk)` 探测热键占用（err=1409 即被占）；Ctrl+Alt+O 首轮失效为启动瞬间被第三方占用（重试即恢复）。~~注册失败时速览卡文案仍显示组合键~~ **已于 v2.2.11 修复**：速览卡改按实际注册结果展示，未生效标红并追加"（未生效）"。
 5. SendInput 键入 `INPUT` 必须含 MOUSEINPUT 联合（cbSize=40）；鼠标点击 `type=0`+`MOUSEEVENTF_LEFTDOWN/UP(0x2/0x4)`，先 `SetCursorPos`。
 6. 步骤方法备查：SAPI wav 句间自然停顿 0.8~1s → 正好触发自适应静音分段（每句 1 卡，偶尔句中切分属正常）；`SoundPlayer.PlaySync` 阻塞精确，可直接用作时序。
 
@@ -89,7 +89,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 |---|---|---|
 | `asr_model` | `large-v3-turbo` | 用户要求的最大模型（HF repo: `mobiuslabsgmbh/faster-whisper-large-v3-turbo`） |
 | `asr_device` | `cuda` | GPU 档；CUDA 运行时已装（`_torch_cuda_ready()` 返回 True） |
-| `engine` | `argos` | ✅ en→zh 包已装（`argos/packs/en_zh`，81.7MB；交接原文"packages 无包"系目录名笔误） |
+| `engine` | `auto` | v2.2.11 会话经用户批准由 argos 改为 auto（在线优先，失败自动回退离线包；en→zh 离线包仍在 `argos/packs` 可用） |
 | `target_lang` | `zh-CN` | |
 | `source_type` | `system` | 系统声音（环回） |
 | `device_name` | Realtek High Definition Audio [Loopback] | 按名匹配设备（防热插拔漂移） |
@@ -100,7 +100,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 | `hotkey_sequence` | `Ctrl+Alt+J` | 用户自己改的（开始/停止） |
 | `hotkey_overlay` | `Ctrl+Alt+O` | 显隐悬浮条 |
 | `silero_vad` | `False` | 用户关闭 |
-| `hallucination_filter` | `False` | 用户关闭 |
+| `hallucination_filter` | `True` | v2.2.11 会话经用户批准开启（治理音乐/转场段的幻觉乱码字幕） |
 | `proxy_mode` | `system` | 本机代理 `http://127.0.0.1:10808`（环境变量 HTTP_PROXY/HTTPS_PROXY 已设） |
 | `close_action` | `tray` | 关闭窗口=最小化到托盘 |
 | `max_history` | `200` | |
@@ -165,7 +165,7 @@ README.md                更新日志（用户可见）
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.2.10 已发布，第三节的端到端测试任务已完成（全链路通过，argos 离线包其实一直在，前文『packages 为空』是笔误）。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.2.11 已发布，第三节的端到端测试任务已完成（全链路通过，argos 离线包其实一直在，前文『packages 为空』是笔误）。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
