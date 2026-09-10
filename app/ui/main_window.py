@@ -463,11 +463,23 @@ class MainWindow(QMainWindow):
         act_show.triggered.connect(self._restore_window)
         act_toggle = QAction("开始 / 停止翻译", self)
         act_toggle.triggered.connect(self.toggle_running)
+        # v2.2.8：速览卡承诺过的托盘快捷操作补齐（此前文案撒谎）
+        act_overlay = QAction("显隐悬浮字幕条", self)
+        act_overlay.triggered.connect(self._toggle_overlay_hotkey)
+        self._tray_overlay_action = act_overlay
+        act_source = QAction("切换输入来源", self)
+        act_source.triggered.connect(self._toggle_source)
+        act_settings = QAction("打开设置…", self)
+        act_settings.triggered.connect(self._open_settings)
         act_quit = QAction("退出", self)
         act_quit.triggered.connect(self._quit_app)
         menu.addAction(act_show)
         menu.addAction(act_toggle)
+        menu.addAction(act_overlay)
         self._tray_toggle_action = act_toggle
+        menu.addSeparator()
+        menu.addAction(act_source)
+        menu.addAction(act_settings)
         menu.addSeparator()
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
@@ -505,12 +517,13 @@ class MainWindow(QMainWindow):
         if dlg is None:
             dlg = SettingsDialog(self)
             self._settings_dlg = dlg
+            # v2.2.8：连接保存信号——保存后速览卡/托盘文案实时刷新
+            # （此前信号从未被连接，改了模型/引擎/热键速览卡一直显示旧值）
+            dlg.settings_saved.connect(self._refresh_quick_panel)
         dlg.load_from_config()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
-        # v2.2.5：设置关闭后速览卡可能过期，此处先刷新一次兜底
-        self._refresh_quick_panel()
 
     def _refresh_quick_panel(self):
         """空状态页配置速览卡（v2.2.5）：模型/引擎/来源/热键实时汇总。"""
