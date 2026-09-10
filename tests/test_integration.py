@@ -13,16 +13,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["LIVETRANSLATE_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "itest_home")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import faulthandler
+
 RESULTS = []
 FAILS = []
 
 def check(name, fn):
+    # v2.3.6：逐项进度打印——套件曾出现间歇性挂死（Qt 收尾竞态/设备枚举），
+    # 无进度时无法定位挂点；卡住时看最后一行 [it] 即嫌疑测试
+    print(f"[it] {name} ...", flush=True)
+    # v2.3.6：单测级看门狗——任何一项卡住 120 秒即 dump 全部线程栈并杀进程，
+    # 把"静默挂 5 分钟"变成"带栈 2 分钟定性失败"
+    faulthandler.dump_traceback_later(120, exit=True)
     try:
         fn()
         RESULTS.append(f"PASS  {name}")
     except Exception as e:
         RESULTS.append(f"FAIL  {name}: {type(e).__name__}: {e}")
         FAILS.append((name, traceback.format_exc(limit=4)))
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 from PySide6.QtWidgets import QApplication
 app = QApplication(sys.argv)
@@ -345,14 +355,15 @@ def t_select_engine_ex():
 check("translate: select_engine_ex 失败原因收集", t_select_engine_ex)
 
 def t_overlay_snap():
-    # v2.3.3（P2）：右键菜单"贴到屏幕顶部/底部"一键归位 + 位置持久化回调
+    # v2.3.3（P2）：贴边逻辑——v2.3.6 改为纯几何验证（不 show、不泵事件）：
+    # offscreen 下真实 show()+processEvents 偶发原生死锁（挂点漂移的元凶），
+    # 而 _snap_to_edge 只依赖几何与回调，无需可见性
     from PySide6.QtGui import QGuiApplication
     moved = []
     ov = CaptionOverlay(on_moved=lambda x, y: moved.append((x, y)))
     ov.resize(400, 150)
-    ov.show()
-    app.processEvents()
     g = QGuiApplication.primaryScreen().availableGeometry()
+    ov.move(g.center().x(), g.center().y())
     ov._snap_to_edge("top")
     assert ov.y() <= g.top() + 10, (ov.y(), g.top())
     assert moved and moved[-1][1] <= g.top() + 10
@@ -375,6 +386,46 @@ def t_prewarm_skip_uncached():
     for key in list(eng._MODEL_CACHE):
         assert key[0] != "large-v3-turbo", f"预热不该把未下载模型塞进池: {key}"
 check("asr: 预热不触发下载（未缓存即跳过）", t_prewarm_skip_uncached)
+
+def t_no_segment_hint_level_guard():
+    # v2.3.6（P8）：有电平活动（视频还在缓冲）时"无声音"指引必须顺延，
+    # 静默超时后才真正提示——CBS 实测轮抓到指引抢跑冤枉用户
+    import time as _t
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w._asr_ready = True
+    w.session_count = 0
+    w._no_segment_hint_done = False   # 真实流程由 start_pipeline 置 False
+    w._last_level_sound = _t.monotonic()
+    w._no_segment_hint()
+    assert not getattr(w, "_no_segment_hint_done", False), "有电平活动时应顺延"
+    w._last_level_sound = 0.0
+    w._no_segment_hint()
+    assert getattr(w, "_no_segment_hint_done", False), "静默超时后应提示"
+    assert "无识别结果" in w.engine_status_label.text()
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("pipeline: 无声音指引电平守卫顺延（P8）", t_no_segment_hint_level_guard)
+
+def t_translate_fix_staging():
+    # v2.3.6（P7）：译文修正词典的解析/暂存/回显链路
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    dlg = SettingsDialog(w)
+    dlg.load_from_config()
+    dlg._loading = False
+    dlg.tfix_edit.setPlainText("加快人工智能的发展速度=控制人工智能的发展节奏\n"
+                               "空行忽略\n=无效\n无效=\n多行=正确=忽略后续")
+    dlg._stage_translate_fix()
+    assert dlg._staged.get("translate_fix_map") == {
+        "加快人工智能的发展速度": "控制人工智能的发展节奏",
+        "多行": "正确=忽略后续"}, dlg._staged
+    dlg.deleteLater()
+    w._quitting = True
+    w._teardown()
+check("settings: 译文修正词典解析与暂存（P7）", t_translate_fix_staging)
 
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
@@ -484,4 +535,11 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_report.
     f.write(report + "\n\n=== FAIL DETAIL ===\n" + "\n\n".join(t for _, t in FAILS))
 print(report)
 print(f"TOTAL: {len(RESULTS)} PASS: {len(RESULTS) - len(FAILS)} FAIL: {len(FAILS)}")
-sys.exit(1 if FAILS else 0)
+sys.stdout.flush()
+sys.stderr.flush()
+# v2.3.6：结果已落盘+打印后，用 os._exit 强制退出——集成测试会构造大量
+# QThread/QWidget（预热线程、悬浮条、对话框），Qt 析构竞态可让进程在
+# interpreter 收尾处挂死（build.yml 对 smoke test 早有同款备注"退出码
+# 不可信"，如今真落到本套件头上：33 项跑完、报告已写、进程 5 分钟不退出）。
+# 判定以 test_report.txt/stdout 为准，退出码经 os._exit 保证可靠。
+os._exit(1 if FAILS else 0)

@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.3.5"
+APP_VERSION = "2.3.6"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -53,6 +53,7 @@ DEFAULTS = {
     "low_latency_mode": False,         # v2.3.3（P1）：低延迟分段（6s 上限+收紧判停），直播/新闻场景
     "prewarm_model": True,             # v2.3.5（P5）：启动即后台预热已下载模型，消除"开始翻译"后近 1 分钟冷加载
     "mishear_map": {},                 # 误听修正词典 {错: 对}，精确子串替换
+    "translate_fix_map": {},           # v2.3.6（P7）：译文修正词典 {错译: 正解}，对翻译结果精确替换
     "overlay_list_mode": False,        # 悬浮条列表模式（最近 N 条滚动）
     "overlay_list_max": 5,             # 列表模式保留条数
     "overlay_stream": False,           # v2.1.5：连续输出模式（译文累积追加，自动换行滚动）

@@ -314,6 +314,19 @@ ENGINES = {"google": GoogleFree, "mymemory": MyMemory, "argos": ArgosEngine}
 PROBE_ORDER = ("google", "mymemory")
 
 
+def apply_fix_map(text: str, mapping) -> str:
+    """v2.3.6（P7）：译文修正——按 {错译: 正解} 精确子串替换。
+
+    应用时机在**取到译文之后、上屏之前**（缓存读取/引擎返回/备援结果都走这里），
+    所以缓存里的存量错译也会即时被修正；缓存本身仍存引擎原文，不改写。"""
+    if not mapping or not text:
+        return text
+    for wrong, right in mapping.items():
+        if wrong and right:
+            text = text.replace(wrong, right)
+    return text
+
+
 def probe_engine(name, timeout=2.5):
     """探测引擎连通性，返回 (ok, 详情)。
 
@@ -373,10 +386,12 @@ class TranslateThread(QThread):
     # v2.3.2（G2）：在线引擎启动即不可达的事前通知（engine_desc, reason）
     engine_fallback = Signal(str, str)
 
-    def __init__(self, engine_name: str, target: str, parent=None):
+    def __init__(self, engine_name: str, target: str, parent=None, translate_fix_map=None):
         super().__init__(parent)
         self.engine_name = engine_name
         self.target = target
+        # v2.3.6（P7）：译文修正词典，上屏前应用（含缓存命中的存量错译）
+        self.fix_map = dict(translate_fix_map or {})
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
 
@@ -526,7 +541,8 @@ class TranslateThread(QThread):
                     except Exception as e2:
                         error = friendly_error(e2)
                         app_log.exception("translate.fallback_failed", e2, engine=fb)
-            self.result_ready.emit(text, translated, used_engine, detected, error)
+            self.result_ready.emit(text, apply_fix_map(translated, self.fix_map),
+                                   used_engine, detected, error)
         # v2.0.6：退出前 flush 攒批缓存（stop 哨兵/break 落到此处）
         try:
             _cache.save()

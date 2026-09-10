@@ -1,4 +1,5 @@
 import ctypes
+import os
 import sys
 import time
 from datetime import datetime
@@ -420,6 +421,11 @@ class MainWindow(QMainWindow):
         """v2.3.5（P5-A）：启动即后台预热模型——把 GPU 近 1 分钟的冷初始化
         从"点开始翻译之后"挪到启动空闲期；只热已下载模型，绝不触发下载。"""
         if not bool(self.config.get("prewarm_model")):
+            return
+        # v2.3.6：offscreen（无头测试/CI）不预热——桌面 UX 功能在无真实
+        # GPU/音频的headless环境既测不到、也无意义；且每建一个 MainWindow
+        # 就起一条 QThread 的线程churn 会诱发集成测试套件的 Qt 随机挂死
+        if os.environ.get("QT_QPA_PLATFORM", "").lower() == "offscreen":
             return
         try:
             from app.asr.engine import PrewarmWorker
@@ -897,7 +903,8 @@ class MainWindow(QMainWindow):
 
         c = self.config
         engine = c.get("engine")
-        self.translate_thread = TranslateThread(engine, c.get("target_lang"), self)
+        self.translate_thread = TranslateThread(engine, c.get("target_lang"), self,
+                                                translate_fix_map=dict(c.get("translate_fix_map") or {}))
         self.translate_thread.result_ready.connect(self._on_translated)
         # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
         # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"
@@ -964,6 +971,13 @@ class MainWindow(QMainWindow):
     def _no_segment_hint(self):
         """模型就绪 15 秒仍零字幕时的一次性指引（v2.2.11：起算点改就绪后）。"""
         if not self.running or getattr(self, "_no_segment_hint_done", True):
+            return
+        # v2.3.6（P8，CBS 实测轮抓到）：视频还在缓冲/音量在跳时别急着怪用户——
+        # 近 15 秒有过电平活动就顺延复检，不设置已提示标记
+        if time.monotonic() - getattr(self, "_last_level_sound", 0.0) < 15.0:
+            t = getattr(self, "_no_segment_timer", None)
+            if t is not None:
+                t.start(15000)
             return
         self._no_segment_hint_done = True
         if getattr(self, "_asr_ready", False) and getattr(self, "session_count", 0) == 0:
@@ -1115,6 +1129,9 @@ class MainWindow(QMainWindow):
         # v2.0.4：停止后迟到的电平事件不再点亮音量条
         if not self.running:
             return
+        if value >= 3:
+            # v2.3.6（P8）：记录"最近有声"时刻，供无产出指引做电平守卫
+            self._last_level_sound = time.monotonic()
         self.level_bar.setValue(value)
 
     def _on_low_input(self, quiet):

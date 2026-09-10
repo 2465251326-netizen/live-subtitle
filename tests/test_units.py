@@ -409,6 +409,18 @@ def test_split_piece_content_filter():
     assert ".." not in kept and all(has_content(p) for p in kept), (pieces, kept)
 
 
+def test_apply_fix_map():
+    """v2.3.6（P7）：译文修正词典——实测抓到的反义错译（pace→加快）作用例。"""
+    from app.translate.translator import apply_fix_map
+    assert (apply_fix_map("我们可能必须加快人工智能的发展速度。",
+                          {"加快人工智能的发展速度": "控制人工智能的发展节奏"})
+            == "我们可能必须控制人工智能的发展节奏。")
+    assert apply_fix_map("原文", {}) == "原文"
+    assert apply_fix_map("", {"a": "b"}) == ""
+    assert apply_fix_map("A和A", {"A": "B"}) == "B和B"
+    assert apply_fix_map("甲", {"甲": ""}) == "甲"   # 空替换值不生效
+
+
 def test_segmenter_low_latency():
     """v2.3.3（P1）：低延迟模式分段上限 14s→6s、判停收紧。"""
     voiced = np.full(480, 0.2, dtype=np.float32)   # 30ms@16k，音量需高于噪声底自适应上限×3

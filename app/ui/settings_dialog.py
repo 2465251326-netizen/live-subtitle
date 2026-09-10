@@ -156,6 +156,7 @@ _FIELD_SPECS = {
     "low_latency_mode":     ("pipeline", "check"),
     "prewarm_model":        ("instant", "check"),
     "mishear_map":          ("pipeline", "mishear"),
+    "translate_fix_map":    ("pipeline", "mishear"),
     "engine":               ("pipeline", "combo"),
     "target_lang":          ("pipeline", "combo"),
     "proxy_mode":           ("instant", "combo"),
@@ -922,6 +923,19 @@ class SettingsDialog(QDialog):
         # v2.3.0：引擎/目标语言两行改 _STD_ROWS 表驱动（on_change=_on_engine_changed）
         self._std_rows(page, "translate", "翻译方向")
 
+        self._section(page, "译文质量")
+        # v2.3.6（P7）：译文修正词典——误听词典的对偶，识别侧修"听错"，这里修"翻错/翻反"
+        self.tfix_edit = QPlainTextEdit()
+        self.tfix_edit.setPlaceholderText(
+            "每行一条译文修正：错误译文=正确译文\n例如：\n"
+            "加快人工智能的发展速度=控制人工智能的发展节奏")
+        self.tfix_edit.setMaximumHeight(90)
+        self._row(page, "译文修正词典",
+                  "对翻译结果做精确替换——引擎翻错/翻反的多义词可人工纠偏；"
+                  "保存并应用后对后续字幕生效（含缓存里的旧译文也会被修正显示）。与识别侧「误听修正词典」对偶。",
+                  self.tfix_edit)
+        self.tfix_edit.textChanged.connect(self._tfix_text_changed)
+
         self._section(page, "网络代理")
         proxy_hint = QLabel(
             "「跟随系统」读取 Windows 系统代理（v2rayN / Clash 开启系统代理即可用）。\n"
@@ -1353,10 +1367,10 @@ class SettingsDialog(QDialog):
             self._mishear_timer = timer
         timer.start(400)
 
-    def _stage_mishear(self):
-        """解析误听词典文本（每行 错误=正确），只暂存合法行。"""
+    def _parse_dict_text(self, widget):
+        """解析"错误=正确"逐行词典文本（误听/译文修正共用），只收合法行。"""
         mapping = {}
-        for line in self.mishear_edit.toPlainText().splitlines():
+        for line in widget.toPlainText().splitlines():
             line = line.strip()
             if not line or "=" not in line:
                 continue
@@ -1365,8 +1379,27 @@ class SettingsDialog(QDialog):
             right = right.strip()
             if wrong and right:
                 mapping[wrong] = right
+        return mapping
+
+    def _stage_mishear(self):
+        """解析误听词典文本（每行 错误=正确），只暂存合法行。"""
+        mapping = self._parse_dict_text(self.mishear_edit)
         if mapping != (self.c.get("mishear_map") or {}):
             self._stage("mishear_map", mapping)
+
+    def _tfix_text_changed(self):
+        timer = getattr(self, "_tfix_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._stage_translate_fix)
+            self._tfix_timer = timer
+        timer.start(400)
+
+    def _stage_translate_fix(self):
+        mapping = self._parse_dict_text(self.tfix_edit)
+        if mapping != (self.c.get("translate_fix_map") or {}):
+            self._stage("translate_fix_map", mapping)
 
     def _mishear_to_text(self, mapping):
         return "\n".join(f"{k}={v}" for k, v in (mapping or {}).items())
@@ -1777,6 +1810,11 @@ class SettingsDialog(QDialog):
         if timer is not None and timer.isActive():
             timer.stop()
             self._stage_mishear()
+        # v2.3.6（P7）：译文修正词典同款防抖 flush
+        tf = getattr(self, "_tfix_timer", None)
+        if tf is not None and tf.isActive():
+            tf.stop()
+            self._stage_translate_fix()
         order = list(self._STAGE_ORDER) + [k for k in self._staged if k not in self._STAGE_ORDER]
         applied = []
         for k in order:
@@ -1834,6 +1872,9 @@ class SettingsDialog(QDialog):
         timer = getattr(self, "_mishear_timer", None)
         if timer is not None:
             timer.stop()
+        tf = getattr(self, "_tfix_timer", None)
+        if tf is not None:
+            tf.stop()
         for key, (group, kind) in _FIELD_SPECS.items():
             if group == "internal":
                 continue
@@ -1880,6 +1921,8 @@ class SettingsDialog(QDialog):
         set_combo(self.model_combo, "asr_model")
         self.mishear_edit.setPlainText(self._mishear_to_text(values.get("mishear_map",
                                                                         c.get("mishear_map"))))
+        self.tfix_edit.setPlainText(self._mishear_to_text(values.get("translate_fix_map",
+                                                                     c.get("translate_fix_map"))))
         set_combo(self.proxy_combo, "proxy_mode")
         self.proxy_url_edit.setText(str(values.get("proxy_url", c.get("proxy_url")) or ""))
         self.overlay_font_spin.setValue(int(values.get("overlay_font_size", c.get("overlay_font_size"))))
