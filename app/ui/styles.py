@@ -200,6 +200,27 @@ QToolTip {
     border: 1px solid #2a3040;
     padding: 4px;
 }
+QMenu {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    border-radius: 8px;
+    padding: 6px;
+}
+QMenu::item {
+    padding: 6px 22px 6px 14px;
+    border-radius: 6px;
+    color: #e8eaf0;
+    background: transparent;
+}
+QMenu::item:selected {
+    background-color: #2f6fed;
+    color: #ffffff;
+}
+QMenu::separator {
+    height: 1px;
+    background: #2a3040;
+    margin: 5px 8px;
+}
 #LevelBar {
     background-color: #1b1f29;
     border: 1px solid #2a3040;
@@ -235,6 +256,27 @@ QPushButton#OverlayClose {
 QPushButton#OverlayClose:hover {
     background: rgba(255, 255, 255, 46);
     color: #ffffff;
+}
+QMenu {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    border-radius: 8px;
+    padding: 6px;
+}
+QMenu::item {
+    padding: 6px 22px 6px 14px;
+    border-radius: 6px;
+    color: #e8eaf0;
+    background: transparent;
+}
+QMenu::item:selected {
+    background-color: #2f6fed;
+    color: #ffffff;
+}
+QMenu::separator {
+    height: 1px;
+    background: #2a3040;
+    margin: 5px 8px;
 }
 """
 

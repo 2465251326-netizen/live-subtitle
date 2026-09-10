@@ -584,11 +584,26 @@ class _UpdateCheckWorker(QThread):
                 tag = r.json().get("tag_name", "")
                 self.done.emit(str(tag).lstrip("vV"), "")
             elif self.kind == "model":
-                url = f"https://huggingface.co/api/models/Systran/faster-whisper-{self.model_size}"
-                r = requests.get(url, timeout=8, proxies=net.proxies(),
-                                 headers={"User-Agent": "LiveSubtitle-UpdateCheck"})
-                r.raise_for_status()
-                self.done.emit(str(r.json().get("sha", ""))[:7], "")
+                # v2.3.1：检查更新必须走 model_repo_id() 统一解析——large-v3-turbo
+                # 在 Systran 下不存在（HF 对不存在仓库回 401，用户点"检查更新"
+                # 必失败；v2.0.9 修下载/加载时漏了这条路径）。同时像下载一样做
+                # 镜像回退：主站不可达时走 hf-mirror，不让用户干等超时
+                from app.asr.engine import model_repo_id
+                repo = model_repo_id(self.model_size)
+                last_err = None
+                for host in ("https://huggingface.co", "https://hf-mirror.com"):
+                    try:
+                        r = requests.get(f"{host}/api/models/{repo}", timeout=8,
+                                         proxies=net.proxies(),
+                                         headers={"User-Agent": "LiveSubtitle-UpdateCheck"})
+                        r.raise_for_status()
+                        self.done.emit(str(r.json().get("sha", ""))[:7], "")
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                if last_err is not None:
+                    raise last_err
             elif self.kind == "pack":
                 from app.translate.offline_pack import fetch_index
                 packs = fetch_index(timeout=8)
