@@ -544,4 +544,17 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 ---
 
+## 三十五、v2.3.2 体验报告缺口清零：G1 悬浮条状态仪表盘 + G2 引擎不可达事前横幅（2026-09-11）
+
+> 模拟用户体验报告 R6 归档时留下两条产品缺口（代号 G1/G2），本节为其版本承接与验收记录。
+
+- ✅ **G1 悬浮条状态速览行**：主窗口空页面"当前配置"速览卡新增"悬浮字幕条"状态行——关闭时琥珀色（`#fbbf24`）显示"已关闭 · 按 Ctrl+Alt+O 打开"，开启时显示"已开启（可拖动位置）"；热键/托盘/设置页/右键关闭等所有显隐路径均实时刷新该行（挂接点：`_refresh_quick_panel`、`_toggle_overlay_hotkey`、`on_overlay_closed`、`set_overlay_enabled`）
+- ✅ **G2 引擎不可达事前横幅**：`TranslateThread` 新增 `engine_fallback` 信号——auto 模式探测失败（携带具体原因如 ConnectTimeout/HTTP 429）或用户显式指定 google/mymemory 时启动即探测，失败立即出橙色横幅提示到「设置-通用」配置代理，不再等用户撞上有声无译
+- ✅ **横幅持续性与自动恢复**：经 `_engine_fallback_warn` 标志持续展示、不被常规状态覆盖；主引擎每 60 秒重探恢复后自动撤销；`stop_pipeline` 清除
+- ✅ **测试**：新增 3 项集成测试（G1 状态行跟随显隐、G2 横幅持续性、`select_engine_ex` 失败原因收集），集成测试 26→29 项；单元测试 30 项不变；真实平台 `probe_text_clip` 0 裁剪
+- ✅ **发布**：tag `v2.3.2`（提交 `aeb2fb1`）CI 构建 success，Release 双资产已核对（`LiveSubtitle-Setup-2.3.2.exe` + `LiveSubtitle-2.3.2-portable.zip`）
+- 教训：体验报告不能只归档——缺口要有代号（G1/G2）、有版本承接、有验收，R6 报告两条缺口从立项到发布闭环
+
+---
+
 （历史：v2.1.8 曾发布字幕墙+跑马灯过渡形态，v2.2.0 起被连续文本流取代）
