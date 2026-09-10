@@ -45,7 +45,16 @@ def walk(widget):
         if singleline and not wrap and need_w > have_w + 1:
             issues.append((type(child).__name__, child.text()[:24],
                            f"need_w={need_w} have_w={have_w}"))
-        if singleline and need_h > have_h + 1:
+        if wrap or not singleline:
+            # v2.2.13 盲区补强：word-wrap/多行标签必须按"当前宽度换行后的
+            # 需要高度"比对——此前只比单行高度，漏掉"换行了但行高未上传父
+            # 布局"的裁字类（速览卡热键行被提示行压住：need=36 have=20 仍报 0）
+            need_h2 = fm.boundingRect(0, 0, have_w, 10000,
+                                      Qt.TextWordWrap, child.text()).height()
+            if need_h2 > have_h + 1:
+                issues.append((type(child).__name__, child.text()[:24],
+                               f"wrap need_h={need_h2} have_h={have_h} (w={have_w})"))
+        elif need_h > have_h + 1:
             issues.append((type(child).__name__, child.text()[:24],
                            f"need_h={need_h} have_h={have_h}"))
 
@@ -54,4 +63,7 @@ walk(w.overlay) if w.overlay.isVisible() else None
 
 for cls, text, detail in issues:
     print(f"CLIP  [{cls}] {text!r}  {detail}")
+plat = os.environ.get("QT_QPA_PLATFORM", "")
+if plat == "offscreen":
+    print("WARN: offscreen 无字体，测量不可靠——请用 QT_QPA_PLATFORM=windows 运行本探测")
 print(f"TOTAL CLIPPED: {len(issues)}")
