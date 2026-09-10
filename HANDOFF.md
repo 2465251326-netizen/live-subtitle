@@ -179,6 +179,6 @@ README.md                更新日志（用户可见）
 - **本机运行时**：应用未在运行；用户 DSH 聊天窗=便携版 Chrome 单实例（清理测试窗按标题 WM_CLOSE，严禁杀进程）。隔离实例复用大模型缓存的正规姿势：启动前注入 `HF_HOME` → `~\.live_subtitle\hf`（app 用 setdefault 不覆盖注入值）+ `LIVETRANSLATE_HOME` 隔离配置，免重下 1.6GB
 - **验证产物**：`Documents\LiveSubtitle_20260910_164327/171309.txt`（2.2.11 两轮）、`..._191510.txt`（2.2.12 轮 7 卡：长句 VAD 切 2 段、google 译文准确）；`%TEMP%\ls_e2e_s1..s8*.png`（本会话模型不能读图，供人眼复核）；日志 `~/.live_subtitle/logs/app.log`
 - **方法论**（复测照抄即最快路径）：SAPI en-US 分句 wav（句间 Sleep）→SoundPlayer 播放=等价英语视频；UIA 数卡片个数（Qt 自绘 Name 全空，数结构有效）；`trans_cache.json` 键值差=识别+翻译铁证（**注意 flush 批处理 10 条/5s，读早了会误判"没产出"，以导出件为准**）；LockBits 亮像素统计=悬浮条内容级证据；导出按钮真实点击+Enter=免费拿全卡文本（默认名落 Documents）；点击前先激活主窗（浏览器覆盖时点击会落错窗，本会话踩两次）
-- **发版后观察点**：`pipeline.no_segments_15s` 日志键是否出现；速览卡热键红字在真实占用下是否显示；用户开启 `overlay_hide_fullscreen` 后 F11 全屏视频悬浮条是否收起（默认关）
+- **发版后观察点**：`pipeline.no_segments_15s` 日志键是否出现；速览卡热键红字在真实占用下是否显示；`overlay_hide_fullscreen` 用户已自行开启并做过 F11 实测（结果待反馈）；**教训：用户眼睛>自动化探测——探测报 0 ≠ 无问题，关键 UI 需真实平台实拍复核（版式 bug 即用户截图抓包，v2.2.9 假修复至此暴露）**
 - **遗留排期候选**：SRT 说话人标签（需 diarization）；声明式设置框架全量迁移；用户配置未开全屏隐藏（体验用隔离环境，已连临时目录一并清理）
 - **工具坑位新增**：Add-Type 里方法名 `Main` 被当入口点报"签名错误"（改名即过）；`gh --jq` 表达式含空格须用单引号（pwsh 双引号会被拆参数）；`FsTest` 类不跨 pwsh 调用存活（每次内联重定义）
