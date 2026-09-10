@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-10 v2.3.0 发布后（用户裁决批次：删全屏隐藏/下载ETA/声明式设置框架迁移）
+> 最后更新：2026-09-10 v2.3.1 发布后（用户三连击修复 + CBS 新闻 A/B 实测归因）
 
 ---
 
@@ -11,14 +11,14 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.3.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.3.1**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
 ```powershell
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
-python tests/test_units.py                   # 29 项单元测试
+python tests/test_units.py                   # 30 项单元测试
 python tests/test_integration.py             # 26 项集成测试（v2.3.0 起含声明式行表全覆盖）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」

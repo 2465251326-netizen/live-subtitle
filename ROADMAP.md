@@ -531,4 +531,17 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 ---
 
+## 三十四、v2.3.1 用户三连击 + CBS 新闻 A/B 实测（2026-09-10 深夜）
+
+> 用户实拍三报：①模型检查更新 401 ②托盘菜单无悬停高亮 ③"识别翻译非常不好用，去开浏览器英语新闻试试"。照做——CBS Evening News 完整播报真机 A/B。
+
+- ✅ ①检查更新硬编码 Systran 仓库（v2.0.9 修下载/加载漏了检查路径，同类回归）→ `model_repo_id()` 统一解析 + hf-mirror 回退；实测修复后 HTTP 200 sha 正常
+- ✅ ②全局 `QWidget{background}` 吞掉 QMenu 系统高亮 → DARK/OVERLAY 两套 QSS 补 `QMenu::item:selected`
+- ✅ ③实测归因：**用户配置处于 medium+CPU+argos**（当日被改），CPU 转写跟不上新闻连读→字幕滞后永远追不上；A/B 铁证：同视频 turbo+CUDA+auto 75s/34 段（2.2s/段）vs medium/CPU 严重滞后+垃圾段+直译错译
+- ✅ ③产品级修复三件：纯标点垃圾段无条件滤除（"....."实测穿透概率型幻觉过滤）；重模型+CPU 组合启动即常驻预警；auto 探测失败原因落日志（`translate.probe_failed`，此前静默回退 mymemory 无从排障）
+- 教训：**用户改配置后应用无"当前组合会卡"的反馈闭环**——预警横幅补上；A/B 对照是体验类投诉的最强归因工具（同视频同环境只换配置）
+- 测试：30 单元（+has_content）+ 26 集成全绿、0 裁剪；v2.3.1 CI success 双资产
+
+---
+
 （历史：v2.1.8 曾发布字幕墙+跑马灯过渡形态，v2.2.0 起被连续文本流取代）
