@@ -78,6 +78,29 @@ def _cuda_count(info):
     return info
 
 
+def recommended_model(info=None):
+    """v2.2.12：按硬件推荐识别档位 → (model_code, 理由)。永不抛异常。
+
+    判据用 ctranslate2 可见的 CUDA 设备数（ASR 实际推理运行时），
+    不依赖 torch——本应用 GPU 路径走 CT2 + cudnn 独立 wheel。"""
+    try:
+        info = info if info is not None else detect()
+    except Exception:
+        info = {}
+    try:
+        vram = int(info.get("vram_mb") or 0)
+        gpu_ok = int(info.get("cuda_devices") or 0) > 0
+    except (TypeError, ValueError):
+        vram, gpu_ok = 0, False
+    if gpu_ok and vram >= 5000:
+        return "large-v3-turbo", f"检测到 GPU（显存 {vram}MB），可直接跑顶级档"
+    if gpu_ok and vram >= 2500:
+        return "small", f"检测到 GPU（显存 {vram}MB），small 流畅且省显存"
+    if gpu_ok:
+        return "base", f"检测到 GPU 但显存仅 {vram}MB，建议小档"
+    return "small", "未检测到可用 GPU：small 档在 4 核以上 CPU 可实时"
+
+
 def guidance_text(info: dict) -> str:
     """根据检测结果生成图文教程文本。"""
     lines = []

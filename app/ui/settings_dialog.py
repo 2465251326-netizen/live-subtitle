@@ -173,6 +173,7 @@ _FIELD_SPECS = {
     "overlay_list_mode":    ("overlay", "check"),
     "overlay_list_max":     ("overlay", "spin"),
     "overlay_stream":       ("overlay", "check"),
+    "overlay_hide_fullscreen": ("instant", "check"),
     "close_action":         ("instant", "combo"),
     "auto_start":           ("instant", "check"),
     "max_history":          ("instant", "spin"),
@@ -984,6 +985,14 @@ class SettingsDialog(QDialog):
                   self.instant_caption_check)
         self.instant_caption_check.toggled.connect(
             lambda v: self._stage("instant_caption", bool(v)))
+        # v2.2.12：全屏自动隐藏悬浮条（可发现性：解决"悬浮条挡全屏视频"）
+        self.fs_hide_check = QCheckBox()
+        self._row(page, "全屏时自动隐藏悬浮条",
+                  "检测到全屏窗口（播放器/演示/游戏）时暂时收起悬浮条，退出全屏自动恢复；"
+                  "全屏期间你手动显示的字幕不会被再次收起。默认关闭。",
+                  self.fs_hide_check)
+        self.fs_hide_check.toggled.connect(
+            lambda v: self._stage("overlay_hide_fullscreen", bool(v)))
         self.list_mode_check = QCheckBox()
         self._row(page, "悬浮条显示最近多条字幕",
                   "开启后悬浮条以可滚动列表显示最近几条字幕（适合单屏用户回看历史）。",
@@ -1789,6 +1798,8 @@ class SettingsDialog(QDialog):
         self.list_mode_check.setChecked(bool(values.get("overlay_list_mode", c.get("overlay_list_mode"))))
         self.list_max_spin.setValue(int(values.get("overlay_list_max", c.get("overlay_list_max"))))
         self.overlay_stream_check.setChecked(bool(values.get("overlay_stream", c.get("overlay_stream"))))
+        self.fs_hide_check.setChecked(bool(values.get("overlay_hide_fullscreen",
+                                                      c.get("overlay_hide_fullscreen"))))
         self.instant_caption_check.setChecked(bool(values.get("instant_caption",
                                                               c.get("instant_caption"))))
         set_combo(self.close_combo, "close_action")
@@ -2205,6 +2216,7 @@ class SettingsDialog(QDialog):
             self.list_mode_check.setChecked(bool(c.get("overlay_list_mode")))
             self.list_max_spin.setValue(int(c.get("overlay_list_max")))
             self.overlay_stream_check.setChecked(bool(c.get("overlay_stream")))
+            self.fs_hide_check.setChecked(bool(c.get("overlay_hide_fullscreen")))
             self.instant_caption_check.setChecked(bool(c.get("instant_caption")))
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))

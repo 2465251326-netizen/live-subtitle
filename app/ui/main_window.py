@@ -116,6 +116,22 @@ def _srt_ts(sec):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def _srt_wrap(text, limit=44):
+    """v2.2.12：SRT 长句折两行——优先中间附近的词边界（英文），其次 CJK
+    标点之后，都没有就硬切中点。播放器与剪辑软件通用习惯：单行 ≤44 字。"""
+    if len(text) <= limit:
+        return text
+    mid = len(text) // 2
+    for off in range(0, 13):
+        for i in (mid + off, mid - off):
+            if 0 < i < len(text):
+                if text[i] == " " or text[i - 1] == " ":
+                    return text[:i].rstrip() + "\n" + text[i:].lstrip()
+                if text[i - 1] in "，。！？、；：,.!?;:":
+                    return text[:i] + "\n" + text[i:].lstrip()
+    return text[:mid] + "\n" + text[mid:]
+
+
 def build_export_text(cards, fmt="txt"):
     """字幕卡列表 → 导出文本（v2.2.11：提取为纯函数 + SRT 时间轴支持）。
 
@@ -135,7 +151,7 @@ def build_export_text(cards, fmt="txt"):
             if not text:
                 continue
             cues.append([getattr(card, "t_start", None),
-                         getattr(card, "dur_s", None), text])
+                         getattr(card, "dur_s", None), _srt_wrap(text)])
         for i, c in enumerate(cues):
             if c[0] is None:
                 prev = cues[i - 1]
@@ -705,6 +721,112 @@ class MainWindow(QMainWindow):
             outline_width=int(c.get("overlay_outline_width")),
             outline_color=c.get("overlay_outline_color"),
         )
+        # v2.2.12：全屏自动隐藏开关随配置启停（键以 overlay_ 开头，
+        # 设置保存会统一重放本方法）
+        self._apply_fullscreen_autohide()
+
+    # ---------- v2.2.12：全屏窗口自动隐藏悬浮条（设置开关，默认关） ----------
+
+    def _apply_fullscreen_autohide(self):
+        if sys.platform != "win32":
+            return
+        on = bool(self.config.get("overlay_hide_fullscreen"))
+        t = getattr(self, "_fs_timer", None)
+        if not on:
+            if t is not None:
+                t.stop()
+            self._restore_if_fs_hidden()
+            self._fs_active = False
+            return
+        if t is None:
+            t = QTimer(self)
+            t.setInterval(1200)
+            t.timeout.connect(self._fs_poll)
+            self._fs_timer = t
+        t.start()
+
+    def _restore_if_fs_hidden(self):
+        if getattr(self, "_fs_hidden", False):
+            self._fs_hidden = False
+            if bool(self.config.get("overlay_enabled")):
+                self.overlay.show()
+
+    def _foreground_fullscreen(self):
+        """前台窗口是否"无标题栏且铺满所在显示器"（真全屏）。
+        排除：自身窗口、桌面（Progman/WorkerW）、带标题栏的普通最大化窗口。"""
+        import ctypes
+        from ctypes import wintypes
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtCore import QPoint
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return False
+        mine = {int(self.winId()), int(self.overlay.winId())}
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None:
+            try:
+                mine.add(int(dlg.winId()))
+            except RuntimeError:
+                pass
+        if int(hwnd) in mine:
+            return False
+        cls = ctypes.create_unicode_buffer(64)
+        u.GetClassNameW(hwnd, cls, 64)
+        if cls.value in ("Progman", "WorkerW"):
+            return False
+        r = wintypes.RECT()
+        if not u.GetWindowRect(hwnd, ctypes.byref(r)):
+            return False
+        style = u.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+        if style & 0x00C00000:               # WS_CAPTION
+            return False
+        scr = (QGuiApplication.screenAt(QPoint(r.left + 4, r.top + 4))
+               or QGuiApplication.primaryScreen())
+        g = scr.geometry()
+        return (r.left <= g.left() and r.top <= g.top()
+                and r.right >= g.right() and r.bottom >= g.bottom())
+
+    def _fs_poll(self):
+        """边沿触发：进入全屏一瞬收起、退出全屏一瞬恢复——全屏期间用户
+        手动显隐的意愿不被轮询覆盖（#2 体验关键）。"""
+        fs = self._foreground_fullscreen()
+        prev = getattr(self, "_fs_active", False)
+        self._fs_active = fs
+        if fs and not prev:
+            if self.overlay.isVisible() and bool(self.config.get("overlay_enabled")):
+                self.overlay.hide()
+                self._fs_hidden = True
+                if not getattr(self, "_fs_bubbled", False):
+                    self._fs_bubbled = True
+                    self.tray.showMessage(
+                        "悬浮条已暂时隐藏",
+                        "检测到全屏窗口，退出全屏后自动恢复；可在「设置-显示」关闭此行为",
+                        QSystemTrayIcon.Information, 3000)
+        elif not fs and prev:
+            self._restore_if_fs_hidden()
+
+    # ---------- v2.2.12：就绪未出字时的"正在聆听"呼吸反馈 ----------
+
+    def _set_listen_pulse(self, on):
+        t = getattr(self, "_pulse_timer", None)
+        if on:
+            if t is None:
+                t = QTimer(self)
+                t.setInterval(550)
+                t.timeout.connect(self._tick_listen_pulse)
+                self._pulse_timer = t
+                self._pulse_on = False
+            if not t.isActive():
+                t.start()
+        elif t is not None and t.isActive():
+            t.stop()
+            self.status_dot.setStyleSheet("background-color: #2ecc71; border-radius: 7px;")
+
+    def _tick_listen_pulse(self):
+        self._pulse_on = not getattr(self, "_pulse_on", False)
+        col = "#2ecc71" if self._pulse_on else "#14532d"
+        self.status_dot.setStyleSheet(f"background-color: {col}; border-radius: 7px;")
 
     def on_overlay_closed(self):
         if getattr(self, "_quitting", False):
@@ -978,6 +1100,10 @@ class MainWindow(QMainWindow):
                 and getattr(self, "_no_segment_timer", None) is not None
                 and not getattr(self, "_no_segment_hint_done", False)):
             self._no_segment_timer.start(15000)
+        # v2.2.12：就绪但还没出字——状态灯呼吸 + 明确"正在聆听"状态行（#3）
+        if getattr(self, "running", False) and getattr(self, "session_count", 0) == 0:
+            self._set_engine_status("模型就绪，正在聆听…（播放声音或说话即可出字幕）")
+            self._set_listen_pulse(True)
 
     def _on_level(self, value):
         # v2.0.4：停止后迟到的电平事件不再点亮音量条
@@ -1038,6 +1164,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.setObjectName("PrimaryButton")
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
+        self._set_listen_pulse(False)  # v2.2.12：停止时熄灭呼吸
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
@@ -1119,6 +1246,7 @@ class MainWindow(QMainWindow):
     def _on_asr_text(self, text, detected, duration):
         if not self.running:
             return
+        self._set_listen_pulse(False)  # v2.2.12：首段文字上屏即停呼吸（#3）
         # v2.2.11：记录本段音频时间轴（会话相对秒 + Whisper 语音时长）；
         # 流式路径直接写上占位卡，一次性路径由 _on_translated 建卡时取快照
         self._last_asr_timing = self._asr_timing(duration)

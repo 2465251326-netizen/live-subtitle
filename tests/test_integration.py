@@ -222,9 +222,96 @@ def t_export_srt():
     assert "3\n00:00:04,300 --> 00:00:08,300\nonly source" in srt, srt
     txt, n = build_export_text([c1, c2], "txt")
     assert n == 2 and txt.startswith("[") and "你好世界" in txt
+    # v2.2.12：长句折两行（CJK 在标点处断）
+    longc = CaptionCard("a very long sentence " * 5)
+    longc.set_result("这是一段很长的中文译文，" * 6, "google", "en", False)
+    longc.t_start, longc.dur_s = 10.0, 3.0
+    srt2, _ = build_export_text([longc], "srt")
+    assert "，\n" in srt2, srt2
+    assert all(len(line) <= 44 for line in srt2.splitlines() if " --> " not in line)
     # 空目标：无内容时 srt 返回空且不崩
     assert build_export_text([pending], "srt")[1] == 1
 check("export: SRT 时间轴格式与夹紧逻辑", t_export_srt)
+
+def t_srt_wrap():
+    from app.ui.main_window import _srt_wrap
+    assert _srt_wrap("short text") == "short text"
+    en = "The quick brown fox jumps over the lazy dog while the sun sets slowly behind us"
+    w = _srt_wrap(en)
+    assert "\n" in w and all(len(line) <= 44 for line in w.splitlines())
+    assert "".join(w.split()) == "".join(en.split()), "折行不得丢内容"
+    zh = "第一段字幕内容，" * 6   # 8字×6=48 > 44，标点恰在中点
+    wz = _srt_wrap(zh)
+    assert wz.split("\n")[0] == "第一段字幕内容，" * 3, wz
+check("export: SRT 折行规则（词边界/标点/不丢字）", t_srt_wrap)
+
+def t_recommended_model():
+    from app.gpu import recommended_model
+    assert recommended_model({"cuda_devices": 1, "vram_mb": 6144})[0] == "large-v3-turbo"
+    assert recommended_model({"cuda_devices": 1, "vram_mb": 3000})[0] == "small"
+    assert recommended_model({"cuda_devices": 1, "vram_mb": 1000})[0] == "base"
+    assert recommended_model({"cuda_devices": 0, "vram_mb": 0})[0] == "small"
+    assert recommended_model({})[0] == "small"
+    code, reason = recommended_model(None)   # 真机 detect()，永不抛异常
+    assert code in ("tiny", "base", "small", "medium", "large-v3-turbo") and reason
+check("gpu: 按硬件推荐模型档位（纯函数确定性）", t_recommended_model)
+
+def t_wizard_preselect():
+    from app.ui.first_run import FirstRunWizard, MODEL_INFO
+    from app import gpu
+    w = MainWindow()
+    w.show()
+    assert str(w.config.get("asr_model")) == str(DEFAULTS.get("asr_model"))
+    rec = gpu.recommended_model()[0]
+    assert rec in {c for c, _, _ in MODEL_INFO}
+    dlg = FirstRunWizard(w)
+    rb = dlg.model_group.checkedButton()
+    assert rb is not None and rb.property("model_code") == rec, \
+        f"出厂默认配置应预选硬件推荐档 {rec}，实际 {rb.property('model_code') if rb else None}"
+    # 用户主动改过模型 → 尊重原选择，不覆盖
+    w.config.set("asr_model", "tiny")
+    dlg2 = FirstRunWizard(w)
+    assert dlg2.model_group.checkedButton().property("model_code") == "tiny"
+    w.config.set("asr_model", DEFAULTS.get("asr_model"))
+    dlg.deleteLater(); dlg2.deleteLater()
+    w._quitting = True; w._teardown()
+check("wizard: 按硬件预选模型 + 用户选择优先", t_wizard_preselect)
+
+def t_fs_autohide_wiring():
+    w = MainWindow()
+    w.show()
+    assert DEFAULTS.get("overlay_hide_fullscreen") is False
+    from app.ui.settings_dialog import _FIELD_SPECS
+    assert _FIELD_SPECS.get("overlay_hide_fullscreen") == ("instant", "check")
+    w.config.set("overlay_hide_fullscreen", True)
+    w.apply_overlay_from_config()
+    if sys.platform == "win32":
+        assert getattr(w, "_fs_timer", None) is not None and w._fs_timer.isActive()
+    w.config.set("overlay_hide_fullscreen", False)
+    w.apply_overlay_from_config()
+    t = getattr(w, "_fs_timer", None)
+    assert t is None or not t.isActive()
+    w._quitting = True; w._teardown()
+check("overlay: 全屏自动隐藏开关接线（默认关/启停计时器）", t_fs_autohide_wiring)
+
+def t_listen_pulse():
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.session_count = 0
+    w._on_model_ready()
+    t = getattr(w, "_pulse_timer", None)
+    assert t is not None and t.isActive(), "就绪且未出字应起呼吸"
+    w._on_asr_text("hello", "en", "1.0")
+    assert not t.isActive(), "首段上屏即停"
+    w.running = True
+    w.session_count = 0
+    w._on_model_ready()
+    assert t.isActive()
+    w.stop_pipeline()      # 停止熄灭呼吸且不得抛异常
+    assert not t.isActive()
+    w._quitting = True; w._teardown()
+check("status: 正在聆听呼吸反馈起停时机", t_listen_pulse)
 
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():

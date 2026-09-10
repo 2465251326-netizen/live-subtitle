@@ -5,6 +5,9 @@ on:
   push:
     branches: [main, master]
     tags: ['v*']
+  # v2.2.12：PR 也跑测试闸门（构建/发布步骤均有 tag 条件门控，PR 只跑测试）
+  pull_request:
+    branches: [main, master]
 
 jobs:
   build-and-test:

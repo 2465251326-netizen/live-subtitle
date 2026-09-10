@@ -98,16 +98,27 @@ class FirstRunWizard(QDialog):
         d.setWordWrap(True)
         v.addWidget(d)
         self.model_group = QButtonGroup(self)
-        current = str(self.main.config.get("asr_model") or "small")
-        first = True
+        current = str(self.main.config.get("asr_model") or "")
+        # v2.2.12：按硬件预选——用户没主动改过模型（仍是出厂默认值）时替
+        # 他勾选推荐档并标注；改过的一律尊重原选择，不覆盖
+        from app.config import DEFAULTS
+        from app import gpu
+        try:
+            rec_code, rec_reason = gpu.recommended_model()
+        except Exception:
+            rec_code, rec_reason = "", ""
+        user_chosen = bool(current) and current != str(DEFAULTS.get("asr_model"))
+        target = current if user_chosen else (rec_code or current or "small")
+        if rec_code and not user_chosen:
+            d.setText(d.text() + f"\n已根据你的硬件自动推荐：{rec_code}（{rec_reason}）")
         for code, title, desc in MODEL_INFO:
-            rb = QRadioButton(f"{title}\n    {desc}")
+            label = title + ("　⭐ 按你的硬件推荐" if code == rec_code else "")
+            rb = QRadioButton(f"{label}\n    {desc}")
             rb.setProperty("model_code", code)
             self.model_group.addButton(rb)
-            if code == current or (first and code == "small"):
+            if code == target:
                 rb.setChecked(True)
             v.addWidget(rb)
-            first = False
         v.addStretch()
         return w
 
