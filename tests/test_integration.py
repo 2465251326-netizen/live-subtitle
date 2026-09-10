@@ -185,6 +185,9 @@ def t_card_eviction_pending():
     texts = [t for (t, _c) in w._pending]
     assert "evict0" not in texts and "evict1" not in texts, texts
     w.stop_pipeline()
+    # v2.3.0：复原共享 itest_home 的配置——此前泄漏 max_history=3 污染后续测试
+    # （被"声明式行表回显全覆盖"测试当场抓获，正是该测试价值的自证）
+    w.config.set("max_history", int(DEFAULTS["max_history"]))
 check("card: 裁剪时 _pending 同步收缩（悬挂引用回归）", t_card_eviction_pending)
 
 def t_export():
@@ -342,6 +345,36 @@ def t_settings_fields():
     dlg._reset_defaults()
     assert not any(k.startswith(("overlay_x", "overlay_y", "storage_root")) for k in dlg._staged)
 check("settings: 字段表完整 + 恢复默认不含 internal", t_settings_fields)
+
+def t_std_rows_coverage():
+    # v2.3.0：声明式标准行表——键/属性/回显/暂存语义全覆盖
+    from app.ui.settings_dialog import SettingsDialog, _STD_ROWS, _FIELD_SPECS
+    from app.config import DEFAULTS
+    w = MainWindow()
+    dlg = SettingsDialog(w)
+    dlg.load_from_config()
+    keys = [s["key"] for s in _STD_ROWS]
+    assert len(keys) == len(set(keys)), "行表键重复"
+    for spec in _STD_ROWS:
+        assert spec["key"] in _FIELD_SPECS and spec["key"] in DEFAULTS, spec["key"]
+        widget = getattr(dlg, spec["attr"], None)
+        assert widget is not None, f"缺控件属性 {spec['attr']}"
+        if spec["kind"] == "combo":
+            assert widget.currentData() == dlg.c.get(spec["key"]), spec["key"]
+        elif spec["kind"] == "spin":
+            assert widget.value() == int(dlg.c.get(spec["key"])), spec["key"]
+        else:
+            assert widget.isChecked() == bool(dlg.c.get(spec["key"])), spec["key"]
+    # 暂存语义：改标准控件 → 进 _staged（保存并应用契约不因表驱动而丢）
+    dlg._loading = False
+    before = bool(dlg.c.get("auto_start"))
+    dlg.auto_start_check.setChecked(not before)
+    assert dlg._staged.get("auto_start") == (not before), dlg._staged
+    dlg._staged.clear()
+    dlg.deleteLater()
+    w._quitting = True
+    w._teardown()
+check("settings: 声明式标准行表全覆盖（键/属性/回显/暂存）", t_std_rows_coverage)
 
 def t_settings_qss_parse():
     # QSS 大括号配平（解析错误会让整段样式失效）

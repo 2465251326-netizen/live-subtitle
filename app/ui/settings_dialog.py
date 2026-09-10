@@ -184,6 +184,96 @@ _FIELD_SPECS = {
     "wizard_done":          ("internal", "hidden"),
 }
 
+# ---------------------------------------------------------------------------
+# v2.3.0 声明式标准设置行：新增一个"键→单控件"型设置 = 三处数据登记
+#   ① config.DEFAULTS  ② _FIELD_SPECS  ③ 本表
+# 控件构建、信号接线（默认 _stage / 指定 on_change）、同步点回显
+# （_set_widgets_from 与 load_from_config）全部由本表驱动。
+# 复合控件保持手写：模型下拉+管理按钮、颜色选择、透明度滑条、代理行、
+# 热键输入、误听词典、设备选择。历史上"两处同步清单漏一处"是 bug 高发区
+# （v2.2.12 加一个开关要改 5 处），本表把这类键收敛到 1 处。
+# 字段：key=配置键 attr=控件属性名 page/section=落位 title/desc=行文案
+#       kind=check|spin|combo  opts=range/items/on_change
+_STD_ROW_ITEMS = {
+    "asr_lang": [("自动检测", "auto")] + [
+        (name, code) for code, name in LANGUAGES.items()
+        if code not in ("zh-CN", "zh-TW", "auto")],
+    # v2.3.0 顺带修正：原手写版循环未排除 "auto"，下拉里"自动检测"出现两次
+    "compute": [("CPU 模式（通用）", "cpu"),
+                ("强制 GPU（需先装好 CUDA 运行时）", "cuda"),
+                ("自动（安全档 = 优先 CPU 稳定运行）", "auto")],
+    "engine": [("自动探测（推荐）", "auto"), ("Google 免费接口（在线）", "google"),
+               ("MyMemory（在线备援）", "mymemory"), ("Argos 离线语言包", "argos")],
+    "target": [(LANGUAGES.get(code, code), code) for code in TARGET_LANGS],
+    "close": [("每次询问", "ask"), ("隐藏到托盘（字幕继续）", "tray"),
+              ("直接退出程序", "exit")],
+}
+
+_STD_ROWS = [
+    {"key": "asr_language", "attr": "asr_lang_combo", "page": "asr", "section": "语言与计算",
+     "kind": "combo", "title": "识别语言",
+     "desc": "「自动检测」会在第一句话后锁定说话语言，换语言视频无感切换；已知语言时手动锁定更快更稳。",
+     "opts": {"items": _STD_ROW_ITEMS["asr_lang"]}},
+    {"key": "asr_device", "attr": "compute_combo", "page": "asr", "section": "语言与计算",
+     "kind": "combo", "title": "计算方式",
+     "desc": "「强制 GPU」= 只用 NVIDIA 显卡加速（需先「检测 GPU 环境」并安装 CUDA 版 PyTorch；"
+             "不可用时自动回落 CPU 并在就绪提示中说明原因）。"
+             "「自动」= 稳定优先的 CPU 模式。无独显或打包版保持 CPU 即可实时。",
+     "opts": {"items": _STD_ROW_ITEMS["compute"]}},
+    {"key": "hallucination_filter", "attr": "hallucination_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "幻觉抑制",
+     "desc": "自动丢弃音乐/噪声段的胡言乱语字幕（推荐开启；若发现正常语音被误丢可关闭）。"},
+    {"key": "silero_vad", "attr": "silero_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "Silero VAD（段内净化）",
+     "desc": "在识别前用 Silero 模型过滤段内非语音（背景音乐/噪声更干净），与切句 VAD 双保险。"},
+    {"key": "engine", "attr": "engine_combo", "page": "translate", "section": "翻译方向",
+     "kind": "combo", "title": "翻译引擎",
+     "desc": "全部免费无需密钥。自动模式启动时探测在线接口并选用可达者、断网自动回退离线包；"
+             "Argos 为完全离线方案，逐句直译、多义词易翻错（通顺度低于在线），需先在下方下载语言包。",
+     "opts": {"items": _STD_ROW_ITEMS["engine"], "on_change": "_on_engine_changed"}},
+    {"key": "target_lang", "attr": "target_combo", "page": "translate", "section": "翻译方向",
+     "kind": "combo", "title": "翻译目标语言",
+     "desc": "在线引擎支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种；"
+             "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
+     "opts": {"items": _STD_ROW_ITEMS["target"], "on_change": "_on_engine_changed"}},
+    {"key": "overlay_enabled", "attr": "overlay_check", "page": "display", "section": "字幕显示",
+     "kind": "check", "title": "启用悬浮字幕条（置顶）",
+     "desc": "悬浮在所有窗口之上的独立字幕条，默认屏幕下方居中、可拖到任意位置；"
+             "最小化主窗口后继续显示。不必进本页开关——托盘菜单「显隐悬浮字幕条」"
+             "或全局热键（默认 Ctrl+Alt+O）随时可切。",
+     "opts": {"on_change": "_on_overlay_toggle"}},
+    {"key": "show_source", "attr": "show_source_check", "page": "display", "section": "字幕显示",
+     "kind": "check", "title": "同时显示原文",
+     "desc": "开启后字幕与悬浮字幕同时保留原语言文本。"},
+    {"key": "overlay_stream", "attr": "overlay_stream_check", "page": "display", "section": "紧凑列表模式",
+     "kind": "check", "title": "悬浮条连续输出模式",
+     "desc": "开启后悬浮条不再逐句替换，而是不断累积追加：原文浅色行先落，译文白色行随后，"
+             "满了自动换行、自动滚到最新（优先级高于列表模式，主窗口不受影响）。"},
+    {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "紧凑列表模式",
+     "kind": "check", "title": "字幕流式上屏（原文先出）",
+     "desc": "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
+             "关闭：等识别+翻译都完成后一次性显示整条字幕（旧行为）。"},
+    {"key": "overlay_list_mode", "attr": "list_mode_check", "page": "display", "section": "紧凑列表模式",
+     "kind": "check", "title": "悬浮条显示最近多条字幕",
+     "desc": "开启后悬浮条以可滚动列表显示最近几条字幕（适合单屏用户回看历史）。"},
+    {"key": "overlay_list_max", "attr": "list_max_spin", "page": "display", "section": "紧凑列表模式",
+     "kind": "spin", "title": "列表保留条数",
+     "desc": "列表模式下保留的最近字幕条数（2-10 条）。",
+     "opts": {"range": (2, 10)}},
+    {"key": "close_action", "attr": "close_combo", "page": "general", "section": "窗口行为",
+     "kind": "combo", "title": "点击关闭按钮时",
+     "desc": "「隐藏到托盘」后主窗口消失，识别与翻译在后台继续，悬浮字幕正常显示，"
+             "可从任务栏右下角托盘图标重新打开主窗口。",
+     "opts": {"items": _STD_ROW_ITEMS["close"]}},
+    {"key": "auto_start", "attr": "auto_start_check", "page": "general", "section": "窗口行为",
+     "kind": "check", "title": "启动后自动开始翻译",
+     "desc": "打开软件后自动按上次配置开始识别与翻译，适合固定场景挂机使用。"},
+    {"key": "max_history", "attr": "max_history_spin", "page": "general", "section": "字幕记录",
+     "kind": "spin", "title": "主窗口最多保留字幕条数",
+     "desc": "超出后自动清理最早的记录，避免长时间运行占用内存。",
+     "opts": {"range": (50, 500, 50)}},
+]
+
 
 class _ModelDetailDialog(QDialog):
     """单个识别模型的详情/操作弹窗（v2.0.5）。
@@ -767,41 +857,18 @@ class SettingsDialog(QDialog):
                   model_wrap)
 
         self._section(page, "语言与计算")
-        self.asr_lang_combo = QComboBox()
-        self.asr_lang_combo.addItem("自动检测", "auto")
-        for code, name in LANGUAGES.items():
-            if code in ("zh-CN", "zh-TW"):
-                continue
-            self.asr_lang_combo.addItem(name, code)
-        self._row(page, "识别语言",
-                  "「自动检测」会在第一句话后锁定说话语言，换语言视频无感切换；已知语言时手动锁定更快更稳。",
-                  self.asr_lang_combo)
-        self.compute_combo = QComboBox()
-        self.compute_combo.addItem("CPU 模式（通用）", "cpu")
-        self.compute_combo.addItem("强制 GPU（需先装好 CUDA 运行时）", "cuda")
-        # v2.0.9：文案直白化——"自动"本质就是"优先 GPU、失败回落 CPU"
-        # v2.1.1：三档语义明确化——cpu=强制 CPU / cuda=强制 GPU（失败回落+提示）/
-        # auto=安全档（CPU；等价旧"自动"在缺运行时机器上的行为）
-        self.compute_combo.addItem("自动（安全档 = 优先 CPU 稳定运行）", "auto")
-        self._row(page, "计算方式",
-                  "「强制 GPU」= 只用 NVIDIA 显卡加速（需先「检测 GPU 环境」并安装 CUDA 版 PyTorch；"
-                  "不可用时自动回落 CPU 并在就绪提示中说明原因）。"
-                  "「自动」= 稳定优先的 CPU 模式。无独显或打包版保持 CPU 即可实时。",
-                  self.compute_combo)
+        # v2.3.0：语言/计算/幻觉/Silero 四行改 _STD_ROWS 表驱动；
+        # GPU 检测按钮为复合控件保持手写，插在两组之间
+        self._std_rows(page, "asr", "语言与计算",
+                       keys=("asr_language", "asr_device"))
         self.gpu_check_button = QPushButton("检测 GPU 环境")
         self.gpu_check_button.setFixedWidth(140)
         self.gpu_check_button.clicked.connect(self._show_gpu_guidance)
         self._row(page, "GPU / CUDA 配置",
                   "一键检测显卡、驱动与 CUDA 可用性，附配置教程与注意事项。",
                   self.gpu_check_button)
-        self.hallucination_check = QCheckBox()
-        self._row(page, "幻觉抑制",
-                  "自动丢弃音乐/噪声段的胡言乱语字幕（推荐开启；若发现正常语音被误丢可关闭）。",
-                  self.hallucination_check)
-        self.silero_check = QCheckBox()
-        self._row(page, "Silero VAD（段内净化）",
-                  "在识别前用 Silero 模型过滤段内非语音（背景音乐/噪声更干净），与切句 VAD 双保险。",
-                  self.silero_check)
+        self._std_rows(page, "asr", "语言与计算",
+                       keys=("hallucination_filter", "silero_vad"))
         self._section(page, "识别质量调优")
         self.mishear_edit = QPlainTextEdit()
         self.mishear_edit.setPlaceholderText(
@@ -812,13 +879,10 @@ class SettingsDialog(QDialog):
                   self.mishear_edit)
         self.mishear_edit.textChanged.connect(self._mishear_text_changed)
 
-        for w, key in ((self.model_combo, "asr_model"), (self.asr_lang_combo, "asr_language"),
-                       (self.compute_combo, "asr_device")):
-            w.currentIndexChanged.connect(lambda _i, w=w, k=key: self._stage_combo(k, w))
-        self.hallucination_check.toggled.connect(
-            lambda v: self._stage("hallucination_filter", bool(v)))
-        self.silero_check.toggled.connect(
-            lambda v: self._stage("silero_vad", bool(v)))
+        # v2.3.0：model_combo 仍手写接线（复合控件）；asr_lang/compute/
+        # hallucination/silero 四行的接线已由 _std_wire 完成，此处不得重复挂
+        self.model_combo.currentIndexChanged.connect(
+            lambda _i: self._stage_combo("asr_model", self.model_combo))
         page._inner_layout.addStretch()
         return page
 
@@ -827,22 +891,8 @@ class SettingsDialog(QDialog):
     def _page_translate(self):
         page = self._page()
         self._section(page, "翻译方向")
-        self.engine_combo = QComboBox()
-        self.engine_combo.addItem("自动探测（推荐）", "auto")
-        self.engine_combo.addItem("Google 免费接口（在线）", "google")
-        self.engine_combo.addItem("MyMemory（在线备援）", "mymemory")
-        self.engine_combo.addItem("Argos 离线语言包", "argos")
-        self._row(page, "翻译引擎",
-                  "全部免费无需密钥。自动模式启动时探测在线接口并选用可达者、断网自动回退离线包；"
-                  "Argos 为完全离线方案，逐句直译、多义词易翻错（通顺度低于在线），需先在下方下载语言包。",
-                  self.engine_combo)
-        self.target_combo = QComboBox()
-        for code in TARGET_LANGS:
-            self.target_combo.addItem(LANGUAGES.get(code, code), code)
-        self._row(page, "翻译目标语言",
-                  "在线引擎支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种；"
-                  "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
-                  self.target_combo)
+        # v2.3.0：引擎/目标语言两行改 _STD_ROWS 表驱动（on_change=_on_engine_changed）
+        self._std_rows(page, "translate", "翻译方向")
 
         self._section(page, "网络代理")
         proxy_hint = QLabel(
@@ -919,8 +969,7 @@ class SettingsDialog(QDialog):
         page._inner_layout.addLayout(grid)
 
         self._refresh_argos_section()
-        self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
-        self.target_combo.currentIndexChanged.connect(self._on_engine_changed)
+        # v2.3.0：engine/target 接线已由 _std_wire(on_change) 完成，不得重复挂
         page._inner_layout.addStretch()
         return page
 
@@ -929,16 +978,9 @@ class SettingsDialog(QDialog):
     def _page_display(self):
         page = self._page()
         self._section(page, "字幕显示")
-        self.overlay_check = QCheckBox()
-        self._row(page, "启用悬浮字幕条（置顶）",
-                  "悬浮在所有窗口之上的独立字幕条，默认屏幕下方居中、可拖到任意位置；"
-                  "最小化主窗口后继续显示。不必进本页开关——托盘菜单「显隐悬浮字幕条」"
-                  "或全局热键（默认 Ctrl+Alt+O）随时可切。",
-                  self.overlay_check)
-        self.show_source_check = QCheckBox()
-        self._row(page, "同时显示原文",
-                  "开启后字幕与悬浮字幕同时保留原语言文本。",
-                  self.show_source_check)
+        # v2.3.0：overlay_enabled(on_change=_on_overlay_toggle)/show_source
+        # 改 _STD_ROWS 表驱动
+        self._std_rows(page, "display", "字幕显示")
 
         self._section(page, "悬浮字幕样式")
         grid = QGridLayout()
@@ -986,36 +1028,9 @@ class SettingsDialog(QDialog):
         page._inner_layout.addLayout(grid)
 
         self._section(page, "紧凑列表模式")
-        self.overlay_stream_check = QCheckBox()
-        self._row(page, "悬浮条连续输出模式",
-                  "开启后悬浮条不再逐句替换，而是不断累积追加：原文浅色行先落，译文白色行随后，"
-                  "满了自动换行、自动滚到最新（优先级高于列表模式，主窗口不受影响）。",
-                  self.overlay_stream_check)
-        self.overlay_stream_check.toggled.connect(
-            lambda v: self._stage("overlay_stream", bool(v)))
-        self.instant_caption_check = QCheckBox()
-        self._row(page, "字幕流式上屏（原文先出）",
-                  "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
-                  "关闭：等识别+翻译都完成后一次性显示整条字幕（旧行为）。",
-                  self.instant_caption_check)
-        self.instant_caption_check.toggled.connect(
-            lambda v: self._stage("instant_caption", bool(v)))
-        self.list_mode_check = QCheckBox()
-        self._row(page, "悬浮条显示最近多条字幕",
-                  "开启后悬浮条以可滚动列表显示最近几条字幕（适合单屏用户回看历史）。",
-                  self.list_mode_check)
-        self.list_max_spin = QSpinBox()
-        self.list_max_spin.setRange(2, 10)
-        self._row(page, "列表保留条数",
-                  "列表模式下保留的最近字幕条数（2-10 条）。",
-                  self.list_max_spin)
-        self.list_mode_check.toggled.connect(
-            lambda v: self._stage("overlay_list_mode", bool(v)))
-        self.list_max_spin.valueChanged.connect(
-            lambda v: self._stage("overlay_list_max", int(v)))
+        # v2.3.0：stream/instant/list_mode/list_max 四行改表驱动
+        self._std_rows(page, "display", "紧凑列表模式")
 
-        self.overlay_check.toggled.connect(self._on_overlay_toggle)
-        self.show_source_check.toggled.connect(lambda v: self._stage("show_source", bool(v)))
         self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
         self.outline_width_spin.valueChanged.connect(self._apply_overlay_style)
         self.bg_opacity_slider.valueChanged.connect(
@@ -1038,25 +1053,10 @@ class SettingsDialog(QDialog):
     def _page_general(self):
         page = self._page()
         self._section(page, "窗口行为")
-        self.close_combo = QComboBox()
-        self.close_combo.addItem("每次询问", "ask")
-        self.close_combo.addItem("隐藏到托盘（字幕继续）", "tray")
-        self.close_combo.addItem("直接退出程序", "exit")
-        self._row(page, "点击关闭按钮时",
-                  "「隐藏到托盘」后主窗口消失，识别与翻译在后台继续，悬浮字幕正常显示，可从任务栏右下角托盘图标重新打开主窗口。",
-                  self.close_combo)
-        self.auto_start_check = QCheckBox()
-        self._row(page, "启动后自动开始翻译",
-                  "打开软件后自动按上次配置开始识别与翻译，适合固定场景挂机使用。",
-                  self.auto_start_check)
-
+        # v2.3.0：close_action/auto_start/max_history 改 _STD_ROWS 表驱动
+        self._std_rows(page, "general", "窗口行为")
         self._section(page, "字幕记录")
-        self.max_history_spin = QSpinBox()
-        self.max_history_spin.setRange(50, 500)
-        self.max_history_spin.setSingleStep(50)
-        self._row(page, "主窗口最多保留字幕条数",
-                  "超出后自动清理最早的记录，避免长时间运行占用内存。",
-                  self.max_history_spin)
+        self._std_rows(page, "general", "字幕记录", keys=("max_history",))
         clear_btn = QPushButton("清空翻译缓存")
         self._row(page, "翻译缓存",
                   "相同文本的翻译结果会本地缓存以加速显示；清空后下次重新翻译。不影响字幕记录。",
@@ -1106,12 +1106,11 @@ class SettingsDialog(QDialog):
         storage_row.addStretch()
         page._inner_layout.addLayout(storage_row)
 
-        self.close_combo.currentIndexChanged.connect(
-            lambda _i: self._stage("close_action", self.close_combo.currentData()))
-        self.auto_start_check.toggled.connect(lambda v: self._stage("auto_start", bool(v)))
-        self.max_history_spin.valueChanged.connect(lambda v: self._stage("max_history", int(v)))
+        # v2.3.0：close/auto/max 三行接线已由 _std_wire 完成，不再重复挂；
+        # 热键三控件为复合控件保持手写
         self.hotkey_check.toggled.connect(self._on_hotkey_enabled_changed)
         self.hotkey_edit.keySequenceChanged.connect(self._on_hotkey_sequence_changed)
+        self.hotkey_overlay_edit.keySequenceChanged.connect(self._on_hotkey_overlay_changed)
         self.hotkey_overlay_edit.keySequenceChanged.connect(self._on_hotkey_overlay_changed)
         page._inner_layout.addStretch()
         return page
@@ -1614,6 +1613,72 @@ class SettingsDialog(QDialog):
 
     # ---------- 页面：版本与更新结束 ----------
 
+    # ---------- v2.3.0：标准设置行的表驱动构建/接线/回显 ----------
+
+    def _std_rows(self, page, page_key, section, keys=None):
+        """按 _STD_ROWS 构建落在 (page_key, section) 的标准控件行。
+        keys 可限定子集——与手写复合控件交错的分节使用。"""
+        for spec in _STD_ROWS:
+            if spec["page"] != page_key or spec["section"] != section:
+                continue
+            if keys and spec["key"] not in keys:
+                continue
+            kind = spec["kind"]
+            opts = spec.get("opts", {})
+            if kind == "check":
+                w = QCheckBox()
+            elif kind == "spin":
+                w = QSpinBox()
+                rng = opts["range"]
+                w.setRange(rng[0], rng[1])
+                if len(rng) > 2:
+                    w.setSingleStep(rng[2])
+            else:
+                w = QComboBox()
+                for text, data in opts["items"]:
+                    w.addItem(text, data)
+            setattr(self, spec["attr"], w)
+            self._row(page, spec["title"], spec["desc"], w)
+            self._std_wire(spec, w)
+
+    def _std_wire(self, spec, w):
+        """默认接线=暂存语义（_stage）；on_change 指定处理器则完全交给它
+        （处理器内部自行 _stage，与原手写行为一致）。"""
+        key = spec["key"]
+        kind = spec["kind"]
+        handler = spec.get("opts", {}).get("on_change")
+        if handler:
+            fn = getattr(self, handler)
+            if kind == "combo":
+                w.currentIndexChanged.connect(fn)
+            elif kind == "check":
+                w.toggled.connect(fn)
+            else:
+                w.valueChanged.connect(fn)
+            return
+        if kind == "combo":
+            w.currentIndexChanged.connect(lambda _i, k=key, c=w: self._stage_combo(k, c))
+        elif kind == "spin":
+            w.valueChanged.connect(lambda v, k=key: self._stage(k, int(v)))
+        else:
+            w.toggled.connect(lambda v, k=key: self._stage(k, bool(v)))
+
+    def _std_set(self, spec, values):
+        """单个标准控件回显：values 优先、缺省回退配置值。"""
+        w = getattr(self, spec["attr"], None)
+        if w is None:
+            return
+        val = values.get(spec["key"], self.c.get(spec["key"]))
+        kind = spec["kind"]
+        if kind == "combo":
+            idx = w.findData(val)
+            if idx >= 0:
+                w.setCurrentIndex(idx)
+        elif kind == "spin":
+            w.setValue(int(val))
+        else:
+            w.setChecked(bool(val))
+
     def _gl(self, text):
         lab = QLabel(text)
         lab.setObjectName("SettingTitle")
@@ -1774,7 +1839,8 @@ class SettingsDialog(QDialog):
             self._loading = prev
 
     def _set_widgets_from(self, values):
-        """用 values（缺省回退配置值）刷新全部控件。"""
+        """用 values（缺省回退配置值）刷新全部控件。
+        v2.3.0：标准行统一走 _STD_ROWS 表回显，此处仅存复合控件。"""
         c = self.c
 
         def set_combo(combo, key):
@@ -1784,36 +1850,21 @@ class SettingsDialog(QDialog):
 
         set_combo(self.source_combo, "source_type")
         set_combo(self.model_combo, "asr_model")
-        set_combo(self.asr_lang_combo, "asr_language")
-        set_combo(self.compute_combo, "asr_device")
-        self.hallucination_check.setChecked(bool(values.get("hallucination_filter",
-                                                            c.get("hallucination_filter"))))
-        self.silero_check.setChecked(bool(values.get("silero_vad", c.get("silero_vad"))))
         self.mishear_edit.setPlainText(self._mishear_to_text(values.get("mishear_map",
                                                                         c.get("mishear_map"))))
-        set_combo(self.engine_combo, "engine")
-        set_combo(self.target_combo, "target_lang")
         set_combo(self.proxy_combo, "proxy_mode")
         self.proxy_url_edit.setText(str(values.get("proxy_url", c.get("proxy_url")) or ""))
-        self.overlay_check.setChecked(bool(values.get("overlay_enabled", c.get("overlay_enabled"))))
-        self.show_source_check.setChecked(bool(values.get("show_source", c.get("show_source"))))
         self.overlay_font_spin.setValue(int(values.get("overlay_font_size", c.get("overlay_font_size"))))
         self.bg_opacity_slider.setValue(int(values.get("overlay_bg_opacity", c.get("overlay_bg_opacity"))))
         self.bg_opacity_label.setText(f"{self.bg_opacity_slider.value()}%")
         self.outline_check.setChecked(bool(values.get("overlay_outline", c.get("overlay_outline"))))
         self.outline_width_spin.setValue(int(values.get("overlay_outline_width", c.get("overlay_outline_width"))))
-        self.list_mode_check.setChecked(bool(values.get("overlay_list_mode", c.get("overlay_list_mode"))))
-        self.list_max_spin.setValue(int(values.get("overlay_list_max", c.get("overlay_list_max"))))
-        self.overlay_stream_check.setChecked(bool(values.get("overlay_stream", c.get("overlay_stream"))))
-        self.instant_caption_check.setChecked(bool(values.get("instant_caption",
-                                                              c.get("instant_caption"))))
-        set_combo(self.close_combo, "close_action")
-        self.auto_start_check.setChecked(bool(values.get("auto_start", c.get("auto_start"))))
-        self.max_history_spin.setValue(int(values.get("max_history", c.get("max_history"))))
         self.hotkey_check.setChecked(bool(values.get("hotkey_enabled", c.get("hotkey_enabled"))))
         self.hotkey_edit.setKeySequence(str(values.get("hotkey_sequence", c.get("hotkey_sequence") or "Ctrl+Alt+S")))
         # v2.2.6：显隐悬浮条热键（空 = 禁用）
         self.hotkey_overlay_edit.setKeySequence(str(values.get("hotkey_overlay", c.get("hotkey_overlay") or "")))
+        for spec in _STD_ROWS:
+            self._std_set(spec, values)
 
     def _confirm_discard(self):
         if not self._staged:
@@ -2185,55 +2236,27 @@ class SettingsDialog(QDialog):
             self.nav.setCurrentRow(index)
 
     def load_from_config(self):
-        """从配置刷新全部控件（挂起暂存记录），并把悬浮条预览还原为已保存值。"""
+        """从配置刷新全部控件（挂起暂存记录），并把悬浮条预览还原为已保存值。
+
+        v2.3.0：控件回显整体委托 _set_widgets_from（标准行表驱动 + 复合控件），
+        消灭此前与它逐行重复的第二份同步清单——历史上"改设置漏同步一处"
+        （v2.2.12 加开关要改 5 处）正是这种双清单漂移的产物。"""
         c = self.c
         self._staged.clear()
         self._loading = True
         try:
-            def set_combo(combo, key):
-                idx = combo.findData(c.get(key))
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-
             self.source_combo.blockSignals(True)
-            set_combo(self.source_combo, "source_type")
-            self.source_combo.blockSignals(False)
             self._load_devices()
-            set_combo(self.model_combo, "asr_model")
-            set_combo(self.asr_lang_combo, "asr_language")
-            set_combo(self.compute_combo, "asr_device")
-            self.hallucination_check.setChecked(bool(c.get("hallucination_filter")))
-            self.silero_check.setChecked(bool(c.get("silero_vad")))
-            self.mishear_edit.setPlainText(self._mishear_to_text(c.get("mishear_map")))
-            set_combo(self.engine_combo, "engine")
-            set_combo(self.target_combo, "target_lang")
-            set_combo(self.proxy_combo, "proxy_mode")
-            self.proxy_url_edit.setText(str(c.get("proxy_url") or ""))
+            self.source_combo.blockSignals(False)
             self._update_proxy_manual_enabled()
             self._refresh_argos_section()
-            self.overlay_check.setChecked(bool(c.get("overlay_enabled")))
-            self.show_source_check.setChecked(bool(c.get("show_source")))
-            self.overlay_font_spin.setValue(int(c.get("overlay_font_size")))
-            self.bg_opacity_slider.setValue(int(c.get("overlay_bg_opacity")))
-            self.bg_opacity_label.setText(f"{int(c.get('overlay_bg_opacity'))}%")
-            self.outline_check.setChecked(bool(c.get("overlay_outline")))
-            self.outline_width_spin.setValue(int(c.get("overlay_outline_width")))
-            self.list_mode_check.setChecked(bool(c.get("overlay_list_mode")))
-            self.list_max_spin.setValue(int(c.get("overlay_list_max")))
-            self.overlay_stream_check.setChecked(bool(c.get("overlay_stream")))
-            self.instant_caption_check.setChecked(bool(c.get("instant_caption")))
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))
             self._outline_color = QColor(c.get("overlay_outline_color"))
             self._update_color_button(self.text_color_button, self._text_color)
             self._update_color_button(self.bg_color_button, self._bg_color)
             self._update_color_button(self.outline_color_button, self._outline_color)
-            set_combo(self.close_combo, "close_action")
-            self.auto_start_check.setChecked(bool(c.get("auto_start")))
-            self.max_history_spin.setValue(int(c.get("max_history")))
-            self.hotkey_check.setChecked(bool(c.get("hotkey_enabled")))
-            self.hotkey_edit.setKeySequence(str(c.get("hotkey_sequence") or "Ctrl+Alt+S"))
-            self.hotkey_overlay_edit.setKeySequence(str(c.get("hotkey_overlay") or ""))
+            self._set_widgets_from({})
         finally:
             self._loading = False
         self._mark_dirty()
