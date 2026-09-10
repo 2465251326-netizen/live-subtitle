@@ -255,6 +255,22 @@ class CaptureThread(QThread):
         self.segmenter = Segmenter(low_latency=low_latency)
         self._warned_quiet = False
 
+    def _maybe_warn_quiet(self):
+        """持续无声达阈值时发一次低输入/静音告警（补充5）。电平过弱与"完全
+        无包"两条路径共用（v2.3.12 P13 抽成方法）。部分驱动静音后 loopback
+        电平不归零，故额外查系统静音状态给确定性提示。"""
+        if getattr(self, "_quiet_s", 0.0) < self.QUIET_WARN_S or self._warned_quiet:
+            return
+        self._warned_quiet = True
+        try:
+            from app.win_mute import is_system_muted
+            m = is_system_muted()
+        except Exception:
+            m = None
+        if m is True and self.source_type == "system":
+            self.muted.emit(True)
+        self.low_input.emit(True)
+
     def stop(self):
         self._stop = True
 
@@ -381,8 +397,22 @@ class CaptureThread(QThread):
                     if avail < frames_per_buffer:
                         if self._stop:
                             break
+                        # v2.3.12（P13）：WASAPI loopback 在输出**完全**静音时不再
+                        # 产出数据包——旧代码直接 continue，_quiet_s 永不累计、电平条
+                        # 停在最后值，"长时间没字幕"对用户完全不可见（第七轮实测：
+                        # Chrome 失焦暂停媒体 60+ 秒，无字幕、无告警、电平条冻着，
+                        # 用户分不清应用挂了还是视频没声）。无包等价于无声：计入静默
+                        # 时长；持续超 0.5s 主动把电平归零；到达阈值走既有低输入/静音告警。
+                        self._quiet_s = getattr(self, "_quiet_s", 0.0) + 0.01
+                        self._starved_s = getattr(self, "_starved_s", 0.0) + 0.01
+                        if self._starved_s >= 0.5 and not getattr(self, "_starve_zeroed", False):
+                            self._starve_zeroed = True
+                            self.level_changed.emit(0)
+                        self._maybe_warn_quiet()
                         time.sleep(0.01)
                         continue
+                    self._starved_s = 0.0
+                    self._starve_zeroed = False
                     raw = stream.read(frames_per_buffer, exception_on_overflow=False)
                 except OSError as e:
                     self.error_occurred.emit(f"音频读取中断: {friendly_audio_error(e)}")
@@ -399,18 +429,7 @@ class CaptureThread(QThread):
                 # 长时间近乎无声时提醒用户：低音量/抓错设备会让字幕静默失效
                 if level < self.QUIET_LEVEL:
                     self._quiet_s = getattr(self, "_quiet_s", 0.0) + CHUNK_MS / 1000.0
-                    # 静音盲区（补充5）：部分驱动静音后 loopback 电平不归零。
-                    # 这里在"持续无声"时主动查系统静音状态，给出确定性提示
-                    if self._quiet_s >= self.QUIET_WARN_S and not self._warned_quiet:
-                        self._warned_quiet = True
-                        try:
-                            from app.win_mute import is_system_muted
-                            m = is_system_muted()
-                        except Exception:
-                            m = None
-                        if m is True and self.source_type == "system":
-                            self.muted.emit(True)
-                        self.low_input.emit(True)
+                    self._maybe_warn_quiet()
                 else:
                     self._quiet_s = 0.0
                     if self._warned_quiet:

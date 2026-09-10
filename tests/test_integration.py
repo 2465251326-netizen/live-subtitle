@@ -484,6 +484,22 @@ def t_low_latency_group():
     w._teardown()
 check("asr: 低延迟攒句两轨制（P9）", t_low_latency_group)
 
+def t_quiet_warn_on_starvation():
+    # v2.3.12（P13）：完全无包（Chrome 暂停媒体等）也必须进入静默告警——
+    # 旧行为：无包路径直接 continue，_quiet_s 永不累计，用户面对冻住的
+    # 电平条与死寂字幕无从判断"应用挂了 or 视频没声"
+    from app.audio.capture import CaptureThread
+    ct = CaptureThread("system", 0)
+    got = []
+    ct.low_input.connect(lambda q: got.append(q))
+    ct._quiet_s = ct.QUIET_WARN_S          # 模拟 starve 路径已把静默计满
+    ct._maybe_warn_quiet()
+    assert got == [True], got
+    assert ct._warned_quiet
+    ct._maybe_warn_quiet()                 # 幂等：不重复告警
+    assert got == [True], got
+check("capture: 无包静默同样告警（P13）", t_quiet_warn_on_starvation)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey
