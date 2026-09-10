@@ -1,0 +1,41 @@
+name: 💡 功能建议
+description: 想要一个新能力、改进现有交互、或吐槽某处不好用
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎开脑洞！建议会被逐条评估，常见格式：**场景 → 痛点 → 期望**。
+        提之前可先看一眼 [已有 Issue](../issues?q=is%3Aissue) 与 README 的「常见问题」，避免重复。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 1. 你的使用场景
+      description: 你在用软件做什么？（看什么类型的视频/会议、什么语言、单机还是挂机）
+      placeholder: "我经常看英文技术分享，喜欢全屏观看……"
+    validations:
+      required: true
+  - type: textarea
+    id: pain
+    attributes:
+      label: 2. 现在的痛点
+      description: 现状哪里不满足？没有该功能时你如何解决？
+      placeholder: "全屏时悬浮条会挡住播放器控制条，每次都要退出全屏去拖……"
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: 3. 你期望的样子
+      description: 功能出现在哪里、怎么操作、默认行为是什么
+      placeholder: "希望有一个开关：检测到全屏窗口时悬浮条自动收起，退出后恢复……"
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: 4. 补充（可选）
+      description: 参考别的软件的做法、你想到的一半方案、愿意接受的折中
+    validations:
+      required: false

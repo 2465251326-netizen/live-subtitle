@@ -22,7 +22,7 @@ python tests/test_units.py                   # 29 项单元测试
 python tests/test_integration.py             # 26 项集成测试（v2.3.0 起含声明式行表全覆盖）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
-# 更新 README.md 更新日志（项目惯例：`### vX.Y.Z` 段落）
+# 更新 CHANGELOG.md 更新日志（v2.3.0 起 README 为门面文档不再内嵌日志；发版说明同时进 Release body）
 git add <files>                              # ⚠ 必须包含 app/config.py，否则 CI 版本校验失败
 git commit -m "fix|feat: vX.Y.Z——描述"
 git push origin main
@@ -160,7 +160,9 @@ scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      29 项单元测试
 tests/test_integration.py 20 项集成测试
 ROADMAP.md               开发历程（每版本一节，含根因分析）
-README.md                更新日志（用户可见）
+CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
+README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
+.github/ISSUE_TEMPLATE/  反馈框架：bug_report.yml（🐞BUG）/ suggestion.yml（💡建议）/ config.yml（禁空白 Issue）
 ```
 
 ## 七、新会话开场建议

@@ -1,0 +1,87 @@
+name: 🐞 BUG 反馈
+description: 报告一个问题——识别/翻译/悬浮条/导出/热键/安装等任何环节
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填全，**日志**能大幅加快定位。
+        快速自查（可能不用提 Issue）：
+        - 没字幕 → 看状态栏是否有"15 秒仍无识别结果"指引：确认设备在放声音、系统音量未静音
+        - 译文不通顺 → 离线包为直译风格，可在「设置-翻译」换「自动」引擎
+        - 热键没反应 → 看主窗速览卡，若显示红色"（未生效）"即组合被其他程序占用，换键即可
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本
+      description: 主窗口标题栏或「设置-关于」可见（如 v2.3.0）
+      placeholder: "v2.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: run_mode
+    attributes:
+      label: 使用方式
+      options:
+        - 安装版（Setup）
+        - 绿色版（portable）
+        - 源码运行
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题环节
+      multiple: true
+      options:
+        - 声音采集（没字幕/采错设备）
+        - 语音识别（文字不对/出字慢）
+        - 翻译（译文质量/失败/引擎）
+        - 悬浮字幕条（显示/位置/样式）
+        - 主窗口界面
+        - 热键
+        - 导出（TXT/SRT）
+        - 设置页
+        - 安装/启动/更新
+        - 其他/不确定
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤（最重要！）
+      description: 像写菜谱一样：先做什么、再做什么、然后发生了什么
+      placeholder: |
+        1. 打开设置-翻译，把引擎从「自动」切到「Argos 离线」
+        2. 点「开始翻译」，播放任意英语视频
+        3. 期望：字幕正常出现；实际：一直停在"正在加载模型"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段
+      description: 打开 ~/.live_subtitle/logs/app.log，复制出问题前后约 20 行（会贴成代码块，无需反引号）
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: 截图/录屏（直接拖图片进来）
+      description: 界面异常请务必附上——一图胜千言
+    validations:
+      required: false
+  - type: dropdown
+    id: network
+    attributes:
+      label: 网络环境（翻译类问题必填）
+      options:
+        - 直连（无代理）
+        - 有代理（v2rayN/Clash 等，已开系统代理）
+        - 有代理（仅手动配置）
+        - 完全离线
+        - 不清楚
+    validations:
+      required: false

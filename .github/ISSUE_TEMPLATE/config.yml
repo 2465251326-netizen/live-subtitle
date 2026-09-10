@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 先看 FAQ（常见问题/故障排查）
+    url: https://github.com/2465251326-netizen/live-subtitle#常见问题
+    about: 没字幕、译文质量、热键失灵等高频问题在这里可能已有答案
+  - name: 📜 更新日志 / 版本历史
+    url: https://github.com/2465251326-netizen/live-subtitle/blob/main/CHANGELOG.md
+    about: 你要报的问题可能已在最新版本修复
