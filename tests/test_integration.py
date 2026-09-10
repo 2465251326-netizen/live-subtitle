@@ -451,8 +451,12 @@ def t_low_latency_group():
     assert submitted == [], "小写开头延续片不应送出"
     w._on_asr_text("what happened.", "en", "2.0")
     assert submitted == [], "whisper 自补句号也不触发（v2.3.8 修正核心）"
-    w._flush_tgroup()   # 模拟 2.5s 静默兜底
+    w._flush_tgroup()   # 模拟静默兜底
     assert submitted == ["and authorities to understand what happened."], submitted
+    # v2.3.9 回归锁：兜底窗口必须 > 6s 分片周期（2.5s 实机打穿过）
+    tt = getattr(w, "_tgroup_timer", None)
+    assert tt is not None and tt.interval() > 6000, \
+        f"兜底窗口 {tt.interval() if tt else None}ms 不大于分片周期，攒句会失效"
     w._on_translated("and authorities to understand what happened.",
                      "有关部门正在了解发生了什么。", "google", "en", "")
     assert not getattr(w, "_pending", []), "组内占位卡应全部消化"

@@ -1338,7 +1338,9 @@ class MainWindow(QMainWindow):
         自行补句号（P9 验收实测每片都以 "." 收尾、逐片即送，攒句形同虚设）。
         真正的句子边界是**首字母大小写**：小写开头=上句延续（并入），
         大写/CJK/数字开头=新句开始（先把已攒的整句送出）。
-        辅以 5 片硬上限与 2.5 秒静默兜底。默认模式行为不变。"""
+        辅以 5 片硬上限与 7 秒静默兜底（v2.3.9：兜底窗口必须 > 6s 分片
+        周期——2.5s 实测会在前后片之间先行冲出，攒句永不发生）。
+        默认模式行为不变。"""
         if not bool(self.config.get("low_latency_mode")):
             self.translate_thread.submit(text, detected)
             return
@@ -1360,7 +1362,10 @@ class MainWindow(QMainWindow):
             t.setSingleShot(True)
             t.timeout.connect(self._flush_tgroup)
             self._tgroup_timer = t
-        t.start(2500)
+        # v2.3.9：兜底窗口必须大于 6s 分片周期——实测 2.5s 会在前后片
+        # 之间先行冲出，连续语音下攒句永不发生（重播验证：两段各自成键）。
+        # 7s 下连续语音中计时器永远到不了期，只在真正停顿/尾句时兜底。
+        t.start(7000)
 
     @staticmethod
     def _starts_new_sentence(text):
