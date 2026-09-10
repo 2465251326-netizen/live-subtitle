@@ -191,14 +191,23 @@ class CaptionOverlay(QWidget):
         layout.addWidget(self.stream_view, 1)  # 连续模式占满正文区，悬浮条高度由它撑起
         self.adjustSize()
 
-    # ---------- 连续文本流（v2.2.0） ----------
+    # ---------- 连续文本流（v2.2.0/v2.2.3） ----------
+
+    def _stream_visible_kinds(self):
+        """连续流当前应显示的段落类型（v2.2.3）：
+        "只显示译文"（show_source=False）时原文段不再进入流，只保留译文。"""
+        return ("target",) if not bool(self._show_source) else ("source", "target")
 
     def _stream_refresh(self):
-        """按 _stream_parts 重建整段富文本并滚到最新。"""
+        """按 _stream_parts 重建整段富文本并滚到最新（v2.2.3：按 _show_source
+        过滤段落；增量追加替代全量 setHtml，长文档不再卡顿）。"""
         import html as _html
+        kinds = self._stream_visible_kinds()
         base = getattr(self, "_stream_text_color", None) or QColor("#ffffff")
         body = []
         for kind, text in self._stream_parts:
+            if kind not in kinds:
+                continue
             esc = _html.escape(text)
             if kind == "source":
                 body.append(
@@ -215,17 +224,41 @@ class CaptionOverlay(QWidget):
         sb.setValue(sb.maximum())
 
     def stream_append(self, text, kind="target"):
-        """连续输出追加（v2.2.0）：译文/原文不断累积进同一段富文本，
-        自动换行、自动滚到最新；纯文本超长时从头部淘汰最旧句子。"""
-        import html as _html  # noqa: F401（保持与旧签名一致）
+        """连续输出追加（v2.2.3）：只显示译文模式下原文段直接不入流；
+        增量 appendHtml（不全量重建），超长时整体重建一次完成头部淘汰。"""
         if not text:
             return
+        if kind not in self._stream_visible_kinds():
+            # "只显示译文"模式下原文段不入流（此前会漏显示）
+            return
+        import html as _html
+        esc = _html.escape(text)
+        if kind == "source":
+            seg = (f"<span style='color: rgba(255,255,255,145);"
+                   f" font-size: {max(11, int(self._font_size * 0.66))}px;'>"
+                   f"{esc} </span>")
+        else:
+            seg = (f"<span style='color: {getattr(self, '_stream_text_color', QColor('#ffffff')).name()};"
+                   f" font-size: {self._font_size}px; font-weight: 600;'>"
+                   f"{esc} </span>")
         self._stream_parts.append((kind, text))
         plain = sum(len(t) for _k, t in self._stream_parts)
-        while plain > self._STREAM_MAX_CHARS and len(self._stream_parts) > 2:
-            k, t = self._stream_parts.pop(0)
-            plain -= len(t)
-        self._stream_refresh()
+        if plain > self._STREAM_MAX_CHARS:
+            # 超长：整体重建一次完成头部淘汰（罕见路径）
+            while plain > self._STREAM_KEEP_CHARS and len(self._stream_parts) > 2:
+                _k, t = self._stream_parts.pop(0)
+                plain -= len(t)
+            self._stream_refresh()
+        else:
+            # 常规路径：增量追加（v2.2.3：QTextBrowser 无 appendHtml，改用
+            # 移动光标到文末 insertHtml——避免全量 setHtml 的长文档卡顿）
+            from PySide6.QtGui import QTextCursor
+            cur = self.stream_view.textCursor()
+            cur.movePosition(QTextCursor.End)
+            cur.insertHtml(seg)
+            self.stream_view.setTextCursor(cur)
+            sb = self.stream_view.verticalScrollBar()
+            sb.setValue(sb.maximum())
 
     # ---------- 模式切换 ----------
 
@@ -297,9 +330,11 @@ class CaptionOverlay(QWidget):
     def show_pending(self, source_text):
         """流式两段式（v2.1.4）：识别文本先上屏（译文稍后补齐）。
 
-        连续流模式：原文浅色小字立刻追加进文本流（"听到哪显示到哪"）。"""
+        连续流模式：按 _show_source 决定原文是否入流——
+        "只显示译文"时原文段直接跳过（v2.2.3：此前会漏进流里）。"""
         if self._continuous:
-            self.stream_append(source_text, kind="source")
+            if bool(self._show_source):
+                self.stream_append(source_text, kind="source")
             return
         if self._list_mode:
             # 列表模式：占位行只在最末条是旧占位时复用
@@ -418,15 +453,23 @@ class CaptionOverlay(QWidget):
                 "QListWidget#OverlayList::item { padding: 2px 0; }")
             self._trim_list()
         if self._continuous:
-            # v2.2.0 连续文本流：固定高度滚动区 + 文档默认样式随字号/颜色
+            # v2.2.3 连续文本流：高度=内容高度钳制到 [3行, 用户调整值或 8 行]，
+            # 内容超出自动出滚动条——不再"必须手动拉大悬浮窗往下滑"
             self._stream_text_color = QColor(text_color)
-            self.stream_view.setFixedHeight(int(self._font_size * 7.5))
-            self.stream_view.setStyleSheet(
-                "QTextBrowser#OverlayStream { background: transparent; border: none; }")
             doc = self.stream_view.document()
             doc.setDefaultStyleSheet(
                 f"body {{ color: {text_color}; font-size: {self._font_size}px;"
                 " font-family: 'Microsoft YaHei UI'; }")
+            line_h = self._font_size * 1.45
+            max_h = int(max(self.MIN_H - 90, line_h * 8))
+            # 用户手动调整过悬浮窗时尊重其高度；否则按内容自适应
+            if getattr(self, "_user_resized", False):
+                avail = max(int(self.height() * 0.7), int(line_h * 3))
+                self.stream_view.setFixedHeight(min(avail, max_h))
+            else:
+                self.stream_view.setFixedHeight(min(int(line_h * 5), max_h))
+            self.stream_view.setStyleSheet(
+                "QTextBrowser#OverlayStream { background: transparent; border: none; }")
             self._stream_refresh()
         self.update()
         self.updateGeometry()

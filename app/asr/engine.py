@@ -573,5 +573,6 @@ class AsrThread(QThread):
                 self._last_lang = detected
         self._discard_streak = 0
         # 快语速内容一次转写可能拿到 14 秒长文，按句末标点二次切分后再上屏
+        # v2.2.3：切分时把短句合并到下一句（尾句不再单独成段），字幕节奏更自然
         for piece in split_long_caption(text):
             self.text_ready.emit(piece, detected, f"{duration:.1f}")

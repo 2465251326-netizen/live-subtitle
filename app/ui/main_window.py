@@ -465,6 +465,9 @@ class MainWindow(QMainWindow):
 
     def apply_overlay_from_config(self):
         c = self.config
+        # v2.2.3：show_source 同步到悬浮条（连续流按此过滤原文/译文段——
+        # 此前只有右键开关会改 _show_source，设置页改了不生效）
+        self.overlay._show_source = bool(c.get("show_source"))
         # v2.1.5：连续输出模式优先于列表模式
         self.overlay.set_continuous_mode(bool(c.get("overlay_stream")))
         self.overlay.set_list_mode(bool(c.get("overlay_list_mode")),
@@ -857,8 +860,8 @@ class MainWindow(QMainWindow):
     def _on_asr_text(self, text, detected, duration):
         if not self.running:
             return
-        # v2.1.8：连续输出（跑马灯）模式——原文先淡入显示，译文就绪后由
-        # _on_translated 再次淡入替换（统一走 show_pending/_result 路由）
+        # v2.2.3：连续流模式下原文是否入流由 overlay 自行按 show_source 决定
+        # （"只显示译文"时原文不入流）
         if self.overlay.isVisible():
             self.overlay.show_pending(text)
         # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
