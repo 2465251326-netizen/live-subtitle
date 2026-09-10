@@ -182,6 +182,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **本机运行时**：应用未在运行；用户 DSH 聊天窗=便携版 Chrome 单实例（清理测试窗按标题 WM_CLOSE，严禁杀进程）。隔离实例复用大模型缓存的正规姿势：启动前注入 `HF_HOME` → `~\.live_subtitle\hf`（app 用 setdefault 不覆盖注入值）+ `LIVETRANSLATE_HOME` 隔离配置，免重下 1.6GB
 - **验证产物**：`Documents\LiveSubtitle_20260910_164327/171309/191510.txt`（三轮导出）、`%TEMP%\ls_e2e_s1..s8*.png`（本会话模型不能读图，供人眼复核；用户已明示**保留**）；日志 `~/.live_subtitle/logs/app.log`
 - **方法论**（复测照抄即最快路径）：SAPI en-US 分句 wav（句间 Sleep）→SoundPlayer 播放=等价英语视频；UIA 数卡片个数（Qt 自绘 Name 全空，数结构有效）；`trans_cache.json` 键值差=识别+翻译铁证（**注意 flush 批处理 10 条/5s，读早了会误判"没产出"，以导出件为准**）；LockBits 亮像素统计=悬浮条内容级证据；导出按钮真实点击+Enter=免费拿全卡文本（默认名落 Documents）；点击前先激活主窗（浏览器覆盖时点击会落错窗，本会话踩两次）；git worktree 挂旧提交=探测器/回归的双向验证利器
+- **用户配置变更记录（2026-09-10 深夜，PM 裁决+用户认可）**：模拟用户 CBS 新闻二轮体验归因"medium+CPU+argos+直连"=体验差根因，PM 拍板五项改动：asr_model→large-v3-turbo、asr_device→cuda、engine→auto、proxy_mode→system、overlay_enabled→True；备份 ~/.live_subtitle/config.json.bak-20260910_235823。第三轮验收：google 引擎恢复、90s/15 条新缓存(热缓存命中多)、字幕滞后收敛到稳定管线深度（不再滚雪球）
 - **发版后观察点**：`pipeline.no_segments_15s` 日志键是否出现；速览卡热键红字在真实占用下是否显示；下载大模型时 ETA 文案观感；**教训：用户眼睛>自动化探测——探测报 0 ≠ 无问题，关键 UI 需真实平台实拍复核（版式 bug 即用户截图抓包，v2.2.9 假修复至此暴露）**
 - **遗留排期候选**：仅剩 SRT 说话人标签（用户已明确**不做**，除非未来改主意）；声明式框架已于 v2.3.0 完成
 - **设置页开发规约（v2.3.0 起）**：新增"键→单控件"型设置=三处登记（DEFAULTS + _FIELD_SPECS + _STD_ROWS），不要再手写控件/同步行；复合控件才允许手写
