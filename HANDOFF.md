@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：v2.2.10 发布时（前一会话交接点）
+> 最后更新：2026-09-10 E2E 实测会话（v2.2.10，第三节任务已闭环；修正 argos 包目录名笔误；新增无头验证经验）
 
 ---
 
@@ -38,7 +38,23 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 
 ## 三、⚠️ 待办任务（新会话的首要工作）
 
-### 任务：真实用户视角的模型端到端测试
+### ✅ 任务（已完成于 2026-09-10）：真实用户视角的模型端到端测试
+
+**结论：全链路实测通过。** GPU（RTX 2060）+ `large-v3-turbo`（CUDA，缓存加载 1.78s）+ `engine=argos` 离线翻译 + 悬浮条连续流，用 SAPI（Zira en-US）生成英语语音 → SoundPlayer 播放到默认输出 → 环回采集：3 段语音被切分为 9 个字幕段，逐句识别并离线译出（译文见 `Documents\LiveSubtitle_20260910_164327.txt` 导出件与 `trans_cache.json`），主窗字幕卡 1→9 张（UIA 实测），悬浮条区域亮像素 +3973（新译文持续追加），单句端到端延迟约 3~5s。真实 SendInput 验证：`Ctrl+Alt+J` 启停、`Ctrl+Alt+O` 显隐悬浮条均生效。
+
+**关键纠错（本会话踩坑）**：
+- ~~"argos/packages 为空需换引擎"~~——**目录名笔误**：应用实际用 `~/.live_subtitle/argos/packs`（见 `offline_pack.py PACKS_DIR`），`en_zh` 包**早已安装**（81.7MB，`list_installed()` 返回 `[('en','zh')]`，真实翻译可用）。engine 无需改动。
+- Argos en→zh 直译痕迹重（"pipeline"→输油管、"LiveSubtitle"→升降字幕），属包质量，不是链路故障。
+
+**测试环境经验（本会话新增，勿重复踩）**：
+1. 本会话模型**不能读图**（read_image 只回元数据）——验证 UI 内容用：UIA 导出控件树（结构/数量/几何）、`trans_cache.json` 键值差、**像素统计**（LockBits 数亮像素/差分）。
+2. Qt 自绘控件（字幕卡/悬浮条/按钮）**UIA Name 全空**，只能拿 ControlType+Rect——数"Custom 卡片的个数变化"是有效证据。
+3. `System.Windows.Automation` 在 pwsh7 加载不了；用 **PS5.1**（GAC）跑 UIA dump 脚本可行（见 `tests/deep_windows.py`）。PS5.1 不认 LF 行尾的 `@'...'@` here-string，含 here-string 的 .ps1 必须 CRLF。
+4. 独立进程 `RegisterHotKey(0x4003, vk)` 探测热键占用（err=1409 即被占）；Ctrl+Alt+O 首轮失效为启动瞬间被第三方占用（重试即恢复），**注册失败时速览卡文案仍显示组合键**（小瑕疵，待改）。
+5. SendInput 键入 `INPUT` 必须含 MOUSEINPUT 联合（cbSize=40）；鼠标点击 `type=0`+`MOUSEEVENTF_LEFTDOWN/UP(0x2/0x4)`，先 `SetCursorPos`。
+6. 步骤方法备查：SAPI wav 句间自然停顿 0.8~1s → 正好触发自适应静音分段（每句 1 卡，偶尔句中切分属正常）；`SoundPlayer.PlaySync` 阻塞精确，可直接用作时序。
+
+<details><summary>原始任务描述（存档）</summary>
 
 用户明确要求：**像正常用户一样使用——GPU 计算 + 体量最大的模型 + 开启连续翻译 + 打开任意英语视频**，测试前先确认当前设置。
 
@@ -58,17 +74,19 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 5. 启动管线（`large-v3-turbo` + `asr_device=cuda`），观察：主窗口字幕卡是否成对出现（原文+译文）、悬浮条连续流是否累积、延迟是否可接受
 6. 日志：`~/.live_subtitle/logs/app.log`（排障必看）
 
+</details>
+
 ## 四、用户当前配置（实测于交接时）
 
 | 键 | 值 | 说明 |
 |---|---|---|
 | `asr_model` | `large-v3-turbo` | 用户要求的最大模型（HF repo: `mobiuslabsgmbh/faster-whisper-large-v3-turbo`） |
 | `asr_device` | `cuda` | GPU 档；CUDA 运行时已装（`_torch_cuda_ready()` 返回 True） |
-| `engine` | `argos` | ⚠ **无离线包，需改** |
+| `engine` | `argos` | ✅ en→zh 包已装（`argos/packs/en_zh`，81.7MB；交接原文"packages 无包"系目录名笔误） |
 | `target_lang` | `zh-CN` | |
 | `source_type` | `system` | 系统声音（环回） |
 | `device_name` | Realtek High Definition Audio [Loopback] | 按名匹配设备（防热插拔漂移） |
-| `overlay_enabled` | `False` | ⚠ 若测连续翻译需打开 |
+| `overlay_enabled` | `True` | 2026-09-10 E2E 测试中经真实 `Ctrl+Alt+O` 打开并持久化 |
 | `overlay_stream` | `True` | 连续文本流模式已开 |
 | `show_source` | `False` | **只显示译文**（用户明确要求） |
 | `instant_caption` | `True` | 流式两段式（原文先上屏、译文补齐） |
@@ -140,7 +158,7 @@ README.md                更新日志（用户可见）
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.2.10 已发布。首要任务：按第三节做真实用户视角的模型端到端测试——GPU + large-v3-turbo + 连续翻译 + 英语视频，测试前先确认设置（注意 engine=argos 无离线包这个阻塞）。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.2.10 已发布，第三节的端到端测试任务已完成（全链路通过，argos 离线包其实一直在，前文『packages 为空』是笔误）。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
