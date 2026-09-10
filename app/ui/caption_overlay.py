@@ -169,11 +169,13 @@ class CaptionOverlay(QWidget):
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
         layout.addWidget(self.list_widget)
-        self.adjustSize()
 
-        # 连续文本流（v2.2.0）：译文不断追加进同一段富文本，自动换行、
+        # 连续文本流（v2.2.0/v2.2.2）：译文不断追加进同一段富文本，自动换行、
         # 自动滚到最新、超长自动裁掉最旧内容——真正的"连续不间断输出"
-        self.stream_view = QTextBrowser()
+        # v2.2.2 修复：此控件必须加入主布局（此前遗漏 addWidget，QTextBrowser
+        # 无父控件时成为独立顶层窗口——用户看到"莫名其妙的 Windows 窗口"，
+        # 而连续输出内容全写进了这个没显示在悬浮条里的孤儿控件）
+        self.stream_view = QTextBrowser(self)
         self.stream_view.setObjectName("OverlayStream")
         self.stream_view.setReadOnly(True)
         self.stream_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -186,6 +188,8 @@ class CaptionOverlay(QWidget):
         self._stream_parts = []        # [(kind, text)] 追加序列（kind: source/target）
         self._STREAM_MAX_CHARS = 1200  # 纯文本超过则从头部淘汰旧句
         self._STREAM_KEEP_CHARS = 700  # 淘汰后保留的尾部字符量
+        layout.addWidget(self.stream_view, 1)  # 连续模式占满正文区，悬浮条高度由它撑起
+        self.adjustSize()
 
     # ---------- 连续文本流（v2.2.0） ----------
 
