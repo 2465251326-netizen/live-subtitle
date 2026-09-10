@@ -664,7 +664,14 @@ class SettingsDialog(QDialog):
         h.addStretch()
         if widget is not None:
             widget.setMinimumWidth(230)
-            h.addWidget(widget)
+            # v2.2.4：紧凑控件统一 26px 高并垂直居中——勾选框/数值框/下拉/
+            # 按钮与标题行对齐（此前参差，勾选框尤其违和）
+            from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox, QPushButton
+            if isinstance(widget, (QComboBox, QSpinBox, QCheckBox, QPushButton)):
+                widget.setFixedHeight(26)
+                h.addWidget(widget, 0, Qt.AlignVCenter)
+            else:
+                h.addWidget(widget)
         box.addLayout(h)
         if desc:
             d = QLabel(desc)

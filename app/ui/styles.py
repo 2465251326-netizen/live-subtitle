@@ -263,6 +263,58 @@ QFrame#SettingSep {
 QCheckBox, QSlider, QSpinBox {
     background: transparent;
 }
+QCheckBox {
+    color: #e8eaf0;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid #3d4656;
+    background-color: #1b1f29;
+}
+QCheckBox::indicator:hover {
+    border-color: #4f8cff;
+}
+QCheckBox::indicator:checked {
+    border: 1px solid #4f8cff;
+    background-color: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+        stop:0 #ffffff, stop:0.42 #4f8cff, stop:0.62 #4f8cff, stop:1 #4f8cff);
+}
+QCheckBox::indicator:disabled {
+    border-color: #2a3040;
+    background-color: #171b23;
+}
+QSpinBox, QDoubleSpinBox {
+    background-color: #1b1f29;
+    border: 1px solid #2a3040;
+    border-radius: 8px;
+    padding: 4px 10px;
+    color: #e8eaf0;
+    min-height: 20px;
+    selection-background-color: #2b3a5e;
+}
+QSpinBox:hover, QDoubleSpinBox:hover {
+    border-color: #4f8cff;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: #4f8cff;
+}
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+    width: 18px;
+    border: none;
+    background: transparent;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+    background: #232936;
+}
+QSpinBox:disabled, QDoubleSpinBox:disabled {
+    color: #5a6172;
+    background-color: #171b23;
+}
 QSlider::groove:horizontal {
     height: 4px;
     background: #2a3040;
