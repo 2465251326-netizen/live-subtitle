@@ -3,3 +3,16 @@ dist/
 __pycache__/
 *.pyc
 smoke_result.txt
+
+# 本地构建环境（大体积下载物料，如 CUDA 运行时 wheel ~680MB）
+build_env/
+
+# 测试与探测产物
+tests/itest_home/
+tests/test_report.txt
+scripts/probe_*.txt
+scripts/probe_home*/
+tests/test_*.png
+
+# 会话归档（可能含令牌等敏感信息，绝不入库）
+.session-archive.md

@@ -555,9 +555,9 @@ class MainWindow(QMainWindow):
             lay.activate()
 
     def _quick_gpu_hint(self):
-        """轻量 GPU 判定：仅读配置，不探测驱动（避免拖慢启动）。"""
-        return self.config.get("compute_type") == "cuda" or \
-            self.config.get("compute_type") == "auto"
+        """算力档判定（v2.2.10 修正）：读 asr_device——此前误读不存在的
+        compute_type 键（恒为 None），导致 GPU 用户速览卡永远显示 CPU。"""
+        return str(self.config.get("asr_device") or "auto") == "cuda"
 
     def _open_docs(self):
         from PySide6.QtGui import QDesktopServices
