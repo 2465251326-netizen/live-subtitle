@@ -125,7 +125,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 ### 5.3 环境与测试陷阱
 - `QT_QPA_PLATFORM=offscreen` 跑无头测试，但 **offscreen 无字体** → 测量文字宽高必须用 `QT_QPA_PLATFORM=windows`（真实 Windows 平台）
 - 文字裁剪检测：`scripts/probe_text_clip.py`（真实 Windows 平台逐控件比对所需尺寸 vs 实际尺寸；v2.2.13 起 word-wrap/多行标签按"当前宽度换行后需要高度"比对——旧版只比单行高度，曾漏掉速览卡热键压行 bug 被用户实拍抓包；用 `git worktree` 挂旧代码可做探测器双向验证）
-- 集成测试：`tests/test_integration.py`（20 项，覆盖配置/缓存/重采样/悬浮条三模式/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理）
+- 集成测试：`tests/test_integration.py`（30 项，覆盖配置/缓存/重采样/悬浮条三模式/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
 - 阻塞式 `stream.read` 在静音环回上会挂死 → 探测脚本必须轮询 `get_read_available`
 - 探测脚本用完即删，产物走 `.gitignore`
 

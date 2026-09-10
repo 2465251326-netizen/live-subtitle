@@ -399,6 +399,16 @@ def test_has_content_filter():
     assert not has_content("")
 
 
+def test_split_piece_content_filter():
+    """v2.3.4：二次分句产生的纯标点尾巴必须再过 has_content——
+    CBS 新闻体验轮抓到 ".." 进入翻译缓存，漏洞点在分段过滤之后才切句。"""
+    from app.asr.engine import has_content, split_long_caption
+    pieces = split_long_caption("The report continues tonight. ..")
+    kept = [p for p in pieces if has_content(p)]
+    assert kept, pieces                            # 正常句保留
+    assert ".." not in kept and all(has_content(p) for p in kept), (pieces, kept)
+
+
 def test_segmenter_low_latency():
     """v2.3.3（P1）：低延迟模式分段上限 14s→6s、判停收紧。"""
     voiced = np.full(480, 0.2, dtype=np.float32)   # 30ms@16k，音量需高于噪声底自适应上限×3

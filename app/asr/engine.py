@@ -581,5 +581,8 @@ class AsrThread(QThread):
         self._discard_streak = 0
         # 快语速内容一次转写可能拿到 14 秒长文，按句末标点二次切分后再上屏
         # v2.2.3：切分时把短句合并到下一句（尾句不再单独成段），字幕节奏更自然
+        # v2.3.4：切分发生在内容过滤之后——切出的纯标点尾巴（实测 ".."）会漏网，
+        # 逐片再过一次 has_content（CBS 新闻体验轮抓到的过滤器漏洞）
         for piece in split_long_caption(text):
-            self.text_ready.emit(piece, detected, f"{duration:.1f}")
+            if has_content(piece):
+                self.text_ready.emit(piece, detected, f"{duration:.1f}")
