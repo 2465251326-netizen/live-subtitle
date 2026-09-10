@@ -421,6 +421,39 @@ def test_apply_fix_map():
     assert apply_fix_map("甲", {"甲": ""}) == "甲"   # 空替换值不生效
 
 
+def test_ends_sentence():
+    """v2.3.6（P9）：攒句断句判据。"""
+    from app.ui.main_window import ends_sentence
+    assert ends_sentence("what happened.")
+    assert ends_sentence("太棒了！")
+    assert ends_sentence('他说"走吧。"')
+    assert not ends_sentence("and authorities to understand")
+    assert not ends_sentence("")
+    assert not ends_sentence("   ")
+
+
+def test_log_day_rotation():
+    """v2.3.7（P10）：跨天首写归档旧日志，当前文件只留当天。"""
+    import io
+    import logging
+    import os
+    import tempfile
+    import time
+    from app.log import _Utf8RotatingHandler
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "app.log")
+    io.open(p, "w", encoding="utf-8").write("yesterday line\n")
+    old = time.time() - 86400
+    os.utime(p, (old, old))
+    h = _Utf8RotatingHandler(p)
+    rec = logging.LogRecord("ls", logging.INFO, "", 0, "today line", (), None)
+    h.emit(rec)
+    yday = time.strftime("%Y-%m-%d", time.localtime(old))
+    assert os.path.exists(f"{p}.{yday}"), os.listdir(d)
+    assert "yesterday" not in io.open(p, encoding="utf-8").read()
+    assert "today line" in io.open(p, encoding="utf-8").read()
+
+
 def test_segmenter_low_latency():
     """v2.3.3（P1）：低延迟模式分段上限 14s→6s、判停收紧。"""
     voiced = np.full(480, 0.2, dtype=np.float32)   # 30ms@16k，音量需高于噪声底自适应上限×3

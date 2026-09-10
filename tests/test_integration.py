@@ -427,6 +427,47 @@ def t_translate_fix_staging():
     w._teardown()
 check("settings: 译文修正词典解析与暂存（P7）", t_translate_fix_staging)
 
+def t_low_latency_group():
+    # v2.3.6（P9）：低延迟"上屏碎、翻译整句"——碎片不独立送翻，
+    # 整句译文落末卡，前碎片卡只留原文（走真实配对链路，不伪造键）
+    from app.ui.main_window import CaptionCard
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.config.set("low_latency_mode", True)
+    w._last_asr_timing = (0.0, 2.0)
+    submitted = []
+
+    class FakeT:
+        def submit(self, text, detected):
+            submitted.append(text)
+    real_tt = w.translate_thread
+    w.translate_thread = FakeT()
+    w._on_asr_text("and authorities to understand", "en", "2.0")
+    assert submitted == [], "句子未收尾不应送出"
+    w._on_asr_text("what happened.", "en", "2.0")
+    assert submitted == ["and authorities to understand what happened."], submitted
+    w._on_translated("and authorities to understand what happened.",
+                     "有关部门正在了解发生了什么。", "google", "en", "")
+    assert not getattr(w, "_pending", []), "组内占位卡应全部消化"
+    cs = [w.scroll_layout.itemAt(i).widget() for i in range(w.scroll_layout.count())]
+    cs = [c for c in cs if isinstance(c, CaptionCard)]
+    assert len(cs) == 2, len(cs)
+    assert cs[0].target_label.text() == "", cs[0].target_label.text()
+    assert cs[1].target_label.text() == "有关部门正在了解发生了什么。"
+    w._on_asr_text("one", "en", "1.0")
+    w._on_asr_text("two", "en", "1.0")
+    w._on_asr_text("three", "en", "1.0")
+    assert submitted[-1] == "one two three", submitted   # 满 3 片强制送
+    w.config.set("low_latency_mode", False)
+    w._on_asr_text("direct", "en", "1.0")
+    assert submitted[-1] == "direct"                     # 默认模式即时送
+    w.translate_thread = real_tt
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("asr: 低延迟攒句两轨制（P9）", t_low_latency_group)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey
@@ -535,11 +576,21 @@ with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_report.
     f.write(report + "\n\n=== FAIL DETAIL ===\n" + "\n\n".join(t for _, t in FAILS))
 print(report)
 print(f"TOTAL: {len(RESULTS)} PASS: {len(RESULTS) - len(FAILS)} FAIL: {len(FAILS)}")
+# v2.3.7 诊断：列出退出时仍存活的线程——定位 ExitProcess 竞态 AV 的肇事者
+try:
+    import threading as _th
+    print("ALIVE-THREADS:", [f"{t.name}(daemon={t.daemon})" for t in _th.enumerate()])
+except Exception:
+    pass
 sys.stdout.flush()
 sys.stderr.flush()
-# v2.3.6：结果已落盘+打印后，用 os._exit 强制退出——集成测试会构造大量
-# QThread/QWidget（预热线程、悬浮条、对话框），Qt 析构竞态可让进程在
-# interpreter 收尾处挂死（build.yml 对 smoke test 早有同款备注"退出码
-# 不可信"，如今真落到本套件头上：33 项跑完、报告已写、进程 5 分钟不退出）。
-# 判定以 test_report.txt/stdout 为准，退出码经 os._exit 保证可靠。
+# v2.3.7：结果已落盘+打印后强制退出。os._exit 在 Windows 上仍走 CRT（触发各
+# DLL 的 PROCESS_DETACH，Qt 原生线程可在其中 AV——实测 34/34 全过但退出码
+# 0xC0000005 的元凶）。kernel32.TerminateProcess 跳过 CRT，零收尾窗口。
+try:
+    import ctypes
+    _k = ctypes.windll.kernel32
+    _k.TerminateProcess(_k.GetCurrentProcess(), 1 if FAILS else 0)
+except Exception:
+    pass
 os._exit(1 if FAILS else 0)

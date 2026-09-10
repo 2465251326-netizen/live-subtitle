@@ -231,8 +231,8 @@ _STD_ROWS = [
      "desc": "在识别前用 Silero 模型过滤段内非语音（背景音乐/噪声更干净），与切句 VAD 双保险。"},
     {"key": "low_latency_mode", "attr": "low_latency_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "低延迟模式（直播/新闻推荐）",
-     "desc": "字幕更快上屏：分段上限 14 秒→6 秒、静音判停收紧。代价是句子可能切短、"
-             "译文上下文变少；录播课/电影建议保持关闭。保存后重新翻译即生效。",
+     "desc": "字幕更快上屏：分段上限 14 秒→6 秒、静音判停收紧。v2.3.7 起翻译自动攒整句"
+             "（上屏快、译文仍是完整句子，不再半截话各翻各的）；显示上句子可能切短。",
      "opts": {}},
     {"key": "prewarm_model", "attr": "prewarm_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "启动时预热模型",

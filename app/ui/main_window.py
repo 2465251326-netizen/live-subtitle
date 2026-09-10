@@ -100,12 +100,26 @@ class CaptionCard(QFrame):
         self.target_label.setText("[翻译失败]")
         self.meta_label.setText(f"{datetime.now().strftime('%H:%M:%S')} · {msg}")
 
+    def set_merged_away(self):
+        """v2.3.6（P9）：低延迟组内前段碎片卡——译文并入末卡整句呈现，
+        本卡只留原文（原文本就隐藏时整卡收起，不留孤零时间戳）。"""
+        self.target_label.setText("")
+        self.target_label.setVisible(False)
+        if not self.source_label.isVisible():
+            self.setVisible(False)
+
     def set_active(self, active):
         """聚焦态切换（v2.2.5）：active=True 换强调边框样式，False 渐隐。"""
         self.setObjectName("CaptionCardActive" if active else "CaptionCardOld"
                            if not self.is_pending() else "CaptionCard")
         self.style().unpolish(self)
         self.style().polish(self)
+
+
+def ends_sentence(text):
+    """v2.3.6（P9）：是否以句末标点收尾（翻译攒句的断句判据）。"""
+    t = (text or "").rstrip()
+    return bool(t) and t[-1] in ".!?…。！？\"」』)】'"
 
 
 def _srt_ts(sec):
@@ -1202,6 +1216,13 @@ class MainWindow(QMainWindow):
             # v2.2.0：停止时清空流式占位配对——队列里未及翻译的卡片不再等
             # 迟到译文（下次会话不复用旧卡片）
             self._pending.clear()
+        # v2.3.6（P9）：低延迟攒句缓冲随会话清零（未送出的碎片不等迟到译文）
+        self._tgroup = []
+        if getattr(self, "_tgroup_by_src", None):
+            self._tgroup_by_src.clear()
+        tg = getattr(self, "_tgroup_timer", None)
+        if tg is not None:
+            tg.stop()
         self._stop_model_download_feedback()
         timer = getattr(self, "_no_segment_timer", None)
         if timer is not None:
@@ -1284,7 +1305,7 @@ class MainWindow(QMainWindow):
         if not bool(self.config.get("instant_caption")):
             self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
             if self.translate_thread:
-                self.translate_thread.submit(text, detected)
+                self._submit_for_translation(text, detected)
             return
         show_source = bool(self.config.get("show_source"))
         card = CaptionCard(text)
@@ -1312,7 +1333,47 @@ class MainWindow(QMainWindow):
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         if self.translate_thread:
+            self._submit_for_translation(text, detected)
+
+    # ---------- v2.3.6（P9）：低延迟"上屏碎、翻译整句"两轨制 ----------
+
+    def _submit_for_translation(self, text, detected):
+        """低延迟开启时碎片立即上屏（占位卡已建），但翻译攒成整句再送——
+        实测碎片以小写连接词开头（"and authorities…"），独立翻译丢主语。
+        攒句判据：句末标点 / 满 3 片 / 2.5 秒静默。默认模式行为不变。"""
+        if not bool(self.config.get("low_latency_mode")):
             self.translate_thread.submit(text, detected)
+            return
+        grp = getattr(self, "_tgroup", None)
+        if grp is None:
+            grp = self._tgroup = []
+            self._tgroup_lang = ""
+        grp.append(text)
+        self._tgroup_lang = detected or self._tgroup_lang
+        if len(grp) >= 3 or ends_sentence(text):
+            self._flush_tgroup()
+            return
+        t = getattr(self, "_tgroup_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._flush_tgroup)
+            self._tgroup_timer = t
+        t.start(2500)
+
+    def _flush_tgroup(self):
+        grp = getattr(self, "_tgroup", None) or []
+        self._tgroup = []
+        t = getattr(self, "_tgroup_timer", None)
+        if t is not None:
+            t.stop()
+        if not grp or not self.translate_thread:
+            return
+        joined = " ".join(grp)
+        combined = "".join(grp) if any("\u4e00" <= c <= "\u9fff" for c in joined) else joined
+        self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
+        self._tgroup_by_src[combined] = grp
+        self.translate_thread.submit(combined, getattr(self, "_tgroup_lang", ""))
 
     def _take_pending(self, source_text):
         """按原文取出最早的待补齐卡片（流式两段式配对，v2.1.4）。"""
@@ -1334,6 +1395,16 @@ class MainWindow(QMainWindow):
         if not self.running:
             return
         self._last_engine_name = engine
+        # v2.3.6（P9）：低延迟攒句结果——合并译文落组内末卡，
+        # 前面的碎片卡只留原文（整句译文不再被拆成半截话各翻各的）
+        gmap = getattr(self, "_tgroup_by_src", None)
+        if gmap and source_text in gmap:
+            pieces = gmap.pop(source_text)
+            for c in pieces[:-1]:
+                pc = self._take_pending(c)
+                if pc is not None:
+                    pc.set_merged_away()
+            source_text = pieces[-1]
         # v2.0.2：连续失败升级提示——备援链全灭（如 Google 全通道被封 +
         # MyMemory 配额尽 + 无离线包）时，不能只让每条字幕各自报错
         if error:

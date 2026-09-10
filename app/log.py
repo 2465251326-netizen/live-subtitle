@@ -3,7 +3,8 @@
 此前 app.log 只兜 Qt 致命消息与未捕获异常（且历史记录乱码），用户报障
 时无任何生命周期信息可查。这里补齐：
 
-- UTF-8 明确编码 + RotatingFileHandler（1MB × 2 个备份，防无限增长）
+- UTF-8 明确编码 + 轮转（1MB × 2 个备份防无限增长；v2.3.7 起跨天自动归档为
+  app.log.YYYY-MM-DD，当前文件只留当天——多日混排曾困扰排障）
 - 全局 logger.get()，各模块 logging.getLogger("ls.<module>") 共用同一 handler
 - 生命周期日志：启动/退出、管线启停、模型加载耗时、引擎选择/切换、代理出口
 - 不记录字幕正文（隐私），只记事件与耗时
@@ -12,6 +13,7 @@ QMessageBox 级 GUI 线程安全：log() 只是普通写文件，可在任意线
 """
 import logging
 import threading
+import time
 
 _handler_lock = threading.Lock()
 _handler = None
@@ -26,6 +28,25 @@ class _Utf8RotatingHandler(logging.Handler):
         self._path = path
         self._max = max_bytes
         self._backups = backups
+        # v2.3.7（P10）：None 迫使首次 emit 检查文件 mtime 的日期——
+        # 跨天重启时旧 app.log 先归档为 app.log.YYYY-MM-DD 再写今天
+        self._day = None
+
+    def _roll_day(self):
+        import os
+        today = time.strftime("%Y-%m-%d")
+        if self._day == today:
+            return
+        self._day = today
+        try:
+            if os.path.exists(self._path):
+                d = time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(self._path)))
+                if d != today:
+                    dst = f"{self._path}.{d}"
+                    if not os.path.exists(dst):
+                        os.replace(self._path, dst)
+        except Exception:
+            pass
 
     def _rotate(self):
         try:
@@ -42,6 +63,7 @@ class _Utf8RotatingHandler(logging.Handler):
     def emit(self, record):
         with _handler_lock:
             try:
+                self._roll_day()
                 self._rotate()
                 with open(self._path, "a", encoding="utf-8", errors="replace") as f:
                     f.write(self.format(record) + "\n")
