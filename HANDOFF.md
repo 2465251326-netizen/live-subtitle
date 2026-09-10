@@ -171,3 +171,12 @@ README.md                更新日志（用户可见）
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
 - `build_env/`（约 680MB CUDA wheel）已 gitignore，勿删除（本机 GPU 依赖）
 - 遇到不确定是否要改用户配置时，先问
+
+## 八、会话快照（2026-09-10 v2.2.11 发布后 · 上下文压缩存档）
+
+- **已完成**：两轮 E2E（合成语音 + Chrome/YouTube 真实视频）验收通过 → PM 问题清单 → 用户批准"全做" → v2.2.11 实现六修复+SRT 导出 → 发版闭环。关键提交：`2326886`（代码）+ `a7a5519`（文档），tag `v2.2.11`，CI success，Release 双资产已核对
+- **本机运行时**：应用**未在运行**（测试后已干净退出，显存空载）；用户 GUI（DSH）与测试窗共用便携版 Chrome 单实例——清理测试窗必须按标题 WM_CLOSE，严禁杀进程
+- **验证产物**（用户可自查）：`Documents\LiveSubtitle_20260910_164327.txt` / `..._171309.txt`（两轮导出）、`%TEMP%\ls_e2e_s1..s8*.png`（截图，本会话模型不能读图，供人眼复核）；日志 `~/.live_subtitle/logs/app.log` 16:37-17:15 段
+- **方法论**（复测照抄即最快路径）：SAPI en-US wav→SoundPlayer 播放=等价英语视频；UIA 数卡片个数（Qt 自绘 Name 全空，数结构有效）；`trans_cache.json` 键值差=识别+翻译铁证；LockBits 亮像素统计=悬浮条内容级证据；导出按钮真实点击+Enter=免费拿到全卡文本（默认名落 Documents）
+- **遗留排期候选**：SRT 多行/说话人标签；首启按硬件预选模型；（v2.2.0 起遗留：CI pull_request 触发、声明式设置框架全量迁移）
+- **发版后观察点**（下版验证）：`pipeline.no_segments_15s` 是否如期出现在日志；速览卡热键红字在真实占用下是否显示
