@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.2.13"
+APP_VERSION = "2.2.14"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -56,7 +56,6 @@ DEFAULTS = {
     "overlay_stream": False,           # v2.1.5：连续输出模式（译文累积追加，自动换行滚动）
     "overlay_w": 0,                    # v2.1.8：手动调整的悬浮条宽度（0 = 自动）
     "overlay_h": 0,                    # v2.1.8：手动调整的悬浮条高度（0 = 自动）
-    "overlay_hide_fullscreen": False,  # v2.2.12：检测到全屏窗口时自动隐藏悬浮条（退出恢复）
 }
 
 LANGUAGES = {

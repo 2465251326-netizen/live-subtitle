@@ -277,23 +277,6 @@ def t_wizard_preselect():
     w._quitting = True; w._teardown()
 check("wizard: 按硬件预选模型 + 用户选择优先", t_wizard_preselect)
 
-def t_fs_autohide_wiring():
-    w = MainWindow()
-    w.show()
-    assert DEFAULTS.get("overlay_hide_fullscreen") is False
-    from app.ui.settings_dialog import _FIELD_SPECS
-    assert _FIELD_SPECS.get("overlay_hide_fullscreen") == ("instant", "check")
-    w.config.set("overlay_hide_fullscreen", True)
-    w.apply_overlay_from_config()
-    if sys.platform == "win32":
-        assert getattr(w, "_fs_timer", None) is not None and w._fs_timer.isActive()
-    w.config.set("overlay_hide_fullscreen", False)
-    w.apply_overlay_from_config()
-    t = getattr(w, "_fs_timer", None)
-    assert t is None or not t.isActive()
-    w._quitting = True; w._teardown()
-check("overlay: 全屏自动隐藏开关接线（默认关/启停计时器）", t_fs_autohide_wiring)
-
 def t_listen_pulse():
     w = MainWindow()
     w.show()

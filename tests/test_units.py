@@ -374,6 +374,19 @@ def test_version_files_sync():
     assert r.returncode == 0, f"三处版本号应一致: {r.stdout} {r.stderr}"
 
 
+def test_eta_text():
+    """v2.2.14：下载 ETA 口语化格式化（模型横幅与语言包进度共用）。"""
+    from app.fmt import eta_text
+    assert eta_text(45) == "45 秒"
+    assert eta_text(59.6) == "60 秒"
+    assert eta_text(120) == "2 分钟"
+    assert eta_text(3600 + 1800) == "1 小时 30 分"
+    assert eta_text(None) == ""          # 无效输入静默省略
+    assert eta_text(-1) == ""
+    assert eta_text(float("nan")) == ""
+    assert eta_text(86400 * 8) == ""     # 离谱值不显示
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

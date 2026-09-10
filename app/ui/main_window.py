@@ -737,90 +737,6 @@ class MainWindow(QMainWindow):
             outline_width=int(c.get("overlay_outline_width")),
             outline_color=c.get("overlay_outline_color"),
         )
-        # v2.2.12：全屏自动隐藏开关随配置启停（键以 overlay_ 开头，
-        # 设置保存会统一重放本方法）
-        self._apply_fullscreen_autohide()
-
-    # ---------- v2.2.12：全屏窗口自动隐藏悬浮条（设置开关，默认关） ----------
-
-    def _apply_fullscreen_autohide(self):
-        if sys.platform != "win32":
-            return
-        on = bool(self.config.get("overlay_hide_fullscreen"))
-        t = getattr(self, "_fs_timer", None)
-        if not on:
-            if t is not None:
-                t.stop()
-            self._restore_if_fs_hidden()
-            self._fs_active = False
-            return
-        if t is None:
-            t = QTimer(self)
-            t.setInterval(1200)
-            t.timeout.connect(self._fs_poll)
-            self._fs_timer = t
-        t.start()
-
-    def _restore_if_fs_hidden(self):
-        if getattr(self, "_fs_hidden", False):
-            self._fs_hidden = False
-            if bool(self.config.get("overlay_enabled")):
-                self.overlay.show()
-
-    def _foreground_fullscreen(self):
-        """前台窗口是否"无标题栏且铺满所在显示器"（真全屏）。
-        排除：自身窗口、桌面（Progman/WorkerW）、带标题栏的普通最大化窗口。"""
-        import ctypes
-        from ctypes import wintypes
-        from PySide6.QtGui import QGuiApplication
-        from PySide6.QtCore import QPoint
-        u = ctypes.windll.user32
-        hwnd = u.GetForegroundWindow()
-        if not hwnd:
-            return False
-        mine = {int(self.winId()), int(self.overlay.winId())}
-        dlg = getattr(self, "_settings_dlg", None)
-        if dlg is not None:
-            try:
-                mine.add(int(dlg.winId()))
-            except RuntimeError:
-                pass
-        if int(hwnd) in mine:
-            return False
-        cls = ctypes.create_unicode_buffer(64)
-        u.GetClassNameW(hwnd, cls, 64)
-        if cls.value in ("Progman", "WorkerW"):
-            return False
-        r = wintypes.RECT()
-        if not u.GetWindowRect(hwnd, ctypes.byref(r)):
-            return False
-        style = u.GetWindowLongW(hwnd, -16)  # GWL_STYLE
-        if style & 0x00C00000:               # WS_CAPTION
-            return False
-        scr = (QGuiApplication.screenAt(QPoint(r.left + 4, r.top + 4))
-               or QGuiApplication.primaryScreen())
-        g = scr.geometry()
-        return (r.left <= g.left() and r.top <= g.top()
-                and r.right >= g.right() and r.bottom >= g.bottom())
-
-    def _fs_poll(self):
-        """边沿触发：进入全屏一瞬收起、退出全屏一瞬恢复——全屏期间用户
-        手动显隐的意愿不被轮询覆盖（#2 体验关键）。"""
-        fs = self._foreground_fullscreen()
-        prev = getattr(self, "_fs_active", False)
-        self._fs_active = fs
-        if fs and not prev:
-            if self.overlay.isVisible() and bool(self.config.get("overlay_enabled")):
-                self.overlay.hide()
-                self._fs_hidden = True
-                if not getattr(self, "_fs_bubbled", False):
-                    self._fs_bubbled = True
-                    self.tray.showMessage(
-                        "悬浮条已暂时隐藏",
-                        "检测到全屏窗口，退出全屏后自动恢复；可在「设置-显示」关闭此行为",
-                        QSystemTrayIcon.Information, 3000)
-        elif not fs and prev:
-            self._restore_if_fs_hidden()
 
     # ---------- v2.2.12：就绪未出字时的"正在聆听"呼吸反馈 ----------
 
@@ -1053,9 +969,20 @@ class MainWindow(QMainWindow):
         if mb >= total * 0.9 or pct >= 99:
             slow = False
         hint = "· 速度慢？到「设置-通用」配置代理可显著提速" if slow else ""
+        # v2.2.14：ETA——采样 3 秒后按平均速度估算剩余（起步阶段不显示，
+        # 避免"剩余 3 小时"式惊吓；接近完成时也不显示，误差大）
+        from app.fmt import eta_text
+        eta = ""
+        el = now - self._dl_start[0]
+        if el > 3 and pct < 95:
+            sp = (mb - self._dl_start[1]) / el
+            if sp > 0.02:
+                t = eta_text((total - mb) / sp)
+                if t:
+                    eta = f"，{sp:.1f}MB/s，剩余约{t}"
         # v2.2.5：模型下载进度走彩色横幅（下载是当前最重要的事，别挤状态行）
         self._set_engine_status("正在下载识别模型…")
-        self._set_alert(f"⬇ 正在下载识别模型（{mb:.0f}/{total}MB，{pct}%，"
+        self._set_alert(f"⬇ 正在下载识别模型（{mb:.0f}/{total}MB，{pct}%{eta}，"
                         f"仅首次；完成前请保持网络畅通{hint}）…")
 
     def _set_engine_status(self, text):
