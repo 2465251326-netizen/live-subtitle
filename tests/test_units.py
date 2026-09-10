@@ -387,6 +387,18 @@ def test_eta_text():
     assert eta_text(86400 * 8) == ""     # 离谱值不显示
 
 
+def test_has_content_filter():
+    """v2.3.1：纯标点垃圾段滤除（新闻转场"....."实测穿透幻觉过滤器）。"""
+    from app.asr.engine import has_content
+    assert has_content("Hello world")
+    assert has_content("飓风来了")
+    assert has_content("25")                       # 数字是内容
+    assert not has_content(".....")
+    assert not has_content("？？？！，。")
+    assert not has_content("   ")
+    assert not has_content("")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

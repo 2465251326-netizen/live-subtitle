@@ -349,10 +349,15 @@ def probe_engine(name, timeout=2.5):
 
 
 def select_engine(timeout=2.5):
+    # v2.3.1：探测失败原因落日志——此前静默回退，用户看到"引擎: mymemory"
+    # 却不知道 google 为什么没选上（限流？断网？），排障两眼一抹黑
+    from app import log as app_log
     for name in PROBE_ORDER:
-        ok, _detail = probe_engine(name, timeout)
+        ok, detail = probe_engine(name, timeout)
         if ok:
             return name
+        app_log.log("translate.probe_failed", engine=name, detail=detail)
+    app_log.log("translate.probe_all_failed", fallback="mymemory")
     return "mymemory"
 
 

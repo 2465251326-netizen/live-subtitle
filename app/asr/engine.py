@@ -163,6 +163,13 @@ def _torch_cuda_ready() -> bool:
         return False
 
 
+def has_content(text: str) -> bool:
+    """v2.3.1：文本是否含有效内容（字母/数字/CJK 任一）。纯标点段
+    （"....." "？？？"——新闻转场/呼吸段常见残留）不是字幕，无条件滤除。
+    幻觉过滤器按概率判，这类段 logprob 高会漏网，故独立于开关。"""
+    return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
 class AsrThread(QThread):
     text_ready = Signal(str, str, str)  # text, whisper_lang, duration
     status_changed = Signal(str)
@@ -526,7 +533,7 @@ class AsrThread(QThread):
             if self._stop:
                 return
             t = (seg.text or "").strip()
-            if not t:
+            if not t or not has_content(t):
                 continue
             segs.append((t, float(getattr(seg, "avg_logprob", 0.0) or 0.0),
                          float(getattr(seg, "no_speech_prob", 0.0) or 0.0)))

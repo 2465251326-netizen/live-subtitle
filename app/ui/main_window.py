@@ -870,6 +870,9 @@ class MainWindow(QMainWindow):
 
         self._asr_ready = False  # v2.0.4：模型加载期停止时缩短等待（见 stop_pipeline）
         self._session_t0 = time.time()  # v2.2.11：SRT 时间轴零点（本次会话起算）
+        # v2.3.1：重模型+CPU 组合预警（常驻横幅，见 _set_engine_status）
+        self._heavy_cpu_warn = (str(c.get("asr_model")) in ("medium", "large-v3-turbo")
+                                and str(c.get("asr_device")) in ("cpu", "auto"))
         self.asr_thread = AsrThread(
             c.get("asr_model"),
             c.get("asr_device"),
@@ -993,6 +996,11 @@ class MainWindow(QMainWindow):
         if getattr(self, "_backlog_warn", False):
             self._set_alert("⚠ 积压丢段中：CPU 转写跟不上，"
                             "建议到「设置-语音识别」换 small/tiny 模型")
+        elif getattr(self, "_heavy_cpu_warn", False):
+            # v2.3.1：重模型+CPU 预警（用户实测"非常不好用"根因之一：medium/CPU
+            # 每 10s 音频要 10~15s 转写，字幕越拖越晚永远追不上，且毫无提示）
+            self._set_alert("⚠ 当前为重模型且运行在 CPU：字幕会明显滞后。建议到"
+                            "「设置-语音识别」换 small，或安装 GPU 加速后选「强制 GPU」")
         elif not ("识别积压" in text or "积压" in text or "跳过" in text):
             self._set_alert(None)
         if not getattr(self, "_low_input_warn", False) and not getattr(self, "_muted_warn", False):
@@ -1107,7 +1115,8 @@ class MainWindow(QMainWindow):
         self.toggle_button.setObjectName("PrimaryButton")
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
-        self._set_listen_pulse(False)  # v2.2.12：停止时熄灭呼吸
+        self._set_listen_pulse(False)  # v2.2.12：停止熄灭呼吸
+        self._heavy_cpu_warn = False   # v2.3.1：撤重模型CPU预警
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
