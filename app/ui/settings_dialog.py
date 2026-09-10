@@ -154,6 +154,7 @@ _FIELD_SPECS = {
     "hallucination_filter": ("pipeline", "check"),
     "silero_vad":           ("pipeline", "check"),
     "low_latency_mode":     ("pipeline", "check"),
+    "prewarm_model":        ("instant", "check"),
     "mishear_map":          ("pipeline", "mishear"),
     "engine":               ("pipeline", "combo"),
     "target_lang":          ("pipeline", "combo"),
@@ -231,6 +232,11 @@ _STD_ROWS = [
      "kind": "check", "title": "低延迟模式（直播/新闻推荐）",
      "desc": "字幕更快上屏：分段上限 14 秒→6 秒、静音判停收紧。代价是句子可能切短、"
              "译文上下文变少；录播课/电影建议保持关闭。保存后重新翻译即生效。",
+     "opts": {}},
+    {"key": "prewarm_model", "attr": "prewarm_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "启动时预热模型",
+     "desc": "打开软件即在后台把已下载的模型加载好，点「开始翻译」几乎秒就绪——"
+             "否则每次冷启动要等 GPU 初始化近 1 分钟。仅预热已下载模型，不会自动下载；关闭可省显存占用。",
      "opts": {}},
     {"key": "engine", "attr": "engine_combo", "page": "translate", "section": "翻译方向",
      "kind": "combo", "title": "翻译引擎",
@@ -889,7 +895,8 @@ class SettingsDialog(QDialog):
                   "一键检测显卡、驱动与 CUDA 可用性，附配置教程与注意事项。",
                   self.gpu_check_button)
         self._std_rows(page, "asr", "语言与计算",
-                       keys=("hallucination_filter", "silero_vad", "low_latency_mode"))
+                       keys=("hallucination_filter", "silero_vad", "low_latency_mode",
+                             "prewarm_model"))
         self._section(page, "识别质量调优")
         self.mishear_edit = QPlainTextEdit()
         self.mishear_edit.setPlaceholderText(

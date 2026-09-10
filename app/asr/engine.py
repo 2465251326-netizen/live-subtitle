@@ -1,6 +1,7 @@
 import queue
 import re
 import threading
+import time
 
 import numpy as np
 from PySide6.QtCore import QThread, Signal
@@ -436,7 +437,14 @@ class AsrThread(QThread):
         # UI 永远停在"正在加载"，下载进度定时器永不停）
         try:
             if self.model_cached(self.model_size):
-                self.status_changed.emit(f"正在加载 {self.model_size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...")
+                # v2.3.5（P5-B）：GPU 冷启动实测近 1 分钟（CUDA 上下文初始化），
+                # 文案必须如实——此前只说"几秒到几十秒"，用户以为卡死
+                if str(self.device) == "cuda":
+                    self.status_changed.emit(
+                        f"正在加载 {self.model_size} 模型（GPU 首次初始化约 1 分钟，"
+                        "仅第一次；之后秒开，可在「设置-语音识别」开启启动预热）...")
+                else:
+                    self.status_changed.emit(f"正在加载 {self.model_size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...")
             else:
                 self.status_changed.emit(f"正在准备 {self.model_size} 模型（首次运行会自动下载，见状态栏进度）...")
             if not self._load_model():
@@ -586,3 +594,36 @@ class AsrThread(QThread):
         for piece in split_long_caption(text):
             if has_content(piece):
                 self.text_ready.emit(piece, detected, f"{duration:.1f}")
+
+
+class PrewarmWorker(QThread):
+    """v2.3.5（P5-A）：启动即后台预热模型——CBS 新闻实测轮抓到
+    pipeline.start→model_loaded 竟需 49 秒（CUDA 上下文冷初始化），期间界面
+    只有"正在加载"无解释。预热把这段等待挪到软件启动后的空闲期，用户点
+    「开始翻译」时命中 _MODEL_CACHE 池秒就绪。
+
+    安全边界：只加载**已完整下载**的模型（绝不因预热触发联网下载）；
+    复用 AsrThread._load_model 同一条设备解析/回落/入池路径，保证 cache_key
+    与真实管线一致；预热失败静默——真实管线会给出带原因的报错。"""
+
+    def __init__(self, model_size: str, device: str, parent=None):
+        super().__init__(parent)
+        self.model_size = model_size
+        self.device = device
+
+    def run(self):
+        from app import log as app_log
+        try:
+            if not AsrThread.model_cached(self.model_size):
+                app_log.log("asr.prewarm_skipped", model=self.model_size,
+                            reason="not_cached")
+                return
+            app_log.log("asr.prewarm_start", model=self.model_size, device=self.device)
+            t0 = time.time()
+            loader = AsrThread(self.model_size, self.device, "auto", None)
+            ok = loader._load_model()
+            dev = getattr(loader, "_device_used", "?")
+            app_log.log("asr.prewarm_done", model=self.model_size, ok=bool(ok),
+                        device=dev, seconds=round(time.time() - t0, 1))
+        except Exception as e:
+            app_log.exception("asr.prewarm_failed", e)

@@ -362,6 +362,20 @@ def t_overlay_snap():
     ov.deleteLater()
 check("overlay: 贴屏幕顶/底一键归位（P2）", t_overlay_snap)
 
+def t_prewarm_skip_uncached():
+    # v2.3.5（P5）：预热的安全边界——模型未完整下载时必须直接返回，
+    # 绝不在后台悄悄触发 1.6GB 下载
+    from app.asr.engine import PrewarmWorker, AsrThread
+    import app.asr.engine as eng
+    assert not AsrThread.model_cached("large-v3-turbo"), "itest_home 不应有该模型"
+    wkr = PrewarmWorker("large-v3-turbo", "cuda")
+    wkr.start()
+    wkr.wait(3000)
+    assert not wkr.isRunning(), "未缓存模型的预热必须立即结束"
+    for key in list(eng._MODEL_CACHE):
+        assert key[0] != "large-v3-turbo", f"预热不该把未下载模型塞进池: {key}"
+check("asr: 预热不触发下载（未缓存即跳过）", t_prewarm_skip_uncached)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey

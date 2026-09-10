@@ -414,6 +414,20 @@ class MainWindow(QMainWindow):
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
+        self._maybe_prewarm()
+
+    def _maybe_prewarm(self):
+        """v2.3.5（P5-A）：启动即后台预热模型——把 GPU 近 1 分钟的冷初始化
+        从"点开始翻译之后"挪到启动空闲期；只热已下载模型，绝不触发下载。"""
+        if not bool(self.config.get("prewarm_model")):
+            return
+        try:
+            from app.asr.engine import PrewarmWorker
+            self._prewarm = PrewarmWorker(str(self.config.get("asr_model")),
+                                          str(self.config.get("asr_device")), self)
+            self._prewarm.start()
+        except Exception:
+            pass
 
     def _clamp_overlay_pos(self, x, y):
         """把悬浮字幕位置限制在其所在屏幕的可用区域内。
