@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-11 v2.3.3 发布后（体验报告 P1 低延迟模式 + P2 贴边归位）
+> 最后更新：2026-09-11 v2.3.4 发布后（CBS 体验轮抓到标点碎片漏网即修；P5 GPU 预热 49s 待裁决）
 
 ---
 
@@ -11,14 +11,14 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.3.3**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.3.4**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
 ```powershell
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
-python tests/test_units.py                   # 31 项单元测试
+python tests/test_units.py                   # 32 项单元测试
 python tests/test_integration.py             # 30 项集成测试（v2.3.3 起含 P1/P2 体验缺口回归）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
@@ -157,7 +157,7 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      31 项单元测试
+tests/test_units.py      32 项单元测试
 tests/test_integration.py 30 项集成测试
 ROADMAP.md               开发历程（每版本一节，含根因分析）
 docs/UX-REPORT.md        模拟用户体验报告归档（R6 CBS 新闻配置归因+处置+验收数据）
@@ -177,7 +177,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 八、会话快照（2026-09-10 v2.3.0 发布后 · 上下文压缩存档）
 
-- **已完成**：两轮 E2E → v2.2.11（六修复+SRT 导出）→ v2.2.12（硬件预选/全屏隐藏开关/聆听呼吸/SRT 折行/CI pull_request）→ v2.2.13（用户实拍速览卡版式修复+探测器盲区补强）→ v2.2.14（用户裁决：删全屏隐藏+下载 ETA）→ v2.3.0（声明式设置框架迁移，行为不变）。提交链：`2326886` → `bc2d3a9` → `8c0a553` → `d5e77ee` → `343f583` → `3821b7c` → `aeb2fb1`(v2.3.2 G1/G2) → `fe12795`(v2.3.3 P1/P2)，各版 tag CI success、双资产核对在位
+- **已完成**：两轮 E2E → v2.2.11（六修复+SRT 导出）→ v2.2.12（硬件预选/全屏隐藏开关/聆听呼吸/SRT 折行/CI pull_request）→ v2.2.13（用户实拍速览卡版式修复+探测器盲区补强）→ v2.2.14（用户裁决：删全屏隐藏+下载 ETA）→ v2.3.0（声明式设置框架迁移，行为不变）。提交链：`2326886` → `bc2d3a9` → `8c0a553` → `d5e77ee` → `343f583` → `3821b7c` → `aeb2fb1`(v2.3.2 G1/G2) → `fe12795`(v2.3.3 P1/P2) → `9e07c3d`(v2.3.4 碎片漏网修)，各版 tag CI success、双资产核对在位
 - **用户裁决记录**：全屏自动隐藏功能经用户 F11 实测判定"不需要"→ v2.2.14 已全删（教训：**新功能上线前要有"用户要不要"这道闸**）；说话人标签、CI 弃用告警清理=明确不做
 - **红线教训（v2.2.12 体验轮，用户受惊，郑重记录）**：为测"全屏自动隐藏"在用户桌面开了 7 秒覆盖全屏的蓝色无边框窗，直接遮住用户聊天界面——**占屏测试必须先预警/约定，或改纯逻辑测试**。且该法本身无效：PowerShell 进程 Show/Activate 拿不到 `GetForegroundWindow`，自动化根本测不成"活体全屏"，别再试
 - **本机运行时**：应用未在运行；用户 DSH 聊天窗=便携版 Chrome 单实例（清理测试窗按标题 WM_CLOSE，严禁杀进程）。隔离实例复用大模型缓存的正规姿势：启动前注入 `HF_HOME` → `~\.live_subtitle\hf`（app 用 setdefault 不覆盖注入值）+ `LIVETRANSLATE_HOME` 隔离配置，免重下 1.6GB
