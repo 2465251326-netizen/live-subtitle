@@ -964,20 +964,24 @@ class MainWindow(QMainWindow):
         self.capture_thread.muted.connect(self._on_muted)
         self.capture_thread.start()
 
-        # v2.2.11：无产出指引改「模型就绪后 15 秒」起算（见 _on_model_ready
-        # 重挂计时），此处仅为"模型秒就绪"快路径兜底；文案与日志同步更新
+        # v2.2.11：无产出指引改「模型就绪后」起算（见 _on_model_ready 重挂计时），
+        # 此处仅为"模型秒就绪"快路径兜底。
+        # v2.3.11：15s→25s——六轮实测里浏览器打开视频到出声普遍要 5~15 秒，
+        # 15 秒窗口下这条指引在"开网页马上按 J"的主场景每次必报，成了固定噪音；
+        # 25 秒仍能兜住真静音场景（P8 电平守卫逻辑不变）
         self._no_segment_hint_done = False
         self._no_segment_timer = QTimer(self)
         self._no_segment_timer.setSingleShot(True)
         self._no_segment_timer.timeout.connect(self._no_segment_hint)
-        self._no_segment_timer.start(15000)
+        self._no_segment_timer.start(25000)
 
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
         self.update_overlay_status()
 
     def _no_segment_hint(self):
-        """模型就绪 15 秒仍零字幕时的一次性指引（v2.2.11：起算点改就绪后）。"""
+        """模型就绪 25 秒仍零字幕时的一次性指引（v2.2.11 起算点=就绪后；
+        v2.3.11 窗口 15s→25s，浏览器起播要 5~15 秒）。"""
         if not self.running or getattr(self, "_no_segment_hint_done", True):
             return
         # v2.3.6（P8，CBS 实测轮抓到）：视频还在缓冲/音量在跳时别急着怪用户——
@@ -985,14 +989,15 @@ class MainWindow(QMainWindow):
         if time.monotonic() - getattr(self, "_last_level_sound", 0.0) < 15.0:
             t = getattr(self, "_no_segment_timer", None)
             if t is not None:
-                t.start(15000)
+                t.start(25000)
             return
         self._no_segment_hint_done = True
         if getattr(self, "_asr_ready", False) and getattr(self, "session_count", 0) == 0:
             from app import log as app_log
-            app_log.log("pipeline.no_segments_15s", source=self.config.get("source_type"))
+            app_log.log("pipeline.no_segments_hint", window_s=25,
+                        source=self.config.get("source_type"))
             self._set_engine_status(
-                "模型就绪 15 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
+                "模型就绪 25 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
                 "系统音量/应用音量未静音，或到「设置-音频输入」更换设备")
             self.update_overlay_status()
 
@@ -1121,13 +1126,14 @@ class MainWindow(QMainWindow):
         # v2.0.4：模型就绪标记 + 停止下载进度反馈（原直连拆槽）
         self._asr_ready = True
         self._stop_model_download_feedback()
-        # v2.2.11：无产出指引计时改由"模型就绪"起算（15s）——此前在
+        # v2.2.11：无产出指引计时改由"模型就绪"起算——此前在
         # start_pipeline 起算单发 30s，模型加载>30s（首次下载/大模型CPU）
         # 时计时器先于就绪到期，指引永不触发（B1 真 bug 修复）
+        # v2.3.11：窗口 15s→25s（浏览器起播延迟主场景噪音）
         if (getattr(self, "running", False)
                 and getattr(self, "_no_segment_timer", None) is not None
                 and not getattr(self, "_no_segment_hint_done", False)):
-            self._no_segment_timer.start(15000)
+            self._no_segment_timer.start(25000)
         # v2.2.12：就绪但还没出字——状态灯呼吸 + 明确"正在聆听"状态行（#3）
         if getattr(self, "running", False) and getattr(self, "session_count", 0) == 0:
             self._set_engine_status("模型就绪，正在聆听…（播放声音或说话即可出字幕）")
