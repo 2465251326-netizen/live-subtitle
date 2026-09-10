@@ -204,6 +204,28 @@ def t_export():
     assert "导出一" in out.read_text(encoding="utf-8")
 check("export: 字幕内容可导出格式化", t_export)
 
+def t_export_srt():
+    # v2.2.11：SRT 时间轴导出——纯函数确定性验证（合成卡不经信号链）
+    from app.ui.main_window import build_export_text, CaptionCard
+    c1 = CaptionCard("hello world")
+    c1.set_result("你好世界", "google", "en", False)
+    c1.t_start, c1.dur_s = 0.0, 2.5
+    c2 = CaptionCard("second line")
+    c2.set_result("第二行", "google", "en", False)
+    c2.t_start, c2.dur_s = 2.5, 1.8
+    pending = CaptionCard("only source")  # 译文未落地：回退原文并入轴
+    srt, m = build_export_text([c1, c2, pending], "srt")
+    assert m == 3, (m, srt)
+    # 时长来自 Whisper：cue1 结束被 cue2 起点前移 0.1s 夹紧（2.5→2.4）
+    assert "1\n00:00:00,000 --> 00:00:02,400\n你好世界" in srt, srt
+    assert "2\n00:00:02,500 --> 00:00:04,200\n第二行" in srt, srt  # 同样被夹紧
+    assert "3\n00:00:04,300 --> 00:00:08,300\nonly source" in srt, srt
+    txt, n = build_export_text([c1, c2], "txt")
+    assert n == 2 and txt.startswith("[") and "你好世界" in txt
+    # 空目标：无内容时 srt 返回空且不崩
+    assert build_export_text([pending], "srt")[1] == 1
+check("export: SRT 时间轴格式与夹紧逻辑", t_export_srt)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey

@@ -359,7 +359,7 @@ class ArgosWorker(QThread):
             def cb(pct):
                 self.progress_pct.emit(pct)
 
-            self.progress_text.emit(f"正在下载语言包 {pkg.from_name} -> {pkg.to_name}（约 70MB）...")
+            self.progress_text.emit(f"正在下载语言包 {pkg.from_name} -> {pkg.to_name}（约 80MB）...")
             ArgosEngine.install(pkg, progress_cb=cb)
             self.progress_pct.emit(100)
             self.finished_ok.emit(f"语言包 {pkg.from_name} -> {pkg.to_name} 安装成功，可离线使用")
@@ -817,7 +817,8 @@ class SettingsDialog(QDialog):
         self.engine_combo.addItem("MyMemory（在线备援）", "mymemory")
         self.engine_combo.addItem("Argos 离线语言包", "argos")
         self._row(page, "翻译引擎",
-                  "全部免费无需密钥。自动模式启动时探测在线接口并选用可达者；Argos 为完全离线方案，需先在下方下载语言包。",
+                  "全部免费无需密钥。自动模式启动时探测在线接口并选用可达者、断网自动回退离线包；"
+                  "Argos 为完全离线方案，逐句直译、多义词易翻错（通顺度低于在线），需先在下方下载语言包。",
                   self.engine_combo)
         self.target_combo = QComboBox()
         for code in TARGET_LANGS:
@@ -869,9 +870,8 @@ class SettingsDialog(QDialog):
             cleanup_temp_files()
         except Exception:
             pass
-        self.argos_hint = QLabel("选择 Argos 引擎后在此下载语言包（约 70MB / 包，一次下载永久离线使用）。")
-        self.argos_hint.setObjectName("SettingDesc")
-        self.argos_hint.setWordWrap(True)
+        self.argos_hint = QLabel("选择 Argos 引擎后在此下载语言包（约 80MB / 包，一次下载永久离线使用）。"
+                                 "离线包为机器直译风格，建议先开一条语音试试效果再决定常用。")
         self.argos_hint.setObjectName("SettingDesc")
         self.argos_hint.setWordWrap(True)
         page._inner_layout.addWidget(self.argos_hint)
@@ -915,7 +915,9 @@ class SettingsDialog(QDialog):
         self._section(page, "字幕显示")
         self.overlay_check = QCheckBox()
         self._row(page, "启用悬浮字幕条（置顶）",
-                  "屏幕上方的独立字幕条，可拖动到任意位置；最小化主窗口后继续显示。右键字幕条可关闭。",
+                  "悬浮在所有窗口之上的独立字幕条，默认屏幕下方居中、可拖到任意位置；"
+                  "最小化主窗口后继续显示。不必进本页开关——托盘菜单「显隐悬浮字幕条」"
+                  "或全局热键（默认 Ctrl+Alt+O）随时可切。",
                   self.overlay_check)
         self.show_source_check = QCheckBox()
         self._row(page, "同时显示原文",
@@ -2029,10 +2031,12 @@ class SettingsDialog(QDialog):
         self.argos_download_button.setText(f"下载所选 → {tgt_name} 语言包")
         if installed:
             self.argos_hint.setText(
-                f"已安装 {len(installed)} 个语言包；请下载与「识别语言 → 翻译目标」一致的方向，一次下载永久离线使用。")
+                f"已安装 {len(installed)} 个语言包；请下载与「识别语言 → 翻译目标」一致的方向，一次下载永久离线使用。"
+                "注意：离线包为逐句直译，多义词/专有名词易翻错，追求通顺请用「自动」引擎。")
         else:
             self.argos_hint.setText(
-                "请下载与「识别语言 → 翻译目标」一致的语言包（约 70MB，一次下载永久离线使用）。下载优先走本项目镜像，失败自动回退官方源。")
+                "请下载与「识别语言 → 翻译目标」一致的语言包（约 80MB，一次下载永久离线使用）。"
+                "下载优先走本项目镜像，失败自动回退官方源。")
 
     def _refresh_packs_list(self):
         """已安装语言包列表（含体积），供卸载管理。"""
@@ -2058,7 +2062,7 @@ class SettingsDialog(QDialog):
         name = sel.text().split("·")[0].strip()
         box = QMessageBox(self)
         box.setWindowTitle("卸载语言包")
-        box.setText(f"确定卸载 {name} 语言包吗？\n\n删除后可随时重新下载（约 70MB）。")
+        box.setText(f"确定卸载 {name} 语言包吗？\n\n删除后可随时重新下载（约 80MB）。")
         b_yes = box.addButton("卸载", QMessageBox.DestructiveRole)
         box.addButton("取消", QMessageBox.RejectRole)
         box.exec()

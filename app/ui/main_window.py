@@ -78,6 +78,9 @@ class CaptionCard(QFrame):
         layout.addWidget(self.meta_label)
         layout.addWidget(self.source_label)
         layout.addWidget(self.target_label)
+        # v2.2.11：SRT 时间轴数据——t_start=会话起算秒，dur_s=语音时长（Whisper 给）
+        self.t_start = None
+        self.dur_s = None
 
     def set_result(self, translated, engine, detected, show_source):
         if translated:
@@ -104,8 +107,73 @@ class CaptionCard(QFrame):
         self.style().polish(self)
 
 
+def _srt_ts(sec):
+    """秒 → SRT 时间戳 HH:MM:SS,mmm。"""
+    ms = int(round(max(0.0, float(sec)) * 1000))
+    h, rem = divmod(ms, 3600000)
+    m, rem = divmod(rem, 60000)
+    s, ms = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def build_export_text(cards, fmt="txt"):
+    """字幕卡列表 → 导出文本（v2.2.11：提取为纯函数 + SRT 时间轴支持）。
+
+    fmt="txt"：维持历史格式 `[meta]/原文/译文`（逐字节不变，不破坏既有习惯）；
+    fmt="srt"：标准 SRT 编号+时间轴，cue 文本用译文（缺失时回退原文）；
+    时间优先用卡片记录的会话相对秒 t_start + Whisper 时长 dur_s，
+    缺失时按累计时长/5 秒槽位近似；占位与翻译失败卡跳过。
+    返回 (文本, 有效条数)。"""
+    if fmt == "srt":
+        cues = []
+        for card in cards:
+            target = card.target_label.text()
+            source = card.source_label.text()
+            if target in ("...", "⟳ …", "", "[翻译失败]"):
+                target = ""
+            text = target or source
+            if not text:
+                continue
+            cues.append([getattr(card, "t_start", None),
+                         getattr(card, "dur_s", None), text])
+        for i, c in enumerate(cues):
+            if c[0] is None:
+                prev = cues[i - 1]
+                c[0] = (prev[0] + (prev[1] or 4.0)) if i and prev[0] is not None else float(i * 5)
+        out = []
+        for i, (st, dur, text) in enumerate(cues):
+            end = st + (dur or 4.0)
+            if i + 1 < len(cues) and cues[i + 1][0] > st:
+                end = max(st + 1.0, min(end, cues[i + 1][0] - 0.1))
+            out.append(f"{i + 1}\n{_srt_ts(st)} --> {_srt_ts(end)}\n{text}\n")
+        return "\n".join(out), len(cues)
+    lines = []
+    n = 0
+    for card in cards:
+        meta = card.meta_label.text()
+        source = card.source_label.text() if card.source_label.isVisibleTo(card) else ""
+        target = card.target_label.text()
+        lines.append(f"[{meta}]")
+        if source:
+            lines.append(source)
+        if target and target != "...":
+            lines.append(target)
+        lines.append("")
+        n += 1
+    return "\n".join(lines), n
+
+
 class MainWindow(QMainWindow):
     start_requested = Signal()
+
+    def _asr_timing(self, duration):
+        """v2.2.11：当前时刻的 (会话相对秒, 语音时长) 时间轴快照。"""
+        t0 = getattr(self, "_session_t0", None)
+        try:
+            dur = max(0.6, float(str(duration)))
+        except (TypeError, ValueError):
+            dur = None
+        return ((time.time() - t0) if t0 else None), dur
 
     def __init__(self):
         super().__init__()
@@ -231,7 +299,8 @@ class MainWindow(QMainWindow):
             qgrid.addWidget(k, i, 0, Qt.AlignTop)
             qgrid.addWidget(v, i, 1, Qt.AlignTop)
         qv.addLayout(qgrid)
-        qtip = QLabel("提示：托盘图标右键可快速切换输入来源；热键可在「设置-通用」修改")
+        qtip = QLabel("提示：托盘图标右键可显隐悬浮字幕条、快速切换输入来源；"
+                     "热键可在「设置-通用」修改")
         qtip.setObjectName("SettingDesc")
         qtip.setAlignment(Qt.AlignCenter)
         qtip.setWordWrap(True)  # v2.2.9：提示自动换行，不截断
@@ -402,6 +471,8 @@ class MainWindow(QMainWindow):
         if oseq and oseq.upper() != seq.upper() and not hotkey.overlay_text():
             base += (f"\n✗ 悬浮条显隐热键 {oseq} 注册失败：已被其他程序占用"
                      "或组合不受支持，请换一个组合或清空禁用")
+        # v2.2.11：注册状态变化后同步速览卡（否则启动早期刷新会停留在旧值）
+        self._refresh_quick_panel()
         return base
 
     def _update_tray_hotkey_text(self, seq):
@@ -538,16 +609,37 @@ class MainWindow(QMainWindow):
         c = self.config
         model = c.get("asr_model")
         engine_names = {"google": "Google（在线）", "mymemory": "MyMemory（在线）",
-                        "argos": "离线翻译包", "auto": "自动（在线优先，失败切离线）"}
+                        "argos": "离线翻译包（直译）", "auto": "自动（在线优先，失败切离线）"}
         eng = engine_names.get(c.get("engine"), str(c.get("engine")))
         src = "系统声音" if c.get("source_type") == "system" else "麦克风"
-        hk = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
-        # v2.2.6：显隐悬浮条热键同步显示（与实际注册保持一致）
-        oseq = str(c.get("hotkey_overlay") or "").strip()
+        hk_cfg = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
+        # v2.2.6：显隐悬浮条热键同步显示
+        oseq_cfg = str(c.get("hotkey_overlay") or "").strip()
         labels["识别模型"].setText(f"{model}（{'GPU' if self._quick_gpu_hint() else 'CPU'}）")
         labels["翻译引擎"].setText(eng)
         labels["音频来源"].setText(src)
-        labels["热键"].setText(f"{hk} 开始/停止 · {oseq or '未设'} 显隐悬浮条")
+        # v2.2.11：热键行以“实际注册成功”为准显示——配置了但被占用未注册时
+        # 标红“（未生效）”，不再拿配置值谎称可用（文案不许承诺做不到的事）
+        hk_live = hotkey.current_text()
+        o_live = hotkey.overlay_text()
+        failed = False
+        if not c.get("hotkey_enabled"):
+            hk_disp, o_disp = "全局热键已关闭（设置-通用）", ""
+        else:
+            hk_failed = not hk_live
+            o_failed = bool(oseq_cfg) and not o_live
+            failed = hk_failed or o_failed
+            hk_disp = (f"{hk_cfg} 开始/停止（未生效）" if hk_failed
+                       else f"{hk_live} 开始/停止")
+            if not oseq_cfg:
+                o_disp = "未设 显隐悬浮条"
+            elif o_failed:
+                o_disp = f"{oseq_cfg} 显隐悬浮条（未生效）"
+            else:
+                o_disp = f"{o_live} 显隐悬浮条"
+        hk_label = labels["热键"]
+        hk_label.setText(f"{hk_disp} · {o_disp}" if o_disp else hk_disp)
+        hk_label.setStyleSheet("color: #ff8a5c;" if failed else "")
         # v2.2.9：文本变长（换行）后重算尺寸，防止行高不足裁字
         self._quick.adjustSize()
         lay = self._quick.layout()
@@ -646,26 +738,23 @@ class MainWindow(QMainWindow):
         # 默认落到用户文档目录：安装目录（Program Files）对标准权限用户不可写
         docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or str(Path.home())
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出字幕", str(Path(docs) / default_name), "文本文件 (*.txt);;所有文件 (*)")
+            self, "导出字幕", str(Path(docs) / default_name),
+            "文本文件 (*.txt);;SRT 字幕 (*.srt);;所有文件 (*)")
         if not path:
             return
-        lines = []
-        for card in cards:
-            meta = card.meta_label.text()
-            source = card.source_label.text() if card.source_label.isVisibleTo(card) else ""
-            target = card.target_label.text()
-            lines.append(f"[{meta}]")
-            if source:
-                lines.append(source)
-            if target and target != "...":
-                lines.append(target)
-            lines.append("")
+        # v2.2.11：按扩展名选格式——.srt 生成带时间轴的标准字幕（播放器/剪映
+        # 可直接加载）；其余维持历史纯文本格式
+        fmt = "srt" if str(path).lower().endswith(".srt") else "txt"
+        content, count = build_export_text(cards, fmt)
+        if fmt == "srt" and count == 0:
+            QMessageBox.information(self, "导出字幕", "没有已完成的字幕可导出为 SRT。")
+            return
         try:
-            Path(path).write_text("\n".join(lines), encoding="utf-8")
+            Path(path).write_text(content, encoding="utf-8")
         except Exception as e:
             QMessageBox.warning(self, "导出字幕", f"写入文件失败：{e}")
             return
-        QMessageBox.information(self, "导出字幕", f"已导出 {len(cards)} 条字幕到：\n{path}")
+        QMessageBox.information(self, "导出字幕", f"已导出 {count} 条字幕到：\n{path}")
 
     def toggle_running(self):
         # v2.0.4：热键连按防抖——界面被 stop_pipeline 短暂阻塞时按下的热键
@@ -726,6 +815,7 @@ class MainWindow(QMainWindow):
         self.translate_thread.start()
 
         self._asr_ready = False  # v2.0.4：模型加载期停止时缩短等待（见 stop_pipeline）
+        self._session_t0 = time.time()  # v2.2.11：SRT 时间轴零点（本次会话起算）
         self.asr_thread = AsrThread(
             c.get("asr_model"),
             c.get("asr_device"),
@@ -762,28 +852,28 @@ class MainWindow(QMainWindow):
         self.capture_thread.muted.connect(self._on_muted)
         self.capture_thread.start()
 
-        # v2.0.7：30 秒零产出指引——"一直显示正在聆听"时给用户明确抓手
-        # （音量条是否有波动 / 设备是否在放声音），而不是干等
+        # v2.2.11：无产出指引改「模型就绪后 15 秒」起算（见 _on_model_ready
+        # 重挂计时），此处仅为"模型秒就绪"快路径兜底；文案与日志同步更新
         self._no_segment_hint_done = False
         self._no_segment_timer = QTimer(self)
         self._no_segment_timer.setSingleShot(True)
         self._no_segment_timer.timeout.connect(self._no_segment_hint)
-        self._no_segment_timer.start(30000)
+        self._no_segment_timer.start(15000)
 
         if c.get("overlay_enabled") and not self.overlay.isVisible():
             self.set_overlay_enabled(True)
         self.update_overlay_status()
 
     def _no_segment_hint(self):
-        """管线运行 30 秒仍零字幕时的一次性指引（v2.0.7）。"""
+        """模型就绪 15 秒仍零字幕时的一次性指引（v2.2.11：起算点改就绪后）。"""
         if not self.running or getattr(self, "_no_segment_hint_done", True):
             return
         self._no_segment_hint_done = True
         if getattr(self, "_asr_ready", False) and getattr(self, "session_count", 0) == 0:
             from app import log as app_log
-            app_log.log("pipeline.no_segments_30s", source=self.config.get("source_type"))
+            app_log.log("pipeline.no_segments_15s", source=self.config.get("source_type"))
             self._set_engine_status(
-                "已开始 30 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
+                "模型就绪 15 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
                 "系统音量/应用音量未静音，或到「设置-音频输入」更换设备")
             self.update_overlay_status()
 
@@ -791,6 +881,7 @@ class MainWindow(QMainWindow):
         self._model_dl_model = model_size
         self._model_dl_total = MODEL_SIZES_MB.get(model_size, 480)
         self._stop_model_download_feedback()
+        self._dl_start = None  # v2.2.11：慢速探测基线（首次 tick 建立）
         self._model_dl_timer = QTimer(self)
         self._model_dl_timer.setInterval(600)
         self._model_dl_timer.timeout.connect(self._tick_model_download_feedback)
@@ -815,10 +906,19 @@ class MainWindow(QMainWindow):
                 pass
         total = self._model_dl_total
         pct = min(99, int(mb * 100 / total))
+        # v2.2.11：慢速探测——连续 20 秒不足 5MB 时提示代理入口（B2）
+        import time as _t
+        now = _t.monotonic()
+        if getattr(self, "_dl_start", None) is None:
+            self._dl_start = (now, mb)
+        slow = (now - self._dl_start[0] > 20) and (mb - self._dl_start[1] < 5)
+        if mb >= total * 0.9 or pct >= 99:
+            slow = False
+        hint = "· 速度慢？到「设置-通用」配置代理可显著提速" if slow else ""
         # v2.2.5：模型下载进度走彩色横幅（下载是当前最重要的事，别挤状态行）
         self._set_engine_status("正在下载识别模型…")
         self._set_alert(f"⬇ 正在下载识别模型（{mb:.0f}/{total}MB，{pct}%，"
-                        "仅首次；完成前请保持网络畅通）…")
+                        f"仅首次；完成前请保持网络畅通{hint}）…")
 
     def _set_engine_status(self, text):
         self._engine_status_text = text
@@ -871,6 +971,13 @@ class MainWindow(QMainWindow):
         # v2.0.4：模型就绪标记 + 停止下载进度反馈（原直连拆槽）
         self._asr_ready = True
         self._stop_model_download_feedback()
+        # v2.2.11：无产出指引计时改由"模型就绪"起算（15s）——此前在
+        # start_pipeline 起算单发 30s，模型加载>30s（首次下载/大模型CPU）
+        # 时计时器先于就绪到期，指引永不触发（B1 真 bug 修复）
+        if (getattr(self, "running", False)
+                and getattr(self, "_no_segment_timer", None) is not None
+                and not getattr(self, "_no_segment_hint_done", False)):
+            self._no_segment_timer.start(15000)
 
     def _on_level(self, value):
         # v2.0.4：停止后迟到的电平事件不再点亮音量条
@@ -1012,6 +1119,9 @@ class MainWindow(QMainWindow):
     def _on_asr_text(self, text, detected, duration):
         if not self.running:
             return
+        # v2.2.11：记录本段音频时间轴（会话相对秒 + Whisper 语音时长）；
+        # 流式路径直接写上占位卡，一次性路径由 _on_translated 建卡时取快照
+        self._last_asr_timing = self._asr_timing(duration)
         # v2.2.3：连续流模式下原文是否入流由 overlay 自行按 show_source 决定
         # （"只显示译文"时原文不入流）
         if self.overlay.isVisible():
@@ -1027,6 +1137,7 @@ class MainWindow(QMainWindow):
         card = CaptionCard(text)
         card.source_label.setVisible(show_source)
         card.target_label.setText("⟳ …")
+        card.t_start, card.dur_s = self._last_asr_timing  # v2.2.11：SRT 时间轴
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)
@@ -1083,6 +1194,7 @@ class MainWindow(QMainWindow):
         if not bool(self.config.get("instant_caption")):
             card = CaptionCard(source_text)
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+            card.t_start, card.dur_s = getattr(self, "_last_asr_timing", (None, None))
             # v2.1.5：切回一次性上屏时清掉流式占位队列（防陈旧配对）
             if getattr(self, "_pending", None):
                 self._pending.clear()
@@ -1091,6 +1203,7 @@ class MainWindow(QMainWindow):
             if card is None:
                 card = CaptionCard(source_text)
                 self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+                card.t_start, card.dur_s = getattr(self, "_last_asr_timing", (None, None))
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)
         if error:
@@ -1221,8 +1334,9 @@ class MainWindow(QMainWindow):
         if getattr(self, "tray", None):
             self.tray.showMessage(
                 "LiveSubtitle 仍在运行",
-                "字幕悬浮窗继续工作。点击托盘图标可重新打开主窗口。",
-                QSystemTrayIcon.Information, 2500)
+                "字幕悬浮窗继续工作。左键托盘图标恢复窗口，右键可退出/切来源；"
+                "关闭行为可在「设置-通用」修改。",
+                QSystemTrayIcon.Information, 3500)
 
 
 def run_app():
