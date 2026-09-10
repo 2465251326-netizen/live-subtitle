@@ -160,6 +160,7 @@ _FIELD_SPECS = {
     "proxy_url":            ("instant", "text"),
     "hotkey_enabled":       ("instant", "check"),
     "hotkey_sequence":      ("instant", "keyseq"),
+    "hotkey_overlay":       ("instant", "keyseq"),
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_font_size":    ("overlay", "spin"),
@@ -1060,6 +1061,11 @@ class SettingsDialog(QDialog):
         self._row(page, "热键组合",
                   "默认 Ctrl+Alt+S，可改键。需含 Ctrl/Alt/Shift/Win 至少一个修饰键，避免影响正常打字。",
                   self.hotkey_edit)
+        # v2.2.6：显隐悬浮条热键（可留空禁用）
+        self.hotkey_overlay_edit = QKeySequenceEdit()
+        self._row(page, "悬浮条显隐热键",
+                  "默认 Ctrl+Alt+O，任何界面按键即可显示/隐藏悬浮字幕条；清空后禁用该热键。",
+                  self.hotkey_overlay_edit)
         self.hotkey_status = QLabel("")
         self.hotkey_status.setObjectName("SettingDesc")
         self.hotkey_status.setWordWrap(True)
@@ -1088,6 +1094,7 @@ class SettingsDialog(QDialog):
         self.max_history_spin.valueChanged.connect(lambda v: self._stage("max_history", int(v)))
         self.hotkey_check.toggled.connect(self._on_hotkey_enabled_changed)
         self.hotkey_edit.keySequenceChanged.connect(self._on_hotkey_sequence_changed)
+        self.hotkey_overlay_edit.keySequenceChanged.connect(self._on_hotkey_overlay_changed)
         page._inner_layout.addStretch()
         return page
 
@@ -1108,6 +1115,10 @@ class SettingsDialog(QDialog):
 
     def _on_hotkey_sequence_changed(self, seq):
         self._stage("hotkey_sequence", seq.toString())
+
+    def _on_hotkey_overlay_changed(self, seq):
+        # v2.2.6：显隐悬浮条热键——清空 = 禁用（存空串）
+        self._stage("hotkey_overlay", seq.toString())
 
     def _apply_hotkey(self):
         """设置页状态提示：展示"当前配置"的热键状态（不含未保存的暂存值）。"""
@@ -1668,7 +1679,8 @@ class SettingsDialog(QDialog):
             self.main.apply_overlay_from_config()
         if "overlay_enabled" in applied:
             self.main.set_overlay_enabled(bool(self.c.get("overlay_enabled")))
-        if "hotkey_enabled" in applied or "hotkey_sequence" in applied:
+        if "hotkey_enabled" in applied or "hotkey_sequence" in applied \
+                or "hotkey_overlay" in applied:
             self.main.apply_hotkey_config()
         if self._PIPELINE_KEYS & set(applied):
             if self.main.running:
@@ -1782,6 +1794,8 @@ class SettingsDialog(QDialog):
         self.max_history_spin.setValue(int(values.get("max_history", c.get("max_history"))))
         self.hotkey_check.setChecked(bool(values.get("hotkey_enabled", c.get("hotkey_enabled"))))
         self.hotkey_edit.setKeySequence(str(values.get("hotkey_sequence", c.get("hotkey_sequence") or "Ctrl+Alt+S")))
+        # v2.2.6：显隐悬浮条热键（空 = 禁用）
+        self.hotkey_overlay_edit.setKeySequence(str(values.get("hotkey_overlay", c.get("hotkey_overlay") or "")))
 
     def _confirm_discard(self):
         if not self._staged:
@@ -2199,6 +2213,7 @@ class SettingsDialog(QDialog):
             self.max_history_spin.setValue(int(c.get("max_history")))
             self.hotkey_check.setChecked(bool(c.get("hotkey_enabled")))
             self.hotkey_edit.setKeySequence(str(c.get("hotkey_sequence") or "Ctrl+Alt+S"))
+            self.hotkey_overlay_edit.setKeySequence(str(c.get("hotkey_overlay") or ""))
         finally:
             self._loading = False
         self._mark_dirty()

@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.2.5"
+APP_VERSION = "2.2.6"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -45,6 +45,7 @@ DEFAULTS = {
     "proxy_url": "",                   # manual 模式的代理地址，如 http://127.0.0.1:10808
     "hotkey_enabled": True,            # 全局热键开关
     "hotkey_sequence": "Ctrl+Alt+S",   # 全局热键组合（开始/停止翻译）
+    "hotkey_overlay": "Ctrl+Alt+O",    # v2.2.6：全局热键（显隐悬浮条，留空禁用）
     "storage_root": "",                # 自定义数据根目录（空 = 默认 ~\.live_subtitle）
     "wizard_done": False,              # 首次运行向导已完成
     "hallucination_filter": True,      # 幻觉抑制：过滤音乐/噪声段的胡言乱语

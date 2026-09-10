@@ -1,7 +1,8 @@
 """Windows 全局热键（基于 user32.RegisterHotKey，无需额外依赖）。
 
 - install(app, callback)：装一次全局原生事件过滤器（应用生命周期内）。
-- register(hwnd, seq_str)：注册热键组合；成功后按键触发 callback。
+- register(hwnd, seq_str)：注册开始/停止热键；成功后按键触发 callback。
+- register_overlay(hwnd, seq_str, callback)：注册显隐悬浮条热键（v2.2.6）。
 - unregister()：注销（窗口销毁/退出前必须调用）。
 - current_text()：当前生效的组合键文本（托盘菜单展示用）。
 
@@ -19,13 +20,17 @@ MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
 MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
-HOTKEY_ID = 0x4C53  # "LS"
+HOTKEY_ID = 0x4C53        # "LS" —— 开始/停止
+HOTKEY_ID_OVERLAY = 0x4C4F  # "LO" —— 显隐悬浮条（v2.2.6）
 
 _callback = None
+_callback_overlay = None
 _filter = None
 _hwnd = None
 _registered = False
 _current_text = ""
+_overlay_registered = False
+_overlay_text = ""
 
 
 def _mod_flags(mods):
@@ -80,10 +85,12 @@ class _HotkeyFilter(QAbstractNativeEventFilter):
             et = bytes(eventType)
             if et == b"windows_generic_MSG":
                 msg = wintypes.MSG.from_address(int(message))
-                if int(msg.message) == WM_HOTKEY and int(msg.wParam or 0) == HOTKEY_ID:
-                    cb = _callback
-                    if cb is not None:
-                        cb()
+                if int(msg.message) == WM_HOTKEY:
+                    wid = int(msg.wParam or 0)
+                    if wid == HOTKEY_ID and _callback is not None:
+                        _callback()
+                    elif wid == HOTKEY_ID_OVERLAY and _callback_overlay is not None:
+                        _callback_overlay()
         except Exception:
             pass
         return False, 0
@@ -96,6 +103,12 @@ def install(app, callback):
     if _filter is None:
         _filter = _HotkeyFilter()
         app.installNativeEventFilter(_filter)
+
+
+def install_overlay(app, callback):
+    """设置显隐悬浮条热键回调（v2.2.6；须在 install 之后调用）。"""
+    global _callback_overlay
+    _callback_overlay = callback
 
 
 def register(hwnd, seq_str):
@@ -119,16 +132,55 @@ def register(hwnd, seq_str):
     return ok
 
 
+def register_overlay(hwnd, seq_str):
+    """注册显隐悬浮条热键（v2.2.6）；失败（被占用/不支持）返回 False。
+    seq_str 为空时跳过注册并返回 True（该功能可留空禁用）。"""
+    global _hwnd, _overlay_registered, _overlay_text
+    if not str(seq_str or "").strip():
+        _overlay_registered = False
+        _overlay_text = ""
+        return True
+    parsed = sequence_to_hotkey(seq_str)
+    if parsed is None:
+        _overlay_registered = False
+        _overlay_text = ""
+        return False
+    mods, vk = parsed
+    if _hwnd is None:
+        _hwnd = int(hwnd)
+    try:
+        ok = bool(ctypes.windll.user32.RegisterHotKey(
+            wintypes.HWND(int(hwnd)), HOTKEY_ID_OVERLAY, mods | MOD_NOREPEAT, vk))
+    except Exception:
+        ok = False
+    if ok:
+        _overlay_text = seq_str
+    _overlay_registered = ok
+    return ok
+
+
 def unregister():
-    global _registered, _current_text
+    global _registered, _current_text, _overlay_registered, _overlay_text
     if _registered and _hwnd is not None:
         try:
             ctypes.windll.user32.UnregisterHotKey(wintypes.HWND(_hwnd), HOTKEY_ID)
         except Exception:
             pass
+    if _overlay_registered and _hwnd is not None:
+        try:
+            ctypes.windll.user32.UnregisterHotKey(
+                wintypes.HWND(_hwnd), HOTKEY_ID_OVERLAY)
+        except Exception:
+            pass
     _registered = False
     _current_text = ""
+    _overlay_registered = False
+    _overlay_text = ""
 
 
 def current_text():
     return _current_text
+
+
+def overlay_text():
+    return _overlay_text

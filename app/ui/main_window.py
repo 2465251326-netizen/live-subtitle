@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
             qgrid.addWidget(k, i, 0)
             qgrid.addWidget(v, i, 1)
         qv.addLayout(qgrid)
-        qtip = QLabel("提示：Ctrl+Alt+S 开始/停止 · Ctrl+Alt+O 显隐悬浮条\n托盘图标右键可快速切换输入来源")
+        qtip = QLabel("提示：托盘图标右键可快速切换输入来源；热键可在「设置-通用」修改")
         qtip.setObjectName("SettingDesc")
         qtip.setAlignment(Qt.AlignCenter)
         qv.addWidget(qtip)
@@ -342,10 +342,25 @@ class MainWindow(QMainWindow):
     def _install_global_hotkey(self):
         """安装原生事件过滤器并按当前配置注册热键（进程生命周期内一次过滤器）。"""
         hotkey.install(QApplication.instance(), self.toggle_running)
+        hotkey.install_overlay(QApplication.instance(), self._toggle_overlay_hotkey)
         status = self.apply_hotkey_config()
         # v2.0.0：启动时注册失败不再静默（组合被占用/不支持时用户毫无感知）
         if status.startswith("✗"):
             self.tray.showMessage("LiveSubtitle 全局热键", status[2:], QSystemTrayIcon.Warning, 4000)
+
+    def _toggle_overlay_hotkey(self):
+        """显隐悬浮条热键回调（v2.2.6）：可见则隐藏（同步配置），不可见则强制
+        显示并同步配置（热键即开关，不受 overlay_enabled 当前值约束）。"""
+        if self.overlay.isVisible():
+            self.overlay.hide()  # 与 X 按钮路径一致：先隐藏再同步配置
+            self.on_overlay_closed()
+        else:
+            self.overlay.show()
+            self.config.set("overlay_enabled", True)
+            dlg = getattr(self, "_settings_dlg", None)
+            if dlg is not None and hasattr(dlg, "sync_overlay_check"):
+                dlg.sync_overlay_check(True)
+            self.update_overlay_status()
 
     def apply_hotkey_config(self):
         """按配置注册/注销全局热键；返回给设置页展示的状态文本。"""
@@ -356,6 +371,13 @@ class MainWindow(QMainWindow):
             return "全局热键已关闭"
         seq = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
         ok = hotkey.register(int(self.winId()), seq)
+        # v2.2.6：显隐悬浮条热键（默认 Ctrl+Alt+O，可留空禁用）
+        oseq = str(c.get("hotkey_overlay") or "").strip()
+        if oseq:
+            if oseq.upper() == seq.upper():
+                self.overlay._hotkey_note = "与开始/停止热键相同，已忽略"
+            else:
+                hotkey.register_overlay(int(self.winId()), oseq)
         self._update_tray_hotkey_text(seq if ok else "")
         if ok:
             return f"✓ 全局热键 {seq} 已生效（托盘菜单同步显示）"
@@ -485,14 +507,13 @@ class MainWindow(QMainWindow):
                         "argos": "离线翻译包", "auto": "自动（在线优先，失败切离线）"}
         eng = engine_names.get(c.get("engine"), str(c.get("engine")))
         src = "系统声音" if c.get("source_type") == "system" else "麦克风"
-        try:
-            hk = self._hotkey_text if getattr(self, "_hotkey_text", None) else "Ctrl+Alt+S"
-        except Exception:
-            hk = "Ctrl+Alt+S"
+        hk = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
+        # v2.2.6：显隐悬浮条热键同步显示（与实际注册保持一致）
+        oseq = str(c.get("hotkey_overlay") or "").strip()
         labels["识别模型"].setText(f"{model}（{'GPU' if self._quick_gpu_hint() else 'CPU'}）")
         labels["翻译引擎"].setText(eng)
         labels["音频来源"].setText(src)
-        labels["热键"].setText(hk)
+        labels["热键"].setText(f"{hk} 开始/停止 · {oseq or '未设'} 显隐悬浮条")
 
     def _quick_gpu_hint(self):
         """轻量 GPU 判定：仅读配置，不探测驱动（避免拖慢启动）。"""
