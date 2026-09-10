@@ -9,6 +9,7 @@
 安全约束：不带修饰键的组合（如单按 S）直接拒绝注册，避免全局劫持打字。
 """
 import ctypes
+import time
 from ctypes import wintypes
 
 from PySide6.QtCore import Qt, QAbstractNativeEventFilter
@@ -31,6 +32,7 @@ _registered = False
 _current_text = ""
 _overlay_registered = False
 _overlay_text = ""
+_last_fire = {}  # id -> monotonic()：WM_HOTKEY 双发去重（见 _HotkeyFilter）
 
 
 def _mod_flags(mods):
@@ -87,6 +89,16 @@ class _HotkeyFilter(QAbstractNativeEventFilter):
                 msg = wintypes.MSG.from_address(int(message))
                 if int(msg.message) == WM_HOTKEY:
                     wid = int(msg.wParam or 0)
+                    # v2.2.7 根因修复：Qt Windows 分发器对同一条 WM_HOTKEY 会
+                    # 两次送达原生过滤器（最小复现实证：单次 RegisterHotKey +
+                    # 单次 SendInput → nativeEventFilter 收到 2 条同 id 同
+                    # lParam 消息）。主热键靠 toggle_running 的 0.25s 防抖
+                    # 侥幸掩盖多年，显隐悬浮条无防抖 → 按一次=隐+显=无效果。
+                    # 此处按 id 做 60ms 去重，双发只放行第一发。
+                    now = time.monotonic()
+                    if now - _last_fire.get(wid, 0.0) < 0.06:
+                        return False, 0
+                    _last_fire[wid] = now
                     if wid == HOTKEY_ID and _callback is not None:
                         _callback()
                     elif wid == HOTKEY_ID_OVERLAY and _callback_overlay is not None:

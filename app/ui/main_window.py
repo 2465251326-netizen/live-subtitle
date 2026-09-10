@@ -350,7 +350,13 @@ class MainWindow(QMainWindow):
 
     def _toggle_overlay_hotkey(self):
         """显隐悬浮条热键回调（v2.2.6）：可见则隐藏（同步配置），不可见则强制
-        显示并同步配置（热键即开关，不受 overlay_enabled 当前值约束）。"""
+        显示并同步配置（热键即开关，不受 overlay_enabled 当前值约束）。
+        v2.2.7：250ms 业务级防抖——与 toggle_running 同款，双保险。"""
+        import time as _t
+        now = _t.monotonic()
+        if now - getattr(self, "_overlay_hk_last", 0.0) < 0.25:
+            return
+        self._overlay_hk_last = now
         if self.overlay.isVisible():
             self.overlay.hide()  # 与 X 按钮路径一致：先隐藏再同步配置
             self.on_overlay_closed()
@@ -372,16 +378,26 @@ class MainWindow(QMainWindow):
         seq = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
         ok = hotkey.register(int(self.winId()), seq)
         # v2.2.6：显隐悬浮条热键（默认 Ctrl+Alt+O，可留空禁用）
+        # v2.2.7：注册失败不再静默——组合被占用时用户按键"毫无反应"即 BUG 观感，
+        # 必须托盘气泡 + 设置页状态行双重提示
         oseq = str(c.get("hotkey_overlay") or "").strip()
         if oseq:
             if oseq.upper() == seq.upper():
-                self.overlay._hotkey_note = "与开始/停止热键相同，已忽略"
-            else:
-                hotkey.register_overlay(int(self.winId()), oseq)
+                self._set_alert("⚠ 悬浮条显隐热键与开始/停止热键相同，已忽略——请在「设置-通用」改键")
+            elif not hotkey.register_overlay(int(self.winId()), oseq):
+                self.tray.showMessage(
+                    "LiveSubtitle 全局热键",
+                    f"悬浮条显隐热键 {oseq} 注册失败（已被其他程序占用或不被支持），"
+                    "该热键未生效——请在「设置-通用」换一个组合。",
+                    QSystemTrayIcon.Warning, 5000)
         self._update_tray_hotkey_text(seq if ok else "")
-        if ok:
-            return f"✓ 全局热键 {seq} 已生效（托盘菜单同步显示）"
-        return f"✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用，请在「设置-通用」换一个组合"
+        base = (f"✓ 全局热键 {seq} 已生效（托盘菜单同步显示）" if ok
+                else f"✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用，请在「设置-通用」换一个组合")
+        # v2.2.7：悬浮条显隐热键注册结果同样透传到设置页状态行
+        if oseq and oseq.upper() != seq.upper() and not hotkey.overlay_text():
+            base += (f"\n✗ 悬浮条显隐热键 {oseq} 注册失败：已被其他程序占用"
+                     "或组合不受支持，请换一个组合或清空禁用")
+        return base
 
     def _update_tray_hotkey_text(self, seq):
         act = getattr(self, "_tray_toggle_action", None)
