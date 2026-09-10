@@ -96,6 +96,13 @@ class CaptionCard(QFrame):
         self.target_label.setText("[翻译失败]")
         self.meta_label.setText(f"{datetime.now().strftime('%H:%M:%S')} · {msg}")
 
+    def set_active(self, active):
+        """聚焦态切换（v2.2.5）：active=True 换强调边框样式，False 渐隐。"""
+        self.setObjectName("CaptionCardActive" if active else "CaptionCardOld"
+                           if not self.is_pending() else "CaptionCard")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
 
 class MainWindow(QMainWindow):
     start_requested = Signal()
@@ -196,10 +203,40 @@ class MainWindow(QMainWindow):
         self.empty_hint.setObjectName("EmptyHint")
         self.empty_hint.setAlignment(Qt.AlignCenter)
         self.empty_hint.setWordWrap(True)
+        # v2.2.5：配置速览卡——当前模型/引擎/设备/热键一目了然（空窗口变仪表盘）
+        from PySide6.QtWidgets import QFrame as _QFrame, QGridLayout as _QGrid
+        self._quick = _QFrame()
+        self._quick.setObjectName("SidePanel")
+        self._quick.setMaximumWidth(430)
+        qv = QVBoxLayout(self._quick)
+        qv.setContentsMargins(18, 14, 18, 14)
+        qv.setSpacing(8)
+        qtitle = QLabel("当前配置")
+        qtitle.setObjectName("PanelTitle")
+        qv.addWidget(qtitle)
+        qgrid = _QGrid()
+        qgrid.setHorizontalSpacing(14)
+        qgrid.setVerticalSpacing(6)
+        self._quick_labels = {}
+        for i, key in enumerate(("识别模型", "翻译引擎", "音频来源", "热键")):
+            k = QLabel(key)
+            k.setObjectName("PanelTitle")
+            v = QLabel("—")
+            v.setObjectName("EmptyHint")
+            self._quick_labels[key] = v
+            qgrid.addWidget(k, i, 0)
+            qgrid.addWidget(v, i, 1)
+        qv.addLayout(qgrid)
+        qtip = QLabel("提示：Ctrl+Alt+S 开始/停止 · Ctrl+Alt+O 显隐悬浮条\n托盘图标右键可快速切换输入来源")
+        qtip.setObjectName("SettingDesc")
+        qtip.setAlignment(Qt.AlignCenter)
+        qv.addWidget(qtip)
         empty_page = QWidget()
         empty_layout = QVBoxLayout(empty_page)
         empty_layout.addStretch()
-        empty_layout.addWidget(self.empty_hint)
+        empty_layout.addWidget(self.empty_hint, 0, Qt.AlignHCenter)
+        empty_layout.addSpacing(18)
+        empty_layout.addWidget(self._quick, 0, Qt.AlignHCenter)
         empty_layout.addStretch()
         list_page = QWidget()
         list_layout = QVBoxLayout(list_page)
@@ -216,7 +253,14 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         self.setStatusBar(status)
         self.engine_status_label = QLabel("引擎：待启动")
-        status.addWidget(self.engine_status_label)
+        status.addWidget(self.engine_status_label, 1)
+        # v2.2.5：关键提示横幅（积压/连续失败等排障信息）——独立彩色标签，
+        # 不再挤进常规状态行被截断；无提示时隐藏不占位
+        self.alert_banner = QLabel("")
+        self.alert_banner.setObjectName("StatusAlert")
+        self.alert_banner.setWordWrap(True)
+        self.alert_banner.setVisible(False)
+        status.addPermanentWidget(self.alert_banner, 2)
 
         self.level_bar = QProgressBar()
         self.level_bar.setRange(0, 100)
@@ -408,6 +452,7 @@ class MainWindow(QMainWindow):
             self.overlay.resize(ow, oh)
             self.overlay._user_resized = True
         self.apply_overlay_from_config()
+        self._refresh_quick_panel()
         if c.get("overlay_enabled"):
             self.overlay.show()
 
@@ -426,6 +471,33 @@ class MainWindow(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+        # v2.2.5：设置关闭后速览卡可能过期，此处先刷新一次兜底
+        self._refresh_quick_panel()
+
+    def _refresh_quick_panel(self):
+        """空状态页配置速览卡（v2.2.5）：模型/引擎/来源/热键实时汇总。"""
+        labels = getattr(self, "_quick_labels", None)
+        if not labels:
+            return
+        c = self.config
+        model = c.get("asr_model")
+        engine_names = {"google": "Google（在线）", "mymemory": "MyMemory（在线）",
+                        "argos": "离线翻译包", "auto": "自动（在线优先，失败切离线）"}
+        eng = engine_names.get(c.get("engine"), str(c.get("engine")))
+        src = "系统声音" if c.get("source_type") == "system" else "麦克风"
+        try:
+            hk = self._hotkey_text if getattr(self, "_hotkey_text", None) else "Ctrl+Alt+S"
+        except Exception:
+            hk = "Ctrl+Alt+S"
+        labels["识别模型"].setText(f"{model}（{'GPU' if self._quick_gpu_hint() else 'CPU'}）")
+        labels["翻译引擎"].setText(eng)
+        labels["音频来源"].setText(src)
+        labels["热键"].setText(hk)
+
+    def _quick_gpu_hint(self):
+        """轻量 GPU 判定：仅读配置，不探测驱动（避免拖慢启动）。"""
+        return self.config.get("compute_type") == "cuda" or \
+            self.config.get("compute_type") == "auto"
 
     def _open_docs(self):
         from PySide6.QtGui import QDesktopServices
@@ -670,6 +742,7 @@ class MainWindow(QMainWindow):
         if timer is not None:
             timer.stop()
             self._model_dl_timer = None
+            self._set_alert(None)  # v2.2.5：下载结束清掉进度横幅
 
     def _tick_model_download_feedback(self):
         from app.asr.engine import AsrThread
@@ -682,19 +755,37 @@ class MainWindow(QMainWindow):
                 pass
         total = self._model_dl_total
         pct = min(99, int(mb * 100 / total))
-        self._set_engine_status(
-            f"正在下载识别模型（{mb:.0f}/{total}MB，{pct}%，仅首次；完成前请保持网络畅通）...")
+        # v2.2.5：模型下载进度走彩色横幅（下载是当前最重要的事，别挤状态行）
+        self._set_engine_status("正在下载识别模型…")
+        self._set_alert(f"⬇ 正在下载识别模型（{mb:.0f}/{total}MB，{pct}%，"
+                        "仅首次；完成前请保持网络畅通）…")
 
     def _set_engine_status(self, text):
         self._engine_status_text = text
         # v2.0.8：积压警示置顶——"识别积压"出现后任何后续状态都追加提醒
         # （此前一句话即被"识别完成/就绪"覆盖，用户从未看到丢段原因）
-        if getattr(self, "_backlog_warn", False) and "识别积压" not in text \
-                and "积压" not in text and "跳过" not in text:
-            text = (text + "　⚠ 积压丢段中：CPU 转写跟不上，"
-                    "建议到「设置-语音识别」换 small/tiny 模型")
+        # v2.2.5：积压/连续失败等关键提示改走独立彩色横幅（不再挤常规状态行）
+        if getattr(self, "_backlog_warn", False):
+            self._set_alert("⚠ 积压丢段中：CPU 转写跟不上，"
+                            "建议到「设置-语音识别」换 small/tiny 模型")
+        elif not ("识别积压" in text or "积压" in text or "跳过" in text):
+            self._set_alert(None)
         if not getattr(self, "_low_input_warn", False) and not getattr(self, "_muted_warn", False):
             self.engine_status_label.setText(text)
+
+    def _set_alert(self, text, error=False):
+        """关键提示横幅（v2.2.5）：text=None 隐藏。error=True 用橙红警示色。"""
+        banner = getattr(self, "alert_banner", None)
+        if banner is None:
+            return
+        if not text:
+            banner.setVisible(False)
+            banner.setText("")
+            return
+        banner.setText(text)
+        banner.setStyleSheet(
+            "color: #ff8a5c;" if error else "color: #fbbf24;")
+        banner.setVisible(True)
 
     def _on_asr_status(self, text):
         # v2.0.4：幽灵回调守卫 + 过期线程守卫——停止后已入队的迟到状态、
@@ -787,6 +878,7 @@ class MainWindow(QMainWindow):
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
         self._fail_streak = 0  # v2.0.2：会话结束时清零连续失败计数
         self._backlog_warn = False  # v2.0.8：积压警示随会话结束复位
+        self._set_alert(None)  # v2.2.5：停止时清掉提示横幅
         if getattr(self, "_pending", None):
             # v2.2.0：停止时清空流式占位配对——队列里未及翻译的卡片不再等
             # 迟到译文（下次会话不复用旧卡片）
@@ -882,6 +974,15 @@ class MainWindow(QMainWindow):
             self._pending = []
         self._pending.append((text, card))
         self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
+        # v2.2.5：占位卡即刻聚焦（原文先出时用户视线在此）
+        prev = getattr(self, "_active_card", None)
+        if prev is not None and prev is not card:
+            try:
+                prev.set_active(False)
+            except RuntimeError:
+                pass
+        self._active_card = card
+        card.set_active(True)
         if self.overlay.isVisible() and not bool(self.config.get("overlay_stream")):
             self.overlay.show_pending(text)
         sb = self.scroll.verticalScrollBar()
@@ -936,13 +1037,27 @@ class MainWindow(QMainWindow):
             card.set_failed(error)
         else:
             card.set_result(translated, engine, detected, show_source)
+        # v2.2.5：字幕卡聚焦态——新完成的卡强调边框，前一张降级渐隐
+        prev = getattr(self, "_active_card", None)
+        if prev is not None and prev is not card:
+            try:
+                prev.set_active(False)
+            except RuntimeError:
+                pass  # 前卡可能已被 max_history 裁剪销毁
+        self._active_card = card
+        card.set_active(True)
         self.session_count = getattr(self, "session_count", 0) + 1
         self.session_label.setText(f"本次会话：{self.session_count} 条")
         if error:
             self._set_engine_status(
                 f"⚠ 翻译失败（连续 {self._fail_streak} 条）：{error}")
+            # v2.2.5：连续失败走彩色横幅（排障建议不被截断）
+            advice = "检查网络/代理节点，或到「设置-翻译」测试通道 / 下载离线语言包"
+            self._set_alert(
+                f"⚠ 翻译连续失败 {self._fail_streak} 条 · {advice}", error=True)
         else:
             self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
+            self._set_alert(None)
         self.update_overlay_status()
         if error:
             # 连续 ≥3 条失败：状态行升级为通道级提示 + 悬浮条橙红常驻，

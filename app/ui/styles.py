@@ -106,6 +106,22 @@ QFrame#CaptionCard {
     border: 1px solid #242a38;
     border-radius: 12px;
 }
+/* v2.2.5：聚焦态——最新一条字幕卡强调边框+微亮背景，一眼锁定"正在说" */
+QFrame#CaptionCard#CaptionCardActive {
+    background-color: #1a1f2b;
+    border: 1px solid #4f8cff;
+    border-radius: 12px;
+}
+/* v2.2.5：历史卡渐隐——降低文字对比度，视觉焦点留给最新句 */
+QFrame#CaptionCard#CaptionCardOld QLabel#CaptionSource {
+    color: #5a6172;
+}
+QFrame#CaptionCard#CaptionCardOld QLabel#CaptionTarget {
+    color: #9aa3b8;
+}
+QFrame#CaptionCard#CaptionCardOld QLabel#CaptionMeta {
+    color: #454c5e;
+}
 QLabel#CaptionSource {
     color: #8a91a5;
     font-size: 12px;
@@ -151,6 +167,15 @@ QStatusBar {
     background-color: #12151c;
     color: #8a91a5;
     border-top: 1px solid #1e2330;
+}
+/* v2.2.5：关键提示横幅——琥珀色警示文字（错误时由代码切换为橙红），不挤状态行 */
+QLabel#StatusAlert {
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(251, 191, 36, 26);
+    border: 1px solid rgba(251, 191, 36, 70);
+    border-radius: 6px;
+    padding: 3px 10px;
 }
 QProgressBar {
     background-color: #1b1f29;
