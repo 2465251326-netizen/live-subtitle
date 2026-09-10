@@ -303,17 +303,33 @@ class MainWindow(QMainWindow):
         qgrid.setHorizontalSpacing(14)
         qgrid.setVerticalSpacing(8)
         self._quick_labels = {}
-        for i, key in enumerate(("识别模型", "翻译引擎", "音频来源", "热键")):
+        for i, key in enumerate(("识别模型", "翻译引擎", "音频来源")):
             k = QLabel(key)
             k.setObjectName("PanelTitle")
             k.setMinimumHeight(18)  # v2.2.9：行高按字体下限给足，不裁字
             v = QLabel("—")
             v.setObjectName("EmptyHint")
-            v.setWordWrap(True)  # v2.2.9：长热键组合自动换行，不裁字
+            # v2.2.13：值标签不换行——热键已拆两行，无超长值；卡片按最长
+            # 单行自适应（≤520 上限），从根上消除"word-wrap 高度不上传父
+            # 布局导致裁字/重叠"这一类问题（v2.2.9 的 adjustSize 从未真正生效）
             v.setMinimumHeight(20)
             self._quick_labels[key] = v
             qgrid.addWidget(k, i, 0, Qt.AlignTop)
             qgrid.addWidget(v, i, 1, Qt.AlignTop)
+        # v2.2.13（用户实拍"别扭"修正）：热键拆两行显示——单行拼接必换行，
+        # 而 word-wrap 标签的换行高度不通知父布局，卡片高度冻结导致第二行
+        # 被提示行压住（v2.2.9 的 adjustSize 修复实际从未生效）。两行短文本
+        # 永不换行，从结构上消除该问题；"热键"键名跨两行居左对齐。
+        hk_key = QLabel("热键")
+        hk_key.setObjectName("PanelTitle")
+        hk_key.setMinimumHeight(18)
+        qgrid.addWidget(hk_key, 3, 0, 2, 1, Qt.AlignTop | Qt.AlignLeft)
+        for r, name in ((3, "热键"), (4, "热键o")):
+            v = QLabel("—")
+            v.setObjectName("EmptyHint")
+            v.setMinimumHeight(20)
+            self._quick_labels[name] = v
+            qgrid.addWidget(v, r, 1, Qt.AlignTop)
         qv.addLayout(qgrid)
         qtip = QLabel("提示：托盘图标右键可显隐悬浮字幕条、快速切换输入来源；"
                      "热键可在「设置-通用」修改")
@@ -639,6 +655,7 @@ class MainWindow(QMainWindow):
         hk_live = hotkey.current_text()
         o_live = hotkey.overlay_text()
         failed = False
+        hk_failed = o_failed = False
         if not c.get("hotkey_enabled"):
             hk_disp, o_disp = "全局热键已关闭（设置-通用）", ""
         else:
@@ -653,14 +670,13 @@ class MainWindow(QMainWindow):
                 o_disp = f"{oseq_cfg} 显隐悬浮条（未生效）"
             else:
                 o_disp = f"{o_live} 显隐悬浮条"
-        hk_label = labels["热键"]
-        hk_label.setText(f"{hk_disp} · {o_disp}" if o_disp else hk_disp)
-        hk_label.setStyleSheet("color: #ff8a5c;" if failed else "")
-        # v2.2.9：文本变长（换行）后重算尺寸，防止行高不足裁字
-        self._quick.adjustSize()
-        lay = self._quick.layout()
-        if lay is not None:
-            lay.activate()
+        # v2.2.13：两行分别落位；哪行未生效哪行标红（不再拼接换行）
+        labels["热键"].setText(hk_disp)
+        labels["热键o"].setText(o_disp)
+        labels["热键"].setStyleSheet("color: #ff8a5c;"
+                                    if (failed and hk_failed) else "")
+        labels["热键o"].setStyleSheet("color: #ff8a5c;"
+                                      if (failed and o_failed) else "")
 
     def _quick_gpu_hint(self):
         """算力档判定（v2.2.10 修正）：读 asr_device——此前误读不存在的

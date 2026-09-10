@@ -26,6 +26,11 @@ QFrame#SidePanel {
     border: 1px solid #222733;
     border-radius: 14px;
 }
+/* v2.2.13：全局 QWidget 底色会在卡片标签后形成深色"补丁"（用户实拍反馈），
+   面板内标签统一显式透明 */
+QFrame#SidePanel QLabel {
+    background: transparent;
+}
 QLabel#PanelTitle {
     font-size: 12px;
     font-weight: 700;
