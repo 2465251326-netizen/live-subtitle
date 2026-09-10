@@ -1,0 +1,148 @@
+# 会话交接文档 · LiveSubtitle 实时字幕翻译
+
+> 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
+> 最后更新：v2.2.10 发布时（前一会话交接点）
+
+---
+
+## 一、项目概况
+
+- **仓库**：`https://github.com/2465251326-netizen/live-subtitle`（owner 即用户本人）
+- **本地路径**：`C:\deepseek (2)\live-subtitle`
+- **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
+- **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
+- **当前版本**：**v2.2.10**（已发布，含 Setup EXE + portable zip 双资产）
+
+## 二、发版工作流（严格照做，踩过坑）
+
+```powershell
+cd "C:\deepseek (2)\live-subtitle"
+$env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
+python tests/test_units.py                   # 28 项单元测试
+python tests/test_integration.py             # 20 项集成测试
+python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
+python scripts/bump_version.py --check       # 必须输出「版本一致」
+# 更新 README.md 更新日志（项目惯例：`### vX.Y.Z` 段落）
+git add <files>                              # ⚠ 必须包含 app/config.py，否则 CI 版本校验失败
+git commit -m "fix|feat: vX.Y.Z——描述"
+git push origin main
+git tag -a vX.Y.Z -m "说明" && git push origin vX.Y.Z   # tag 触发 CI 构建+发布
+# 后台监控（不要阻塞，用 run_in_background）
+gh run list --branch vX.Y.Z --limit 1 --json databaseId
+gh run view <id> --json status,conclusion     # 轮询到 completed
+gh release view vX.Y.Z --json name,assets     # 确认双资产
+```
+
+**CI 流程**：push main = 只跑测试；push tag = 测试 + PyInstaller 打包 + EXE 存活检查 + Inno Setup 安装包 + 发布 Release。
+**历史坑**：忘 `git add app/config.py` 导致版本校验失败（已犯两次）；`smoke_test.py` 结果靠 `smoke_result.txt` 首行 PASS 判定（退出码不可靠）。
+
+## 三、⚠️ 待办任务（新会话的首要工作）
+
+### 任务：真实用户视角的模型端到端测试
+
+用户明确要求：**像正常用户一样使用——GPU 计算 + 体量最大的模型 + 开启连续翻译 + 打开任意英语视频**，测试前先确认当前设置。
+
+**步骤建议**：
+1. 打印并核对当前配置（见第五节"用户当前配置"）
+2. **先解决已知阻塞**：`engine = 'argos'` 但离线包目录 `~/.live_subtitle/argos/packages` **为空** → 当前翻译引擎无包可用，必然翻译失败。需改为 `google`（在线，需代理）或 `auto`，或在设置页下载离线语言包（英→中）
+3. 悬浮条当前 `overlay_enabled = False` → 若要看连续翻译效果需打开（设置-显示 或 `Ctrl+Alt+O` 热键）
+4. 播放英语语音：最可靠的方式是 **Windows SAPI 生成 en-US 语音并播放到默认输出设备**（环回采集可直接抓到），或用浏览器播任意英语视频
+   ```powershell
+   Add-Type -AssemblyName System.Speech
+   $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+   $s.SelectVoice('Microsoft Zira Desktop')   # en-US 女声
+   $s.SetOutputToWaveFile("$env:TEMP\en_test.wav")
+   $s.Speak("...English paragraph...")
+   # 然后用 SoundPlayer 播放到默认输出设备，环回即可采集
+   ```
+5. 启动管线（`large-v3-turbo` + `asr_device=cuda`），观察：主窗口字幕卡是否成对出现（原文+译文）、悬浮条连续流是否累积、延迟是否可接受
+6. 日志：`~/.live_subtitle/logs/app.log`（排障必看）
+
+## 四、用户当前配置（实测于交接时）
+
+| 键 | 值 | 说明 |
+|---|---|---|
+| `asr_model` | `large-v3-turbo` | 用户要求的最大模型（HF repo: `mobiuslabsgmbh/faster-whisper-large-v3-turbo`） |
+| `asr_device` | `cuda` | GPU 档；CUDA 运行时已装（`_torch_cuda_ready()` 返回 True） |
+| `engine` | `argos` | ⚠ **无离线包，需改** |
+| `target_lang` | `zh-CN` | |
+| `source_type` | `system` | 系统声音（环回） |
+| `device_name` | Realtek High Definition Audio [Loopback] | 按名匹配设备（防热插拔漂移） |
+| `overlay_enabled` | `False` | ⚠ 若测连续翻译需打开 |
+| `overlay_stream` | `True` | 连续文本流模式已开 |
+| `show_source` | `False` | **只显示译文**（用户明确要求） |
+| `instant_caption` | `True` | 流式两段式（原文先上屏、译文补齐） |
+| `hotkey_sequence` | `Ctrl+Alt+J` | 用户自己改的（开始/停止） |
+| `hotkey_overlay` | `Ctrl+Alt+O` | 显隐悬浮条 |
+| `silero_vad` | `False` | 用户关闭 |
+| `hallucination_filter` | `False` | 用户关闭 |
+| `proxy_mode` | `system` | 本机代理 `http://127.0.0.1:10808`（环境变量 HTTP_PROXY/HTTPS_PROXY 已设） |
+| `close_action` | `tray` | 关闭窗口=最小化到托盘 |
+| `max_history` | `200` | |
+
+**机器**：Windows，RTX 2060 6GB（驱动 610.62 / CUDA UMD 13.3），Python 3.14.7（**无 torch**，GPU 走 `nvidia-cublas-cu12` + `nvidia-cudnn-cu12` 独立 wheel）。
+
+## 五、关键知识点（血泪教训，避免重走弯路）
+
+### 5.1 悬浮条（用户最在意、迭代最多）
+- **内容形态三模式**：单条 / 列表 / **连续文本流**（`overlay_stream`，用户选定形态）
+- 连续流 = `QTextBrowser` + `_stream_parts` 段列表：不断追加进同一段富文本、自动换行、自动滚底、超长从头部淘汰（>1200 字符裁到 700）
+- **"只显示译文"必须过滤原文段**：`_stream_visible_kinds()` 依据 `_show_source`；`apply_overlay_from_config` 负责把配置同步到 `overlay._show_source`（曾经漏同步导致开关不生效）
+- 悬浮窗**可拖边缩放**（四边四角，`_user_resized` 后禁用 `adjustSize` 覆盖），尺寸持久化 `overlay_w/h`
+- 右键菜单：打开设置 / 切换输入来源 / **只显示译文** / 恢复自动大小 / 隐藏
+
+### 5.2 热键（踩过最深的坑）
+- **Qt Windows 分发器会把同一条 WM_HOTKEY 两次送达原生过滤器**（最小复现实证：单次 `RegisterHotKey` + 单次 `SendInput` → 过滤器收到 2 条同 id 同 lParam 消息）
+- 主热键靠 `toggle_running` 的 0.25s 防抖侥幸掩盖多年；新增热键必须自己去重 → 已在 `hotkey.py` 按 id 做 **60ms 去重**
+- **热键类改动必须过真实按键测试**：`SendInput` 注入真实按键（注意 `INPUT` 结构体必须是 40 字节，含 MOUSEINPUT 字段，否则返回 0 静默失败）
+- 测试用独立 `LIVETRANSLATE_HOME` + 独立组合键，避免与用户运行中的实例冲突
+
+### 5.3 环境与测试陷阱
+- `QT_QPA_PLATFORM=offscreen` 跑无头测试，但 **offscreen 无字体** → 测量文字宽高必须用 `QT_QPA_PLATFORM=windows`（真实 Windows 平台）
+- 文字裁剪检测：`scripts/probe_text_clip.py`（逐控件比对所需尺寸 vs 实际尺寸，交接时已修到 0 裁剪）
+- 集成测试：`tests/test_integration.py`（20 项，覆盖配置/缓存/重采样/悬浮条三模式/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理）
+- 阻塞式 `stream.read` 在静音环回上会挂死 → 探测脚本必须轮询 `get_read_available`
+- 探测脚本用完即删，产物走 `.gitignore`
+
+### 5.4 已修复的高危问题（勿回退）
+- 翻译缓存未加载即 `save()` 会清空整个持久缓存（H1）→ `_save_locked` 加 `if not self._loaded: return`
+- 字幕被 `max_history` 裁剪时 `_pending` 悬挂引用 → 裁剪时同步移除配对
+- 模型加载期停止的孤儿线程构造完成后不得入池（`_stop` 后置检查）
+- 跨块 FIR 抗混叠滤波（`resample_to_16k(..., carry_key=...)`）避免 30ms 块边界调制
+- 迁移"目标目录非空"拒绝类异常需透传（`_MigrationRefused`）
+- 尾句 flush 去掉 `not self._stop` 条件
+
+### 5.5 用户偏好（重要）
+- 要求**实现全部需求**（"全部都做"），功能尽量做成**设置里的开关**
+- 关注视觉细节与文案准确性：**文案不许承诺未实现的功能**（Ctrl+Alt+O 与托盘"切换输入来源"两次因此被批评）
+- 反馈直接、要求高：会实测并截图指出问题，测试必须**真实验证**而非调用内部函数自证
+- 中文沟通
+
+## 六、仓库结构速查
+
+```
+app/config.py            DEFAULTS 配置白名单 + 存储根迁移
+app/hotkey.py            全局热键（双发去重在此）
+app/asr/engine.py        AsrThread：模型下载/加载/GPU 检测/转写/背压
+app/audio/capture.py     CaptureThread、设备解析、重采样+FIR、能量 VAD 分段
+app/translate/translator.py  TranslateThread、三引擎备援链、翻译缓存
+app/ui/main_window.py    主窗口、字幕卡、托盘、状态横幅、空页面速览卡
+app/ui/caption_overlay.py 悬浮条（连续文本流/列表/单条 + 缩放 + 淡入）
+app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
+app/ui/first_run.py      首启向导
+scripts/bump_version.py  版本同步（唯一正确入口）
+scripts/probe_text_clip.py 文字裁剪探测
+tests/test_units.py      28 项单元测试
+tests/test_integration.py 20 项集成测试
+ROADMAP.md               开发历程（每版本一节，含根因分析）
+README.md                更新日志（用户可见）
+```
+
+## 七、新会话开场建议
+
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.2.10 已发布。首要任务：按第三节做真实用户视角的模型端到端测试——GPU + large-v3-turbo + 连续翻译 + 英语视频，测试前先确认设置（注意 engine=argos 无离线包这个阻塞）。」
+
+**注意事项**：
+- 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
+- `build_env/`（约 680MB CUDA wheel）已 gitignore，勿删除（本机 GPU 依赖）
+- 遇到不确定是否要改用户配置时，先问
