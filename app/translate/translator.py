@@ -348,22 +348,30 @@ def probe_engine(name, timeout=2.5):
     return False, "未知引擎"
 
 
-def select_engine(timeout=2.5):
-    # v2.3.1：探测失败原因落日志——此前静默回退，用户看到"引擎: mymemory"
-    # 却不知道 google 为什么没选上（限流？断网？），排障两眼一抹黑
+def select_engine_ex(timeout=2.5):
+    """v2.3.2（G2）：探测并返回 (选用引擎, 失败原因列表)——
+    失败原因供 UI 事前横幅，不再只有事后日志。"""
     from app import log as app_log
+    fails = []
     for name in PROBE_ORDER:
         ok, detail = probe_engine(name, timeout)
         if ok:
-            return name
+            return name, fails
         app_log.log("translate.probe_failed", engine=name, detail=detail)
+        fails.append(f"{name}: {detail}")
     app_log.log("translate.probe_all_failed", fallback="mymemory")
-    return "mymemory"
+    return "mymemory", fails
+
+
+def select_engine(timeout=2.5):
+    return select_engine_ex(timeout)[0]
 
 
 class TranslateThread(QThread):
     result_ready = Signal(str, str, str, str, str)  # source_text, translated, engine, detected_lang, error
     status_changed = Signal(str)
+    # v2.3.2（G2）：在线引擎启动即不可达的事前通知（engine_desc, reason）
+    engine_fallback = Signal(str, str)
 
     def __init__(self, engine_name: str, target: str, parent=None):
         super().__init__(parent)
@@ -438,8 +446,17 @@ class TranslateThread(QThread):
         self._active_engine = self.engine_name
         if self.engine_name == "auto":
             self.status_changed.emit("正在探测可用翻译引擎...")
-            self._active_engine = select_engine()
+            self._active_engine, fails = select_engine_ex()
             self.status_changed.emit(f"已选用翻译引擎: {self._active_engine}")
+            if fails:  # G2：主引擎不可达，事前横幅（携带具体失败原因）
+                self.engine_fallback.emit(f"Google 未通过，已选 {self._active_engine}",
+                                          "；".join(fails))
+        elif self.engine_name in ("google", "mymemory"):
+            # G2：用户显式指定在线引擎——启动即探测一次，不可达先告知，
+            # 避免整个会话每条字幕才翻译失败时才被动发现
+            ok, detail = probe_engine(self.engine_name, timeout=2.5)
+            if not ok:
+                self.engine_fallback.emit(self.engine_name, detail)
         # v2.0.6：记录"主引擎"——auto 的主选结果或用户显式指定的引擎；
         # 备援期间队列空闲时定期重探，恢复即切回（见 _maybe_reprobe_primary）
         self._primary_engine = self._active_engine

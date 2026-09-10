@@ -299,6 +299,51 @@ def t_listen_pulse():
     w._quitting = True; w._teardown()
 check("status: 正在聆听呼吸反馈起停时机", t_listen_pulse)
 
+def t_overlay_status_row():
+    # v2.3.2（G1）：速览卡"悬浮字幕条"状态行跟随显隐（用户痛点：关了没人说）
+    w = MainWindow()
+    w.show()
+    lab = w._quick_labels["悬浮字幕条"]
+    w.overlay.hide()
+    w._refresh_quick_panel()
+    assert "已关闭" in lab.text() and "Ctrl+Alt+O" in lab.text(), lab.text()
+    assert "fbbf24" in lab.styleSheet()
+    w.overlay.show()
+    w._refresh_quick_panel()
+    assert "已开启" in lab.text() and lab.styleSheet() == "", (lab.text(), lab.styleSheet())
+    w.overlay.hide()
+    w._quitting = True
+    w._teardown()
+check("quickpanel: 悬浮字幕条状态行跟随显隐（G1）", t_overlay_status_row)
+
+def t_engine_fallback_banner():
+    # v2.3.2（G2）：在线引擎不可达→事前横幅，且不被后续常规状态覆盖
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w._on_engine_fallback("Google 未通过，已选 mymemory", "google: ConnectTimeout")
+    assert getattr(w, "_engine_fallback_warn", None) and "ConnectTimeout" in w._engine_fallback_warn
+    assert w.alert_banner.isVisibleTo(w) and "不可达" in w.alert_banner.text()
+    w._set_engine_status("翻译: 识别完成")
+    assert "不可达" in w.alert_banner.text(), "常规状态不得清掉预警横幅"
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("translate: 在线引擎不可达事前横幅持续（G2）", t_engine_fallback_banner)
+
+def t_select_engine_ex():
+    # v2.3.2（G2）：select_engine_ex 返回 (选用, 失败原因列表)——横幅的数据源
+    import app.translate.translator as tr
+    orig = tr.probe_engine
+    try:
+        tr.probe_engine = lambda name, timeout=2.5: (
+            name == "mymemory", "OK" if name == "mymemory" else "ConnectTimeout: proxy down")
+        eng, fails = tr.select_engine_ex()
+        assert eng == "mymemory" and len(fails) == 1 and "google" in fails[0], (eng, fails)
+    finally:
+        tr.probe_engine = orig
+check("translate: select_engine_ex 失败原因收集", t_select_engine_ex)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey

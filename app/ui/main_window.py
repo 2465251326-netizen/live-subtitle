@@ -316,6 +316,17 @@ class MainWindow(QMainWindow):
             self._quick_labels[key] = v
             qgrid.addWidget(k, i, 0, Qt.AlignTop)
             qgrid.addWidget(v, i, 1, Qt.AlignTop)
+        # v2.3.2（G1）：悬浮字幕条状态行——用户关了悬浮条后软件从不提醒，
+        # "关了都忘了"是模拟用户报告的真实痛点；空页面仪表盘常驻显示状态与开启方法
+        ov_key = QLabel("悬浮字幕条")
+        ov_key.setObjectName("PanelTitle")
+        ov_key.setMinimumHeight(18)
+        ov_val = QLabel("—")
+        ov_val.setObjectName("EmptyHint")
+        ov_val.setMinimumHeight(20)
+        self._quick_labels["悬浮字幕条"] = ov_val
+        qgrid.addWidget(ov_key, 3, 0, Qt.AlignTop)
+        qgrid.addWidget(ov_val, 3, 1, Qt.AlignTop)
         # v2.2.13（用户实拍"别扭"修正）：热键拆两行显示——单行拼接必换行，
         # 而 word-wrap 标签的换行高度不通知父布局，卡片高度冻结导致第二行
         # 被提示行压住（v2.2.9 的 adjustSize 修复实际从未生效）。两行短文本
@@ -323,8 +334,8 @@ class MainWindow(QMainWindow):
         hk_key = QLabel("热键")
         hk_key.setObjectName("PanelTitle")
         hk_key.setMinimumHeight(18)
-        qgrid.addWidget(hk_key, 3, 0, 2, 1, Qt.AlignTop | Qt.AlignLeft)
-        for r, name in ((3, "热键"), (4, "热键o")):
+        qgrid.addWidget(hk_key, 4, 0, 2, 1, Qt.AlignTop | Qt.AlignLeft)
+        for r, name in ((4, "热键"), (5, "热键o")):
             v = QLabel("—")
             v.setObjectName("EmptyHint")
             v.setMinimumHeight(20)
@@ -473,6 +484,7 @@ class MainWindow(QMainWindow):
             if dlg is not None and hasattr(dlg, "sync_overlay_check"):
                 dlg.sync_overlay_check(True)
             self.update_overlay_status()
+            self._refresh_quick_panel()  # v2.3.2（G1）：仪表盘同步悬浮条状态
 
     def apply_hotkey_config(self):
         """按配置注册/注销全局热键；返回给设置页展示的状态文本。"""
@@ -650,6 +662,14 @@ class MainWindow(QMainWindow):
         labels["识别模型"].setText(f"{model}（{'GPU' if self._quick_gpu_hint() else 'CPU'}）")
         labels["翻译引擎"].setText(eng)
         labels["音频来源"].setText(src)
+        # v2.3.2（G1）：悬浮条状态常驻仪表盘——关闭时明说怎么再打开
+        # （文案刻意短：值列不换行，长句会撑爆卡片 520px 上限）
+        if self.overlay.isVisible():
+            labels["悬浮字幕条"].setText("已开启（可拖动位置）")
+            labels["悬浮字幕条"].setStyleSheet("")
+        else:
+            labels["悬浮字幕条"].setText("已关闭 · 按 Ctrl+Alt+O 打开")
+            labels["悬浮字幕条"].setStyleSheet("color: #fbbf24;")
         # v2.2.11：热键行以“实际注册成功”为准显示——配置了但被占用未注册时
         # 标红“（未生效）”，不再拿配置值谎称可用（文案不许承诺做不到的事）
         hk_live = hotkey.current_text()
@@ -718,6 +738,7 @@ class MainWindow(QMainWindow):
     def set_overlay_enabled(self, checked):
         self.set_overlay_visible(checked)
         self.config.set("overlay_enabled", bool(checked))
+        self._refresh_quick_panel()  # v2.3.2（G1）
 
     def apply_overlay_from_config(self):
         c = self.config
@@ -768,6 +789,7 @@ class MainWindow(QMainWindow):
         dlg = getattr(self, "_settings_dlg", None)
         if dlg is not None:
             dlg.sync_overlay_check(False)
+        self._refresh_quick_panel()  # v2.3.2（G1）
 
     def _clear_captions(self):
         while self.scroll_layout.count() > 1:
@@ -866,6 +888,8 @@ class MainWindow(QMainWindow):
         # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
         # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"
         self.translate_thread.status_changed.connect(self._on_translate_status)
+        # v2.3.2（G2）：在线引擎启动即不可达的事前横幅
+        self.translate_thread.engine_fallback.connect(self._on_engine_fallback)
         self.translate_thread.start()
 
         self._asr_ready = False  # v2.0.4：模型加载期停止时缩短等待（见 stop_pipeline）
@@ -1001,6 +1025,9 @@ class MainWindow(QMainWindow):
             # 每 10s 音频要 10~15s 转写，字幕越拖越晚永远追不上，且毫无提示）
             self._set_alert("⚠ 当前为重模型且运行在 CPU：字幕会明显滞后。建议到"
                             "「设置-语音识别」换 small，或安装 GPU 加速后选「强制 GPU」")
+        elif getattr(self, "_engine_fallback_warn", None):
+            # v2.3.2（G2）：在线引擎不可达预警持续展示（后续常规状态不覆盖）
+            self._set_alert(self._engine_fallback_warn, error=True)
         elif not ("识别积压" in text or "积压" in text or "跳过" in text):
             self._set_alert(None)
         if not getattr(self, "_low_input_warn", False) and not getattr(self, "_muted_warn", False):
@@ -1038,7 +1065,19 @@ class MainWindow(QMainWindow):
     def _on_translate_status(self, text):
         if not self.running or self.sender() is not self.translate_thread:
             return
+        # v2.3.2（G2）：主引擎恢复切回 → 撤销不可达预警横幅
+        if "已恢复" in text and "切回" in text and getattr(self, "_engine_fallback_warn", None):
+            self._engine_fallback_warn = None
         self._set_engine_status(f"翻译: {text}")
+
+    def _on_engine_fallback(self, engine_desc, reason):
+        """v2.3.2（G2）：在线引擎不可达的事前横幅——此前只有事后日志，
+        代理=直连的用户整场翻译频繁失败也不知道为什么（模拟用户报告缺口）。"""
+        self._engine_fallback_warn = (
+            f"⚠ 在线翻译引擎不可达（{engine_desc}）：{reason}。"
+            "译文频繁出错请到「设置-通用」配置代理，或改用「自动」引擎")
+        if self.running:
+            self._set_alert(self._engine_fallback_warn, error=True)
 
     def _on_model_ready(self):
         # v2.0.4：模型就绪标记 + 停止下载进度反馈（原直连拆槽）
@@ -1117,6 +1156,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.style().polish(self.toggle_button)
         self._set_listen_pulse(False)  # v2.2.12：停止熄灭呼吸
         self._heavy_cpu_warn = False   # v2.3.1：撤重模型CPU预警
+        self._engine_fallback_warn = None  # v2.3.2（G2）：撤引擎不可达预警
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
