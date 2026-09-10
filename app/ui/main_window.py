@@ -925,6 +925,8 @@ class MainWindow(QMainWindow):
             self,
             # v2.0.6：设备名随行——采集线程按名回查，热插拔索引漂移不再抓错源
             device_name=str(c.get("device_name") or ""),
+            # v2.3.3（P1）：低延迟模式——直播/新闻场景缩短分段与判停
+            low_latency=bool(c.get("low_latency_mode")),
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)

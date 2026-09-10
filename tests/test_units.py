@@ -399,6 +399,24 @@ def test_has_content_filter():
     assert not has_content("")
 
 
+def test_segmenter_low_latency():
+    """v2.3.3（P1）：低延迟模式分段上限 14s→6s、判停收紧。"""
+    voiced = np.full(480, 0.2, dtype=np.float32)   # 30ms@16k，音量需高于噪声底自适应上限×3
+    s = Segmenter(low_latency=True)
+    assert s.silence_end == 0.30 and s.max_seg == 6.0
+    out_at = None
+    for i in range(210):                            # 6.3 秒连读
+        if s.feed(voiced) is not None:
+            out_at = i + 1
+            break
+    assert out_at is not None and 195 <= out_at <= 208, f"6s 处应切段，实际第 {out_at} 块"
+    # 默认模式：6.3 秒连读不得切
+    s2 = Segmenter()
+    assert s2.silence_end == 0.45 and s2.max_seg == 14.0
+    for i in range(210):
+        assert s2.feed(voiced) is None, "默认模式 6.3s 不应分段"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

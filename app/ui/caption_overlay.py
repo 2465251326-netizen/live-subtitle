@@ -587,6 +587,20 @@ class CaptionOverlay(QWidget):
         if not self._resizing:
             self.setCursor(Qt.ArrowCursor)
 
+    def _snap_to_edge(self, edge):
+        """v2.3.3（P2）：一键贴到所在屏幕顶部/底部——模拟用户实测痛点：
+        悬浮条默认压着网页播放器控制条，此前只有手动拖拽一条路。"""
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtCore import QPoint
+        scr = (QGuiApplication.screenAt(QPoint(self.frameGeometry().center()))
+               or QGuiApplication.primaryScreen())
+        g = scr.availableGeometry()
+        x = min(max(self.x(), g.left()), max(g.left(), g.right() - self.width() + 1))
+        y = g.top() + 8 if edge == "top" else max(g.top(), g.bottom() - self.height() - 7)
+        self.move(x, y)
+        if self._on_moved:
+            self._on_moved(x, y)
+
     def contextMenuEvent(self, event):
         menu = QMenu(self)
         act_settings = menu.addAction("打开设置…")
@@ -596,6 +610,10 @@ class CaptionOverlay(QWidget):
         act_transonly.setChecked(not self._show_source)
         act_auto_size = menu.addAction("恢复自动大小")
         act_auto_size.setEnabled(self._user_resized)
+        menu.addSeparator()
+        # v2.3.3（P2）：快捷归位
+        act_snap_top = menu.addAction("贴到屏幕顶部")
+        act_snap_bottom = menu.addAction("贴到屏幕底部")
         menu.addSeparator()
         act_hide = menu.addAction("隐藏字幕条")
         chosen = menu.exec(event.globalPos())
@@ -614,5 +632,9 @@ class CaptionOverlay(QWidget):
             if self._on_resized:
                 self._on_resized(0, 0)  # 0 = 清除持久化尺寸
             self.adjustSize()
+        elif chosen == act_snap_top:
+            self._snap_to_edge("top")
+        elif chosen == act_snap_bottom:
+            self._snap_to_edge("bottom")
         elif chosen == act_hide:
             self._request_close()

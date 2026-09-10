@@ -153,6 +153,7 @@ _FIELD_SPECS = {
     "asr_language":         ("pipeline", "combo"),
     "hallucination_filter": ("pipeline", "check"),
     "silero_vad":           ("pipeline", "check"),
+    "low_latency_mode":     ("pipeline", "check"),
     "mishear_map":          ("pipeline", "mishear"),
     "engine":               ("pipeline", "combo"),
     "target_lang":          ("pipeline", "combo"),
@@ -226,6 +227,11 @@ _STD_ROWS = [
     {"key": "silero_vad", "attr": "silero_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "Silero VAD（段内净化）",
      "desc": "在识别前用 Silero 模型过滤段内非语音（背景音乐/噪声更干净），与切句 VAD 双保险。"},
+    {"key": "low_latency_mode", "attr": "low_latency_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "低延迟模式（直播/新闻推荐）",
+     "desc": "字幕更快上屏：分段上限 14 秒→6 秒、静音判停收紧。代价是句子可能切短、"
+             "译文上下文变少；录播课/电影建议保持关闭。保存后重新翻译即生效。",
+     "opts": {}},
     {"key": "engine", "attr": "engine_combo", "page": "translate", "section": "翻译方向",
      "kind": "combo", "title": "翻译引擎",
      "desc": "全部免费无需密钥。自动模式启动时探测在线接口并选用可达者、断网自动回退离线包；"
@@ -883,7 +889,7 @@ class SettingsDialog(QDialog):
                   "一键检测显卡、驱动与 CUDA 可用性，附配置教程与注意事项。",
                   self.gpu_check_button)
         self._std_rows(page, "asr", "语言与计算",
-                       keys=("hallucination_filter", "silero_vad"))
+                       keys=("hallucination_filter", "silero_vad", "low_latency_mode"))
         self._section(page, "识别质量调优")
         self.mishear_edit = QPlainTextEdit()
         self.mishear_edit.setPlaceholderText(

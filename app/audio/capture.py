@@ -140,7 +140,7 @@ def resample_to_16k(data: np.ndarray, orig_sr: int, carry_key=None) -> np.ndarra
 
 
 class Segmenter:
-    def __init__(self):
+    def __init__(self, low_latency=False):
         self.buffer = []
         self.buffer_len = 0.0
         self.speech_len = 0.0
@@ -148,8 +148,15 @@ class Segmenter:
         self.in_speech = False
         self.silence_run = 0.0
         self.speech_run = 0.0
-        # 自适应切句（建议2）：按语速在 0.30-0.60s 间动态调整静音判停
-        self.silence_end = SILENCE_END_S
+        # v2.3.3（P1，模拟用户痛点"字幕滞后半分钟"）：低延迟模式——
+        # 分段上限 14s→6s、静音判停 0.45s→0.30s、自适应区间收紧 0.20~0.40s。
+        # 代价：句子可能切短、译文上下文变少，故为设置开关、默认关。
+        self.low_latency = bool(low_latency)
+        self.max_seg = 6.0 if self.low_latency else MAX_SEGMENT_S
+        self.sil_lo = 0.20 if self.low_latency else 0.30
+        self.sil_hi = 0.40 if self.low_latency else 0.60
+        # 自适应切句（建议2）：按语速在 [sil_lo, sil_hi] 间动态调整静音判停
+        self.silence_end = 0.30 if self.low_latency else SILENCE_END_S
 
     def _adapt_silence_end(self, spoken, buffered):
         """按刚完成段的语速（有声占比）调整判停等待。
@@ -161,9 +168,9 @@ class Segmenter:
             return
         density = spoken / buffered
         if density > 0.80:
-            self.silence_end = max(0.30, self.silence_end - 0.03)
+            self.silence_end = max(self.sil_lo, self.silence_end - 0.03)
         elif density < 0.35:
-            self.silence_end = min(0.60, self.silence_end + 0.03)
+            self.silence_end = min(self.sil_hi, self.silence_end + 0.03)
 
     def _rms(self, chunk: np.ndarray) -> float:
         if chunk.size == 0:
@@ -188,7 +195,7 @@ class Segmenter:
             self.buffer_len += duration
             if not self.in_speech and self.speech_run > HANGOVER_S:
                 self.in_speech = True
-            if self.in_speech and self.buffer_len >= MAX_SEGMENT_S:
+            if self.in_speech and self.buffer_len >= self.max_seg:
                 return self._flush()
         else:
             self.silence_run += duration
@@ -239,13 +246,13 @@ class CaptureThread(QThread):
     QUIET_LEVEL = 0.012
 
     def __init__(self, source_type: str, device_index: int, parent=None,
-                 device_name: str = ""):
+                 device_name: str = "", low_latency: bool = False):
         super().__init__(parent)
         self.source_type = source_type
         self.device_index = device_index
         self.device_name = str(device_name or "")
         self._stop = False
-        self.segmenter = Segmenter()
+        self.segmenter = Segmenter(low_latency=low_latency)
         self._warned_quiet = False
 
     def stop(self):

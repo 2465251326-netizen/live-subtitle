@@ -344,6 +344,24 @@ def t_select_engine_ex():
         tr.probe_engine = orig
 check("translate: select_engine_ex 失败原因收集", t_select_engine_ex)
 
+def t_overlay_snap():
+    # v2.3.3（P2）：右键菜单"贴到屏幕顶部/底部"一键归位 + 位置持久化回调
+    from PySide6.QtGui import QGuiApplication
+    moved = []
+    ov = CaptionOverlay(on_moved=lambda x, y: moved.append((x, y)))
+    ov.resize(400, 150)
+    ov.show()
+    app.processEvents()
+    g = QGuiApplication.primaryScreen().availableGeometry()
+    ov._snap_to_edge("top")
+    assert ov.y() <= g.top() + 10, (ov.y(), g.top())
+    assert moved and moved[-1][1] <= g.top() + 10
+    ov._snap_to_edge("bottom")
+    assert ov.y() + ov.height() >= g.bottom() - 20, (ov.y(), ov.height(), g.bottom())
+    assert moved[-1][1] == ov.y()
+    ov.deleteLater()
+check("overlay: 贴屏幕顶/底一键归位（P2）", t_overlay_snap)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey
