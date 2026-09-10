@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-10 v2.2.13 发布后（速览卡版式修复 + 裁剪探测 word-wrap 盲区补强）
+> 最后更新：2026-09-10 v2.3.0 发布后（用户裁决批次：删全屏隐藏/下载ETA/声明式设置框架迁移）
 
 ---
 
@@ -11,15 +11,15 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.2.13**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.3.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
 ```powershell
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
-python tests/test_units.py                   # 28 项单元测试
-python tests/test_integration.py             # 26 项集成测试
+python tests/test_units.py                   # 29 项单元测试
+python tests/test_integration.py             # 26 项集成测试（v2.3.0 起含声明式行表全覆盖）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
 # 更新 README.md 更新日志（项目惯例：`### vX.Y.Z` 段落）
@@ -157,7 +157,7 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      28 项单元测试
+tests/test_units.py      29 项单元测试
 tests/test_integration.py 20 项集成测试
 ROADMAP.md               开发历程（每版本一节，含根因分析）
 README.md                更新日志（用户可见）
@@ -172,13 +172,15 @@ README.md                更新日志（用户可见）
 - `build_env/`（约 680MB CUDA wheel）已 gitignore，勿删除（本机 GPU 依赖）
 - 遇到不确定是否要改用户配置时，先问
 
-## 八、会话快照（2026-09-10 v2.2.12 发布后 · 上下文压缩存档）
+## 八、会话快照（2026-09-10 v2.3.0 发布后 · 上下文压缩存档）
 
-- **已完成**：两轮 E2E → v2.2.11（六修复+SRT 导出）→ v2.2.12（硬件预选/全屏隐藏开关/聆听呼吸/SRT 折行/CI pull_request）→ v2.2.13（用户实拍速览卡版式修复+探测器盲区补强）。关键提交链：`2326886` → `bc2d3a9` → `8c0a553`(版式) → `d5e77ee`(2.2.13)，各版 tag CI success、双资产核对在位
-- **红线教训（v2.2.12 体验轮，用户受惊，郑重记录）**：为测"全屏自动隐藏"在用户桌面开了 7 秒覆盖全屏的蓝色无边框窗，直接遮住用户聊天界面——**占屏测试必须先预警/约定，或改纯逻辑测试**。且该法本身无效：PowerShell 进程 Show/Activate 拿不到 `GetForegroundWindow`，自动化根本测不成"活体全屏"，别再试；真实行为留给用户 F11 自测或约定共测
+- **已完成**：两轮 E2E → v2.2.11（六修复+SRT 导出）→ v2.2.12（硬件预选/全屏隐藏开关/聆听呼吸/SRT 折行/CI pull_request）→ v2.2.13（用户实拍速览卡版式修复+探测器盲区补强）→ v2.2.14（用户裁决：删全屏隐藏+下载 ETA）→ v2.3.0（声明式设置框架迁移，行为不变）。提交链：`2326886` → `bc2d3a9` → `8c0a553` → `d5e77ee` → `343f583` → `3821b7c`，各版 tag CI success、双资产核对在位
+- **用户裁决记录**：全屏自动隐藏功能经用户 F11 实测判定"不需要"→ v2.2.14 已全删（教训：**新功能上线前要有"用户要不要"这道闸**）；说话人标签、CI 弃用告警清理=明确不做
+- **红线教训（v2.2.12 体验轮，用户受惊，郑重记录）**：为测"全屏自动隐藏"在用户桌面开了 7 秒覆盖全屏的蓝色无边框窗，直接遮住用户聊天界面——**占屏测试必须先预警/约定，或改纯逻辑测试**。且该法本身无效：PowerShell 进程 Show/Activate 拿不到 `GetForegroundWindow`，自动化根本测不成"活体全屏"，别再试
 - **本机运行时**：应用未在运行；用户 DSH 聊天窗=便携版 Chrome 单实例（清理测试窗按标题 WM_CLOSE，严禁杀进程）。隔离实例复用大模型缓存的正规姿势：启动前注入 `HF_HOME` → `~\.live_subtitle\hf`（app 用 setdefault 不覆盖注入值）+ `LIVETRANSLATE_HOME` 隔离配置，免重下 1.6GB
-- **验证产物**：`Documents\LiveSubtitle_20260910_164327/171309.txt`（2.2.11 两轮）、`..._191510.txt`（2.2.12 轮 7 卡：长句 VAD 切 2 段、google 译文准确）；`%TEMP%\ls_e2e_s1..s8*.png`（本会话模型不能读图，供人眼复核）；日志 `~/.live_subtitle/logs/app.log`
-- **方法论**（复测照抄即最快路径）：SAPI en-US 分句 wav（句间 Sleep）→SoundPlayer 播放=等价英语视频；UIA 数卡片个数（Qt 自绘 Name 全空，数结构有效）；`trans_cache.json` 键值差=识别+翻译铁证（**注意 flush 批处理 10 条/5s，读早了会误判"没产出"，以导出件为准**）；LockBits 亮像素统计=悬浮条内容级证据；导出按钮真实点击+Enter=免费拿全卡文本（默认名落 Documents）；点击前先激活主窗（浏览器覆盖时点击会落错窗，本会话踩两次）
-- **发版后观察点**：`pipeline.no_segments_15s` 日志键是否出现；速览卡热键红字在真实占用下是否显示；`overlay_hide_fullscreen` 用户已自行开启并做过 F11 实测（结果待反馈）；**教训：用户眼睛>自动化探测——探测报 0 ≠ 无问题，关键 UI 需真实平台实拍复核（版式 bug 即用户截图抓包，v2.2.9 假修复至此暴露）**
-- **遗留排期候选**：SRT 说话人标签（需 diarization）；声明式设置框架全量迁移；用户配置未开全屏隐藏（体验用隔离环境，已连临时目录一并清理）
+- **验证产物**：`Documents\LiveSubtitle_20260910_164327/171309/191510.txt`（三轮导出）、`%TEMP%\ls_e2e_s1..s8*.png`（本会话模型不能读图，供人眼复核；用户已明示**保留**）；日志 `~/.live_subtitle/logs/app.log`
+- **方法论**（复测照抄即最快路径）：SAPI en-US 分句 wav（句间 Sleep）→SoundPlayer 播放=等价英语视频；UIA 数卡片个数（Qt 自绘 Name 全空，数结构有效）；`trans_cache.json` 键值差=识别+翻译铁证（**注意 flush 批处理 10 条/5s，读早了会误判"没产出"，以导出件为准**）；LockBits 亮像素统计=悬浮条内容级证据；导出按钮真实点击+Enter=免费拿全卡文本（默认名落 Documents）；点击前先激活主窗（浏览器覆盖时点击会落错窗，本会话踩两次）；git worktree 挂旧提交=探测器/回归的双向验证利器
+- **发版后观察点**：`pipeline.no_segments_15s` 日志键是否出现；速览卡热键红字在真实占用下是否显示；下载大模型时 ETA 文案观感；**教训：用户眼睛>自动化探测——探测报 0 ≠ 无问题，关键 UI 需真实平台实拍复核（版式 bug 即用户截图抓包，v2.2.9 假修复至此暴露）**
+- **遗留排期候选**：仅剩 SRT 说话人标签（用户已明确**不做**，除非未来改主意）；声明式框架已于 v2.3.0 完成
+- **设置页开发规约（v2.3.0 起）**：新增"键→单控件"型设置=三处登记（DEFAULTS + _FIELD_SPECS + _STD_ROWS），不要再手写控件/同步行；复合控件才允许手写
 - **工具坑位新增**：Add-Type 里方法名 `Main` 被当入口点报"签名错误"（改名即过）；`gh --jq` 表达式含空格须用单引号（pwsh 双引号会被拆参数）；`FsTest` 类不跨 pwsh 调用存活（每次内联重定义）
