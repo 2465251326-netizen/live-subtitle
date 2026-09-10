@@ -212,7 +212,14 @@ class AsrThread(QThread):
         from app.asr.engine import model_repo_id
         # v2.0.9：缓存目录名跟随真实仓库 ID（large-v3-turbo 的权重在
         # mobiuslabsgmbh 仓库，目录名不再硬编码 Systran 前缀）
-        return HF_HOME / "hub" / ("models--" + model_repo_id(model_size).replace("/", "--"))
+        # v2.3.10（P11）：根目录跟随 huggingface_hub 的实际解析——用户预设
+        # HF_HOME 环境变量时 hub 下载/加载走环境变量而非 CONFIG_DIR/hf，
+        # 判定不同步曾让预热误报 not_cached 跳过（第六轮隔离环境实锤）。
+        # 正常用户两侧同值（Config 用 setdefault），行为不变。
+        import os
+        from pathlib import Path
+        root = Path(os.environ.get("HF_HOME") or str(HF_HOME))
+        return root / "hub" / ("models--" + model_repo_id(model_size).replace("/", "--"))
 
     @staticmethod
     def model_cached(model_size: str) -> bool:

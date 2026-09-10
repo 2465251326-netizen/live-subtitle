@@ -457,6 +457,28 @@ def test_log_day_rotation():
     assert "today line" in io.open(p, encoding="utf-8").read()
 
 
+def test_model_cache_dir_honors_env_hf_home():
+    """v2.3.10（P11）：用户预设 HF_HOME 环境变量时，"已下载"判定必须跟随
+    huggingface_hub 的实际解析路径（否则预热误报 not_cached 跳过）。"""
+    import os
+    import tempfile
+    from pathlib import Path
+    from app.asr.engine import AsrThread
+    d = Path(tempfile.mkdtemp())
+    snap = d / "hub" / "models--Systran--faster-whisper-tiny" / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
+    (snap / "model.bin").write_bytes(b"\0" * (60 * 1024 * 1024))   # >50MB 阈值
+    old = os.environ.get("HF_HOME")
+    os.environ["HF_HOME"] = str(d)
+    try:
+        assert AsrThread.model_cached("tiny"), "环境变量 HF_HOME 下的完整缓存应被判已下载"
+    finally:
+        if old is None:
+            del os.environ["HF_HOME"]
+        else:
+            os.environ["HF_HOME"] = old
+
+
 def test_segmenter_low_latency():
     """v2.3.3（P1）：低延迟模式分段上限 14s→6s、判停收紧。"""
     voiced = np.full(480, 0.2, dtype=np.float32)   # 30ms@16k，音量需高于噪声底自适应上限×3
