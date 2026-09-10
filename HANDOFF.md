@@ -54,6 +54,13 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 5. SendInput 键入 `INPUT` 必须含 MOUSEINPUT 联合（cbSize=40）；鼠标点击 `type=0`+`MOUSEEVENTF_LEFTDOWN/UP(0x2/0x4)`，先 `SetCursorPos`。
 6. 步骤方法备查：SAPI wav 句间自然停顿 0.8~1s → 正好触发自适应静音分段（每句 1 卡，偶尔句中切分属正常）；`SoundPlayer.PlaySync` 阻塞精确，可直接用作时序。
 
+**追加：真实浏览器轮（同日晚，Chrome + YouTube "Me at the zoo" 循环播放）**
+- 链路复测通过：视频原句全部识别并离线译出（`Documents\LiveSubtitle_20260910_171309.txt`），日志零 error/warn；端到端 3~5s 体感与合成语音轮一致。
+- Argos 质量实锤短板：`trunks(象鼻)`→"战线/前面"；多义词全靠上下文，离线包给不了。用户在意译文观感时，这是换引擎（或换更大离线包）的正当理由。
+- 转场/音乐段出"且道甚么处来/你个/……"式乱码字幕 = Whisper 对非语音音频的幻觉——`hallucination_filter` 正是为此存在（当前用户配置为关，属用户选择；文案上可提示"看到没人说话却出字幕=请开幻觉过滤"）。
+- 环境教训：本机 Chrome 是**便携版单实例**（用户 GUI 和我的测试窗共用主进程 4828）——清理测试浏览器窗口必须**按标题 `WM_CLOSE` 单窗关闭**，严禁按进程名杀；`ShowWindow(SW_MINIMIZE)` 扫"所有 Chrome 大类窗口"会误伤用户自己的窗口（本次已发生一次，幸无后果）。
+- 待查观察：测试中途悬浮条自行从 (429,760) 平移至 (470,701)（尺寸不变）。源码无自动 move 逻辑（仅拖拽/边缩放），疑为自动化注入的杂散鼠标事件所致，人工使用未见复现路径，暂不立案。
+
 <details><summary>原始任务描述（存档）</summary>
 
 用户明确要求：**像正常用户一样使用——GPU 计算 + 体量最大的模型 + 开启连续翻译 + 打开任意英语视频**，测试前先确认当前设置。
