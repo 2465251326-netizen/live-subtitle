@@ -116,12 +116,6 @@ class CaptionCard(QFrame):
         self.style().polish(self)
 
 
-def ends_sentence(text):
-    """v2.3.6（P9）：是否以句末标点收尾（翻译攒句的断句判据）。"""
-    t = (text or "").rstrip()
-    return bool(t) and t[-1] in ".!?…。！？\"」』)】'"
-
-
 def _srt_ts(sec):
     """秒 → SRT 时间戳 HH:MM:SS,mmm。"""
     ms = int(round(max(0.0, float(sec)) * 1000))
@@ -1338,9 +1332,13 @@ class MainWindow(QMainWindow):
     # ---------- v2.3.6（P9）：低延迟"上屏碎、翻译整句"两轨制 ----------
 
     def _submit_for_translation(self, text, detected):
-        """低延迟开启时碎片立即上屏（占位卡已建），但翻译攒成整句再送——
-        实测碎片以小写连接词开头（"and authorities…"），独立翻译丢主语。
-        攒句判据：句末标点 / 满 3 片 / 2.5 秒静默。默认模式行为不变。"""
+        """v2.3.7（P9）低延迟两轨制：碎片立即上屏（占位卡已建），翻译攒整句再送。
+
+        v2.3.8 实测修正：句末标点判据**无效**——whisper 对 6 秒音频切片会
+        自行补句号（P9 验收实测每片都以 "." 收尾、逐片即送，攒句形同虚设）。
+        真正的句子边界是**首字母大小写**：小写开头=上句延续（并入），
+        大写/CJK/数字开头=新句开始（先把已攒的整句送出）。
+        辅以 5 片硬上限与 2.5 秒静默兜底。默认模式行为不变。"""
         if not bool(self.config.get("low_latency_mode")):
             self.translate_thread.submit(text, detected)
             return
@@ -1348,9 +1346,12 @@ class MainWindow(QMainWindow):
         if grp is None:
             grp = self._tgroup = []
             self._tgroup_lang = ""
+        if grp and self._starts_new_sentence(text):
+            self._flush_tgroup()
+            grp = self._tgroup
         grp.append(text)
         self._tgroup_lang = detected or self._tgroup_lang
-        if len(grp) >= 3 or ends_sentence(text):
+        if len(grp) >= 5:
             self._flush_tgroup()
             return
         t = getattr(self, "_tgroup_timer", None)
@@ -1360,6 +1361,15 @@ class MainWindow(QMainWindow):
             t.timeout.connect(self._flush_tgroup)
             self._tgroup_timer = t
         t.start(2500)
+
+    @staticmethod
+    def _starts_new_sentence(text):
+        """新句判据（v2.3.8）：首字符为大写拉丁/CJK/数字；小写开头视为延续。"""
+        t = (text or "").lstrip()
+        if not t:
+            return False
+        ch = t[0]
+        return ch.isupper() or ch.isdigit() or "\u4e00" <= ch <= "\u9fff"
 
     def _flush_tgroup(self):
         grp = getattr(self, "_tgroup", None) or []

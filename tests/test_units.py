@@ -421,15 +421,18 @@ def test_apply_fix_map():
     assert apply_fix_map("甲", {"甲": ""}) == "甲"   # 空替换值不生效
 
 
-def test_ends_sentence():
-    """v2.3.6（P9）：攒句断句判据。"""
-    from app.ui.main_window import ends_sentence
-    assert ends_sentence("what happened.")
-    assert ends_sentence("太棒了！")
-    assert ends_sentence('他说"走吧。"')
-    assert not ends_sentence("and authorities to understand")
-    assert not ends_sentence("")
-    assert not ends_sentence("   ")
+def test_starts_new_sentence():
+    """v2.3.8（P9 修正）：whisper 切片自补句号，标点判据失效——
+    真正的句子边界是首字母大小写（小写开头=延续）。"""
+    from app.ui.main_window import MainWindow
+    f = MainWindow._starts_new_sentence
+    assert f("The FAA confirmed.")
+    assert f("飓风造成破坏")
+    assert f("25 people displaced")
+    assert not f("and authorities understand")
+    assert not f("led to this airplane going on.")
+    assert not f("")
+    assert not f("   ")
 
 
 def test_log_day_rotation():

@@ -18,6 +18,10 @@ import faulthandler
 RESULTS = []
 FAILS = []
 
+# v2.3.8 诊断：崩溃时自动 dump 全部线程栈到 stderr（定位退出 AV 肇事线程）
+import faulthandler as _fh
+_fh.enable()
+
 def check(name, fn):
     # v2.3.6：逐项进度打印——套件曾出现间歇性挂死（Qt 收尾竞态/设备枚举），
     # 无进度时无法定位挂点；卡住时看最后一行 [it] 即嫌疑测试
@@ -444,8 +448,10 @@ def t_low_latency_group():
     real_tt = w.translate_thread
     w.translate_thread = FakeT()
     w._on_asr_text("and authorities to understand", "en", "2.0")
-    assert submitted == [], "句子未收尾不应送出"
+    assert submitted == [], "小写开头延续片不应送出"
     w._on_asr_text("what happened.", "en", "2.0")
+    assert submitted == [], "whisper 自补句号也不触发（v2.3.8 修正核心）"
+    w._flush_tgroup()   # 模拟 2.5s 静默兜底
     assert submitted == ["and authorities to understand what happened."], submitted
     w._on_translated("and authorities to understand what happened.",
                      "有关部门正在了解发生了什么。", "google", "en", "")
@@ -455,10 +461,16 @@ def t_low_latency_group():
     assert len(cs) == 2, len(cs)
     assert cs[0].target_label.text() == "", cs[0].target_label.text()
     assert cs[1].target_label.text() == "有关部门正在了解发生了什么。"
-    w._on_asr_text("one", "en", "1.0")
-    w._on_asr_text("two", "en", "1.0")
-    w._on_asr_text("three", "en", "1.0")
-    assert submitted[-1] == "one two three", submitted   # 满 3 片强制送
+    # 大写开头=新句：先把已攒的送出，自己开新组
+    w._on_asr_text("the FAA confirmed it", "en", "1.0")
+    w._on_asr_text("The NTSB joined.", "en", "1.0")
+    assert submitted[-1] == "the FAA confirmed it", submitted
+    w._flush_tgroup()
+    assert submitted[-1] == "The NTSB joined.", submitted
+    # 5 片硬上限
+    for i in range(5):
+        w._on_asr_text(f"seg{i}", "en", "1.0")
+    assert submitted[-1] == "seg0 seg1 seg2 seg3 seg4", submitted
     w.config.set("low_latency_mode", False)
     w._on_asr_text("direct", "en", "1.0")
     assert submitted[-1] == "direct"                     # 默认模式即时送
@@ -587,6 +599,11 @@ sys.stderr.flush()
 # v2.3.7：结果已落盘+打印后强制退出。os._exit 在 Windows 上仍走 CRT（触发各
 # DLL 的 PROCESS_DETACH，Qt 原生线程可在其中 AV——实测 34/34 全过但退出码
 # 0xC0000005 的元凶）。kernel32.TerminateProcess 跳过 CRT，零收尾窗口。
+# v2.3.8 定性结论（faulthandler 抓栈实证）：AV 发生在主线程 TerminateProcess
+# 的进程收尾路径（Qt DLL 卸载竞态），无肇事后台线程、测试与报告均已全部完成。
+# 与 build.yml 对 smoke test 的既有备注同源——**退出码不可信，判定以
+# test_report.txt / stdout 的 TOTAL 行为准**。TerminateProcess 仍保留：
+# 它杜绝了早先的"挂死 5 分钟"（不退出）问题，代价只是偶发退出码被改写。
 try:
     import ctypes
     _k = ctypes.windll.kernel32
