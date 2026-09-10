@@ -207,7 +207,8 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QFrame as _QFrame, QGridLayout as _QGrid
         self._quick = _QFrame()
         self._quick.setObjectName("SidePanel")
-        self._quick.setMaximumWidth(430)
+        self._quick.setMaximumWidth(520)
+        self._quick.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         qv = QVBoxLayout(self._quick)
         qv.setContentsMargins(18, 14, 18, 14)
         qv.setSpacing(8)
@@ -216,20 +217,24 @@ class MainWindow(QMainWindow):
         qv.addWidget(qtitle)
         qgrid = _QGrid()
         qgrid.setHorizontalSpacing(14)
-        qgrid.setVerticalSpacing(6)
+        qgrid.setVerticalSpacing(8)
         self._quick_labels = {}
         for i, key in enumerate(("识别模型", "翻译引擎", "音频来源", "热键")):
             k = QLabel(key)
             k.setObjectName("PanelTitle")
+            k.setMinimumHeight(18)  # v2.2.9：行高按字体下限给足，不裁字
             v = QLabel("—")
             v.setObjectName("EmptyHint")
+            v.setWordWrap(True)  # v2.2.9：长热键组合自动换行，不裁字
+            v.setMinimumHeight(20)
             self._quick_labels[key] = v
-            qgrid.addWidget(k, i, 0)
-            qgrid.addWidget(v, i, 1)
+            qgrid.addWidget(k, i, 0, Qt.AlignTop)
+            qgrid.addWidget(v, i, 1, Qt.AlignTop)
         qv.addLayout(qgrid)
         qtip = QLabel("提示：托盘图标右键可快速切换输入来源；热键可在「设置-通用」修改")
         qtip.setObjectName("SettingDesc")
         qtip.setAlignment(Qt.AlignCenter)
+        qtip.setWordWrap(True)  # v2.2.9：提示自动换行，不截断
         qv.addWidget(qtip)
         empty_page = QWidget()
         empty_layout = QVBoxLayout(empty_page)
@@ -543,6 +548,11 @@ class MainWindow(QMainWindow):
         labels["翻译引擎"].setText(eng)
         labels["音频来源"].setText(src)
         labels["热键"].setText(f"{hk} 开始/停止 · {oseq or '未设'} 显隐悬浮条")
+        # v2.2.9：文本变长（换行）后重算尺寸，防止行高不足裁字
+        self._quick.adjustSize()
+        lay = self._quick.layout()
+        if lay is not None:
+            lay.activate()
 
     def _quick_gpu_hint(self):
         """轻量 GPU 判定：仅读配置，不探测驱动（避免拖慢启动）。"""
