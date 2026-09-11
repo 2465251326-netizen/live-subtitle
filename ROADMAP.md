@@ -697,4 +697,15 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 ---
 
+## 四十八、v2.3.16 P21 信号契约审计：把"猜单位"变成"签契约"（2026-09-11）
+
+> "再理解一遍"轮：第十轮三连爆（P19）的根因不是那行 >=3，而是跨模块数值信号一直靠**口头量纲**。本轮做全量对账并制度化。
+
+- ✅ 对账范围：level_changed（0~1 比例，消费已修）、text_ready.duration（"4.3" 秒数字符串，_asr_timing float() 一致）、progress_pct（全链 0~100 整数：emit `*100/total`、槽 setRange(0,100)+setValue）、low_input/muted（bool 语义单义）、Segmenter 阈值（内部，秒/比例自洽）——**除 v2.3.15 修复项外无新活体错配**
+- ✅ 防复发落点：单位契约钉进**信号声明处**（capture/engine 的 Signal 注释）+ **消费槽 docstring**（_on_level）+ **常量行尾单位**（QUIET_WARN_S 秒、QUIET_LEVEL 原始峰值 0~1）；配合 t_level_signal_scale 接线回归锁（直喂真实量纲，不模拟）
+- 教训（三版同源：P11 路径假设/P13 无包≠零/P19 量纲）：**跨模块边界上"我以为你发的是 X"必须零容忍**——契约要么写在类型里（enum/namedtuple/量纲后缀名），要么写在声明旁并有回归锁；注释是最后一道，测试才是护栏
+- 发布：v2.3.16（纯工程，零行为变化）CI success 双资产；测试 38/38
+
+---
+
 （历史：v2.1.8 曾发布字幕墙+跑马灯过渡形态，v2.2.0 起被连续文本流取代）
