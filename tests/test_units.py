@@ -10,6 +10,31 @@ import numpy as np
 from app.audio.capture import Segmenter, resample_to_16k
 from app.translate.translator import TranslationCache, _cache
 
+# v2.3.20（测试自愈）：mkdtemp 全局记账 + 每例后回收。曾有 7 个测试造临时
+# 目录不清理、其中 60MB 假 model.bin 随百余次运行在 %TEMP% 堆到 8GB。
+# 包一层 tempfile.mkdtemp 而非逐个补 finally——新增测试自动纳入保护。
+import tempfile as _tempfile
+_MADE_TMP = []
+_orig_mkdtemp = _tempfile.mkdtemp
+
+
+def _tracked_mkdtemp(*a, **k):
+    d = _orig_mkdtemp(*a, **k)
+    _MADE_TMP.append(d)
+    return d
+
+
+_tempfile.mkdtemp = _tracked_mkdtemp
+
+
+def _purge_tmp():
+    import shutil
+    while _MADE_TMP:
+        try:
+            shutil.rmtree(_MADE_TMP.pop(), ignore_errors=True)
+        except Exception:
+            pass
+
 
 def test_vad_silence():
     s = Segmenter()
@@ -531,6 +556,9 @@ def test_segmenter_low_latency():
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
-        fn()
-        print(f"PASS {fn.__name__}")
+        try:
+            fn()
+            print(f"PASS {fn.__name__}")
+        finally:
+            _purge_tmp()   # v2.3.20：无论成败都回收本例产生的临时目录
     print(f"UNIT: {len(fns)} tests PASS")

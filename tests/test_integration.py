@@ -22,6 +22,29 @@ FAILS = []
 import faulthandler as _fh
 _fh.enable()
 
+# v2.3.20（测试自愈）：与 test_units 同款——mkdtemp 全局记账、每项测试后回收
+# （集成侧曾有 2 处 mkdtemp 无清理：%TEMP% 导出 txt + 缓存状态目录树）
+_MADE_TMP = []
+_orig_mkdtemp = tempfile.mkdtemp
+
+
+def _tracked_mkdtemp(*a, **k):
+    d = _orig_mkdtemp(*a, **k)
+    _MADE_TMP.append(d)
+    return d
+
+
+tempfile.mkdtemp = _tracked_mkdtemp
+
+
+def _purge_tmp():
+    import shutil
+    while _MADE_TMP:
+        try:
+            shutil.rmtree(_MADE_TMP.pop(), ignore_errors=True)
+        except Exception:
+            pass
+
 def check(name, fn):
     # v2.3.6：逐项进度打印——套件曾出现间歇性挂死（Qt 收尾竞态/设备枚举），
     # 无进度时无法定位挂点；卡住时看最后一行 [it] 即嫌疑测试
@@ -37,6 +60,7 @@ def check(name, fn):
         FAILS.append((name, traceback.format_exc(limit=4)))
     finally:
         faulthandler.cancel_dump_traceback_later()
+        _purge_tmp()
 
 from PySide6.QtWidgets import QApplication
 app = QApplication(sys.argv)
