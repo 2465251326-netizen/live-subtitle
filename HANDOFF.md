@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-11 v2.4.1 发布后（面板上手把玩三修：✕关闭补hide/右缘调宽可见把手/向导挂死根治）
+> 最后更新：2026-09-11 v2.4.2 发布后（空闲面板正文浅灰块根治：viewport 直挂 WA_TranslucentBackground + 像素回归锁）
 
 ---
 
@@ -11,7 +11,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.4.1**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.4.2**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -19,7 +19,7 @@
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
 python tests/test_units.py                   # 38 项单元测试
-python tests/test_integration.py             # 44 项集成测试（v2.3.8 起含 P9 两轨制；判定以 test_report.txt 的 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
+python tests/test_integration.py             # 45 项集成测试（v2.3.8 起含 P9 两轨制；判定以 test_report.txt 的 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
 # 更新 CHANGELOG.md 更新日志（v2.3.0 起 README 为门面文档不再内嵌日志；发版说明同时进 Release body）
@@ -132,7 +132,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 ### 5.3 环境与测试陷阱
 - `QT_QPA_PLATFORM=offscreen` 跑无头测试，但 **offscreen 无字体** → 测量文字宽高必须用 `QT_QPA_PLATFORM=windows`（真实 Windows 平台）
 - 文字裁剪检测：`scripts/probe_text_clip.py`（真实 Windows 平台逐控件比对所需尺寸 vs 实际尺寸；v2.2.13 起 word-wrap/多行标签按"当前宽度换行后需要高度"比对——旧版只比单行高度，曾漏掉速览卡热键压行 bug 被用户实拍抓包；用 `git worktree` 挂旧代码可做探测器双向验证）
-- 集成测试：`tests/test_integration.py`（44 项，覆盖配置/缓存/重采样/字幕面板(成对行·淘汰·收起·拖移契约)/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
+- 集成测试：`tests/test_integration.py`（45 项，覆盖配置/缓存/重采样/字幕面板(成对行·淘汰·收起·拖移契约)/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
 - 阻塞式 `stream.read` 在静音环回上会挂死 → 探测脚本必须轮询 `get_read_available`
 - 探测脚本用完即删，产物走 `.gitignore`
 
@@ -165,7 +165,7 @@ app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      38 项单元测试
-tests/test_integration.py 44 项集成测试
+tests/test_integration.py 45 项集成测试
 ROADMAP.md               开发历程（每版本一节，含根因分析）
 docs/UX-REPORT.md        模拟用户体验报告归档（R6 CBS 新闻配置归因+处置+验收数据）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
@@ -184,7 +184,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 八、会话快照（2026-09-10 v2.3.0 发布后 · 上下文压缩存档）
 
-- **已完成**：两轮 E2E → v2.2.11（六修复+SRT 导出）→ v2.2.12（硬件预选/全屏隐藏开关/聆听呼吸/SRT 折行/CI pull_request）→ v2.2.13（用户实拍速览卡版式修复+探测器盲区补强）→ v2.2.14（用户裁决：删全屏隐藏+下载 ETA）→ v2.3.0（声明式设置框架迁移，行为不变）。提交链：`2326886` → `bc2d3a9` → `8c0a553` → `d5e77ee` → `343f583` → `3821b7c` → `aeb2fb1`(v2.3.2 G1/G2) → `fe12795`(v2.3.3 P1/P2) → `9e07c3d`(v2.3.4 碎片漏网修) → `ab5a0af`(v2.3.5 P5 预热) → `c36c9cf`(v2.3.6 P7/P8+套件根治) → `5bcf032`(v2.3.7) → `25d9e35`(v2.3.8 攒句判据修正) → `30ee526`(v2.3.9 兜底窗口>分片周期，实机验收通过) → `99efde5`(v2.3.10 P11 判定同源) → `8a0806a`(v2.3.11 指引 25s) → `ca1220b`(v2.3.12 P13 无包静音告警) → `804efae`(v2.3.13 P14 卡右键纠错) → `5e637cf`(v2.3.14 P16/P17 速度专项) → `34a4fc1`(v2.3.15 P19 量纲修复) → `bd626aa`(v2.3.16 P21 契约审计) → `1c8a3f3`(v2.3.17 P22 占位可见) → `754177f`(v2.3.18 P23 寿命封顶) → `74299fc`(v2.3.19 P25 穿透三件套) → `2d39db8`(test 自愈) → `e587720`(v2.3.20 P26 延迟遥测) → `a8bca12`(v2.3.21 P28/P29 悬浮条补完) → `b3116f6`(v2.4.0 P31 字幕面板) → `fccb279`(v2.4.1 面板把玩三修) ，各版 tag CI success、双资产核对在位
+- **已完成**：两轮 E2E → v2.2.11（六修复+SRT 导出）→ v2.2.12（硬件预选/全屏隐藏开关/聆听呼吸/SRT 折行/CI pull_request）→ v2.2.13（用户实拍速览卡版式修复+探测器盲区补强）→ v2.2.14（用户裁决：删全屏隐藏+下载 ETA）→ v2.3.0（声明式设置框架迁移，行为不变）。提交链：`2326886` → `bc2d3a9` → `8c0a553` → `d5e77ee` → `343f583` → `3821b7c` → `aeb2fb1`(v2.3.2 G1/G2) → `fe12795`(v2.3.3 P1/P2) → `9e07c3d`(v2.3.4 碎片漏网修) → `ab5a0af`(v2.3.5 P5 预热) → `c36c9cf`(v2.3.6 P7/P8+套件根治) → `5bcf032`(v2.3.7) → `25d9e35`(v2.3.8 攒句判据修正) → `30ee526`(v2.3.9 兜底窗口>分片周期，实机验收通过) → `99efde5`(v2.3.10 P11 判定同源) → `8a0806a`(v2.3.11 指引 25s) → `ca1220b`(v2.3.12 P13 无包静音告警) → `804efae`(v2.3.13 P14 卡右键纠错) → `5e637cf`(v2.3.14 P16/P17 速度专项) → `34a4fc1`(v2.3.15 P19 量纲修复) → `bd626aa`(v2.3.16 P21 契约审计) → `1c8a3f3`(v2.3.17 P22 占位可见) → `754177f`(v2.3.18 P23 寿命封顶) → `74299fc`(v2.3.19 P25 穿透三件套) → `2d39db8`(test 自愈) → `e587720`(v2.3.20 P26 延迟遥测) → `a8bca12`(v2.3.21 P28/P29 悬浮条补完) → `b3116f6`(v2.4.0 P31 字幕面板) → `fccb279`(v2.4.1 面板把玩三修) → `e9566b6`(v2.4.2 面板灰块修) ，各版 tag CI success、双资产核对在位
 - **用户裁决记录**：全屏自动隐藏功能经用户 F11 实测判定"不需要"→ v2.2.14 已全删（教训：**新功能上线前要有"用户要不要"这道闸**）；说话人标签、CI 弃用告警清理=明确不做
 - **红线教训（v2.2.12 体验轮，用户受惊，郑重记录）**：为测"全屏自动隐藏"在用户桌面开了 7 秒覆盖全屏的蓝色无边框窗，直接遮住用户聊天界面——**占屏测试必须先预警/约定，或改纯逻辑测试**。且该法本身无效：PowerShell 进程 Show/Activate 拿不到 `GetForegroundWindow`，自动化根本测不成"活体全屏"，别再试
 - **本机运行时**：应用未在运行；用户 DSH 聊天窗=便携版 Chrome 单实例（清理测试窗按标题 WM_CLOSE，严禁杀进程）。隔离实例复用大模型缓存的正规姿势：启动前注入 `HF_HOME` → `~\.live_subtitle\hf`（app 用 setdefault 不覆盖注入值）+ `LIVETRANSLATE_HOME` 隔离配置，免重下 1.6GB
