@@ -97,7 +97,7 @@ class CaptionOverlay(QWidget):
     def __init__(self, on_closed=None, on_moved=None,
                  on_open_settings=None, on_toggle_source=None,
                  on_toggle_translation_only=None, on_resized=None,
-                 on_click_through=None):
+                 on_click_through=None, on_correct=None):
         super().__init__(None)
         # 背景参数必须先于任何可能触发 paintEvent 的调用（setStyleSheet 等）
         self._bg_color = QColor("#0c0e14")
@@ -123,6 +123,9 @@ class CaptionOverlay(QWidget):
         self._on_toggle_translation_only = on_toggle_translation_only
         self._on_resized = on_resized
         self._on_click_through = on_click_through
+        # v2.3.21（P29）：纠错入口与主窗卡片同源——on_correct(词典键, 预填文本)
+        self._on_correct = on_correct
+        self._last_result = ("", "")
         self._show_source = True
 
         layout = QVBoxLayout(self)
@@ -251,12 +254,16 @@ class CaptionOverlay(QWidget):
         return QRect(0, cy - h // 2, self.width(), h)
 
     def _interactive_rects(self):
-        """交互区（局部坐标）：连续流/列表模式整窗可交互；单条/跑马灯只保留
-        状态行 + **文字紧凑带** + 四边缩放把手带 + 右上关闭键区。"""
+        """交互区（局部坐标）：列表模式整窗可交互（它是唯一真有滚动条的形态）；
+        连续流/单条/跑马灯只保留 状态行 + **文字紧凑带** + 四边缩放把手带。
+        v2.3.21（P28）：连续流旧版"整窗可交互"保护的是一个不存在的手势——
+        只读 QTextBrowser 关着滚动条，用户滚不动它，却要整块吞掉视频上的点击。
+        现按已渲染文档高度压缩交互带：流式内容贴底渲染，文字不满时上方透明区
+        回归穿透；文档铺满视口时自然回到全窗，行为连续无跳变。"""
         from PySide6.QtCore import QRect
         R = self.rect()
-        if self._continuous or self._list_mode:
-            return [R]  # 可滚动区，整块可交互
+        if self._list_mode:
+            return [R]  # 可滚动列表，整块可交互
         m = self.RESIZE_MARGIN
         rects = [
             QRect(0, 0, R.width(), m),            # 四边把手带（缩放/抓取入口）
@@ -265,6 +272,15 @@ class CaptionOverlay(QWidget):
             QRect(R.width() - m, 0, m, R.height()),
             self.status_label.geometry(),         # 状态行（其右侧即 X 键区）
         ]
+        if self._continuous:
+            vp = self.stream_view.viewport()
+            th = int(self.stream_view.document().size().height())
+            if th <= 0 or vp.height() <= 0:
+                return [R]                        # 文档未布局（首帧/隐藏）→ 保守全窗
+            band_h = min(th + 8, vp.height())
+            top = self.stream_view.geometry().top() + max(0, vp.height() - band_h)
+            rects.append(QRect(0, top, R.width(), min(band_h, R.height() - top)))
+            return rects
         if self.source_label.isVisible():
             rects.append(self._text_band(self.source_label))
         if self.target_label.isVisible():
@@ -423,6 +439,7 @@ class CaptionOverlay(QWidget):
 
     def show_caption(self, source_text, target_text, show_source=True):
         self._show_source = bool(show_source)
+        self._last_result = (source_text or "", target_text or "")  # v2.3.21（P29）
         if self._continuous:
             self.stream_append(target_text, kind="target")
             return
@@ -468,6 +485,7 @@ class CaptionOverlay(QWidget):
     def show_pending_result(self, source_text, target_text, show_source=True):
         """译文就绪：连续流模式追加译文（白色主文）；两段式原地补齐占位。"""
         self._show_source = bool(show_source)
+        self._last_result = (source_text or "", target_text or "")  # v2.3.21（P29）
         if self._continuous:
             self.stream_append(target_text, kind="target")
             return
@@ -740,55 +758,84 @@ class CaptionOverlay(QWidget):
         if self._on_moved:
             self._on_moved(x, y)
 
-    def contextMenuEvent(self, event):
+    def _build_menu(self):
+        """v2.3.21（P29）：菜单构建抽方法（可测）；新增悬浮条纠错入口——
+        第十三轮吐槽：看字幕的人整天盯悬浮条不开主窗，P14 的卡片右键纠错
+        永远够不着；最该长把手的地方没把手。"""
         menu = QMenu(self)
-        act_settings = menu.addAction("打开设置…")
-        act_source = menu.addAction("切换输入来源")
-        act_transonly = menu.addAction("只显示译文")
-        act_transonly.setCheckable(True)
-        act_transonly.setChecked(not self._show_source)
-        act_auto_size = menu.addAction("恢复自动大小")
-        act_auto_size.setEnabled(self._user_resized)
+        acts = {}
+        acts["settings"] = menu.addAction("打开设置…")
+        acts["source"] = menu.addAction("切换输入来源")
+        acts["transonly"] = menu.addAction("只显示译文")
+        acts["transonly"].setCheckable(True)
+        acts["transonly"].setChecked(not self._show_source)
+        acts["autosize"] = menu.addAction("恢复自动大小")
+        acts["autosize"].setEnabled(self._user_resized)
         menu.addSeparator()
         # v2.3.3（P2）：快捷归位；v2.3.19（P25c）：补左/右缘磁吸
-        act_snap_top = menu.addAction("贴到屏幕顶部")
-        act_snap_bottom = menu.addAction("贴到屏幕底部")
-        act_snap_left = menu.addAction("贴到屏幕左侧")
-        act_snap_right = menu.addAction("贴到屏幕右侧")
+        acts["snap_top"] = menu.addAction("贴到屏幕顶部")
+        acts["snap_bottom"] = menu.addAction("贴到屏幕底部")
+        acts["snap_left"] = menu.addAction("贴到屏幕左侧")
+        acts["snap_right"] = menu.addAction("贴到屏幕右侧")
         menu.addSeparator()
         # v2.3.19（P25a）：空白处点击穿透开关（把玩报告头号痛点）
-        act_through = menu.addAction("空白处点击穿透")
-        act_through.setCheckable(True)
-        act_through.setChecked(self._click_through_enabled)
+        acts["through"] = menu.addAction("空白处点击穿透")
+        acts["through"].setCheckable(True)
+        acts["through"].setChecked(self._click_through_enabled)
         menu.addSeparator()
-        act_hide = menu.addAction("隐藏字幕条")
-        chosen = menu.exec(event.globalPos())
-        if chosen == act_settings:
+        # v2.3.21（P29）：纠错入口——无内容时置灰，有内容预填最近一句
+        last_src, last_tgt = getattr(self, "_last_result", ("", ""))
+        acts["fix_asr"] = menu.addAction("纠正最近识别…")
+        acts["fix_asr"].setEnabled(bool((last_src or "").strip()))
+        acts["fix_tr"] = menu.addAction("纠正最近译文…")
+        acts["fix_tr"].setEnabled(bool((last_tgt or "").strip()))
+        menu.addSeparator()
+        acts["hide"] = menu.addAction("隐藏字幕条")
+        self._menu_acts = acts
+        return menu
+
+    def _menu_dispatch(self, chosen):
+        acts = getattr(self, "_menu_acts", {})
+        src, tgt = getattr(self, "_last_result", ("", ""))
+        if chosen is None:
+            return
+        if chosen == acts.get("settings"):
             if self._on_open_settings:
                 self._on_open_settings()
-        elif chosen == act_source:
+        elif chosen == acts.get("source"):
             if self._on_toggle_source:
                 self._on_toggle_source()
-        elif chosen == act_transonly:
+        elif chosen == acts.get("transonly"):
             # v2.1.8：只显示译文 = show_source 取反（立即生效并持久化）
             if self._on_toggle_translation_only:
-                self._on_toggle_translation_only(act_transonly.isChecked())
-        elif chosen == act_auto_size:
+                self._on_toggle_translation_only(acts["transonly"].isChecked())
+        elif chosen == acts.get("autosize"):
             self._user_resized = False
             if self._on_resized:
                 self._on_resized(0, 0)  # 0 = 清除持久化尺寸
             self.adjustSize()
-        elif chosen == act_snap_top:
+        elif chosen == acts.get("snap_top"):
             self._snap_to_edge("top")
-        elif chosen == act_snap_bottom:
+        elif chosen == acts.get("snap_bottom"):
             self._snap_to_edge("bottom")
-        elif chosen == act_snap_left:
+        elif chosen == acts.get("snap_left"):
             self._snap_to_edge("left")
-        elif chosen == act_snap_right:
+        elif chosen == acts.get("snap_right"):
             self._snap_to_edge("right")
-        elif chosen == act_through:
-            self.set_click_through(act_through.isChecked())
+        elif chosen == acts.get("through"):
+            self.set_click_through(acts["through"].isChecked())
             if self._on_click_through:
-                self._on_click_through(act_through.isChecked())
-        elif chosen == act_hide:
+                self._on_click_through(acts["through"].isChecked())
+        elif chosen == acts.get("fix_asr"):
+            if self._on_correct:
+                self._on_correct("mishear_map", src)
+        elif chosen == acts.get("fix_tr"):
+            if self._on_correct:
+                self._on_correct("translate_fix_map", tgt)
+        elif chosen == acts.get("hide"):
             self._request_close()
+
+    def contextMenuEvent(self, event):
+        menu = self._build_menu()
+        self._menu_dispatch(menu.exec(event.globalPos()))
+        menu.deleteLater()

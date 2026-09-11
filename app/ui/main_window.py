@@ -449,7 +449,8 @@ class MainWindow(QMainWindow):
                                       on_toggle_source=self._toggle_source,
                                       on_toggle_translation_only=self._on_toggle_translation_only,
                                       on_resized=self._on_overlay_resized,
-                                      on_click_through=self._on_overlay_click_through)
+                                      on_click_through=self._on_overlay_click_through,
+                                       on_correct=self._overlay_correct)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -1552,6 +1553,16 @@ class MainWindow(QMainWindow):
 
     def _correct_from_card(self, card, dict_key):
         wrong0 = card.source_text if dict_key == "mishear_map" else card.translated_text()
+        self._correct_with_prefill(dict_key, wrong0)
+
+    def _overlay_correct(self, dict_key, wrong0):
+        """v2.3.21（P29）：悬浮条右键菜单的纠错入口——与卡片同源同对话框。"""
+        self._correct_with_prefill(dict_key, wrong0)
+
+    def _correct_with_prefill(self, dict_key, wrong0):
+        wrong0 = (wrong0 or "").strip()
+        if not wrong0:
+            return                      # 无内容不弹框（菜单项本应置灰，双保险）
         title = "纠正识别" if dict_key == "mishear_map" else "纠正译文"
         wrong, right = self._dict_dialog(title, wrong0)
         if wrong is None:

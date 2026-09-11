@@ -423,11 +423,54 @@ def t_overlay_click_through_region():
     if dead.y() < ov.height() - ov.RESIZE_MARGIN - 8:
         assert not ov._cursor_interactive(dead), "文字下方透明死区应判为可穿透"
     ov.set_continuous_mode(True)
-    assert ov._interactive_rects() == [ov.rect()], "连续流模式整窗可交互"
+    ov.stream_append("one short line", kind="target")
+    app.processEvents()
+    doc_h = int(ov.stream_view.document().size().height())
+    rects = ov._interactive_rects()
+    if doc_h > 0 and ov.height() - doc_h > 40:
+        # v2.3.21（P28）：流式文字不满窗 → 上方空区判穿透。旧版"整窗可交互"
+        # 保护的是不存在的手势（只读浏览器关着滚动条），代价是继续吞视频点击
+        assert rects != [ov.rect()], "流式模式不再整窗保护"
+        band = rects[-1]
+        assert 0 < band.height() <= ov.height()
+        gap_y = (band.top() + ov.RESIZE_MARGIN) // 2   # 顶把手与文字带之间空档
+        if band.top() - ov.RESIZE_MARGIN > 24:
+            assert not ov._cursor_interactive(QPoint(ov.width() // 2, gap_y)), \
+                f"流式文字带上方空区应可穿透（band.top={band.top()}）"
+        assert ov._cursor_interactive(QPoint(ov.width() // 2, band.center().y())), \
+            "文字带内部必须可交互"
+    assert ov._cursor_interactive(QPoint(2, 2)), "流式模式边缘把手仍可交互"
     ov.set_continuous_mode(False)
+    ov.set_list_mode(True, 5)
+    assert ov._interactive_rects() == [ov.rect()], "列表模式（真有滚动条）仍整窗保护"
+    ov.set_list_mode(False, 5)
     ov.set_click_through(False)           # 不得抛异常（关闭路径）
     ov.deleteLater()
-check("overlay: 点击穿透区几何（P25a）", t_overlay_click_through_region)
+check("overlay: 点击穿透区几何（P25a/P28）", t_overlay_click_through_region)
+
+def t_overlay_menu_correction():
+    # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
+    # on_correct 回调（与主窗卡片纠错同源）
+    got = []
+    ov = CaptionOverlay(on_correct=lambda k, w0: got.append((k, w0)))
+    menu = ov._build_menu()
+    acts = ov._menu_acts
+    texts = [a.text() for a in menu.actions() if a.text()]
+    assert "纠正最近识别…" in texts and "纠正最近译文…" in texts, texts
+    assert not acts["fix_asr"].isEnabled() and not acts["fix_tr"].isEnabled(), \
+        "无内容时纠错项必须置灰"
+    ov.show_caption("HELLO WORLD SOURCE", "你好世界", show_source=True)
+    menu2 = ov._build_menu()
+    acts2 = ov._menu_acts
+    assert acts2["fix_asr"].isEnabled() and acts2["fix_tr"].isEnabled()
+    ov._menu_dispatch(acts2["fix_asr"])
+    ov._menu_dispatch(acts2["fix_tr"])
+    assert got == [("mishear_map", "HELLO WORLD SOURCE"),
+                   ("translate_fix_map", "你好世界")], got
+    menu.deleteLater()
+    menu2.deleteLater()
+    ov.deleteLater()
+check("overlay: 悬浮条纠错菜单入口（P29）", t_overlay_menu_correction)
 
 def t_prewarm_skip_uncached():
     # v2.3.5（P5）：预热的安全边界——模型未完整下载时必须直接返回，
