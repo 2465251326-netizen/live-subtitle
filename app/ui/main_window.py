@@ -94,6 +94,7 @@ class CaptionCard(QFrame):
             self.target_label.setText("[翻译失败]")
         note = f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} · 引擎: {engine}"
         self.meta_label.setText(note)
+        self.source_label.setStyleSheet("")   # v2.3.17（P22）撤下占位弱化色
         self.source_label.setVisible(show_source)
 
     def is_pending(self):
@@ -1335,7 +1336,13 @@ class MainWindow(QMainWindow):
             return
         show_source = bool(self.config.get("show_source"))
         card = self._new_card(text)
-        card.source_label.setVisible(show_source)
+        # v2.3.17（P22）：占位卡始终显示原文——攒句/翻译等待期最长约 7 秒
+        # （R11 直播 11445.71 三条同时占位），show_source=False 时列表只剩
+        # 一排"⟳ …"，看着像卡死（系统在工作，界面在装死）。用户偏好"只看
+        # 中文"时用弱化灰斜体顶过等待期，译文落地即恢复偏好设置。
+        card.source_label.setVisible(True)
+        if not show_source:
+            card.source_label.setStyleSheet("color: #6b7488; font-style: italic;")
         card.target_label.setText("⟳ …")
         card.t_start, card.dur_s = self._last_asr_timing  # v2.2.11：SRT 时间轴
         self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)

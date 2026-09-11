@@ -552,6 +552,36 @@ def t_level_signal_scale():
     w._teardown()
 check("ui: 电平信号量纲接线（P19）", t_level_signal_scale)
 
+def t_placeholder_shows_source_dim():
+    # v2.3.17（P22）：show_source=False 时占位卡也必须显示原文（弱化样式）——
+    # 攒句/翻译等待期列表只剩"⟳ …"看着像卡死（R11 真人直播实锤）；
+    # 译文落地后恢复用户偏好（重新隐藏）
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.config.set("low_latency_mode", False)
+    w.config.set("show_source", False)
+    w._last_asr_timing = (0.0, 2.0)
+
+    class FakeT:
+        def submit(self, text, detected):
+            pass
+    real_tt = w.translate_thread
+    w.translate_thread = FakeT()
+    w._on_asr_text("A pending line awaits its translation.", "en", "2.0")
+    card = w._take_pending("A pending line awaits its translation.")
+    assert card is not None and card.source_label.isVisible(), \
+        "占位期原文必须可见（哪怕弱化），不许给用户一排 ⟳"
+    assert "italic" in card.source_label.styleSheet()
+    card.set_result("一句等待翻译的原文。", "google", "en", False)
+    assert not card.source_label.isVisible()       # 落地后回到用户偏好
+    assert card.source_label.styleSheet() == ""
+    w.translate_thread = real_tt
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("ui: 占位卡弱化原文可见（P22）", t_placeholder_shows_source_dim)
+
 def t_quiet_warn_on_starvation():
     # v2.3.12（P13）：完全无包（Chrome 暂停媒体等）也必须进入静默告警——
     # 旧行为：无包路径直接 continue，_quiet_s 永不累计，用户面对冻住的
