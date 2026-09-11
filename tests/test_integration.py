@@ -500,6 +500,34 @@ def t_quiet_warn_on_starvation():
     assert got == [True], got
 check("capture: 无包静默同样告警（P13）", t_quiet_warn_on_starvation)
 
+def t_card_correction_menu():
+    # v2.3.13（P14）：词典可达性——字幕卡右键即纠错，落库核心直测
+    w = MainWindow()
+    w.show()
+    card = w._new_card("THERE WAS ANOTHER GATHERING HOSTED HERE IN DOCUMENTAL")
+    card.set_result("纪录片中还在这里举办了另一场聚会", "google", "en", True)
+    menu = w._card_menu(card)
+    texts = [a.text() for a in menu.actions() if a.text()]
+    assert "复制原文" in texts and "复制译文" in texts, texts
+    assert any("误听词典" in t for t in texts) and any("译文修正" in t for t in texts), texts
+    assert card.translated_text() == "纪录片中还在这里举办了另一场聚会"
+    w._add_dict_entry("mishear_map", "DOCUMENTAL", "Norfolk")
+    assert (w.config.get("mishear_map") or {}).get("DOCUMENTAL") == "Norfolk"
+    w._add_dict_entry("translate_fix_map", "纪录片中", "诺福克")
+    assert (w.config.get("translate_fix_map") or {}).get("纪录片中") == "诺福克"
+    # 落盘持久性：重读磁盘配置
+    import json as _j
+    from app.config import CONFIG_FILE
+    cfg = _j.load(open(CONFIG_FILE, encoding="utf-8"))
+    assert cfg.get("mishear_map", {}).get("DOCUMENTAL") == "Norfolk"
+    # 还原 itest 配置，避免污染其他测试
+    w.config.set("mishear_map", {})
+    w.config.set("translate_fix_map", {})
+    menu.deleteLater()
+    w._quitting = True
+    w._teardown()
+check("ui: 卡片右键纠错词典（P14）", t_card_correction_menu)
+
 # ---------- 5) 热键链路（非按键部分） ----------
 def t_hotkey_parse():
     from app.hotkey import sequence_to_hotkey

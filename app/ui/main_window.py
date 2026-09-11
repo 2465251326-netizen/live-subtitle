@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QFrame, QScrollArea, QProgressBar, QSizePolicy,
     QStatusBar, QMessageBox, QApplication, QStackedWidget,
     QSystemTrayIcon, QMenu, QFileDialog,
+    QDialog, QLineEdit, QDialogButtonBox,
 )
 
 from app.config import Config
@@ -55,12 +56,15 @@ def icon_path():
 
 
 class CaptionCard(QFrame):
-    def __init__(self, source_text, parent=None):
+    def __init__(self, source_text, parent=None, on_menu=None):
         super().__init__(parent)
         self.setObjectName("CaptionCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.created_at = datetime.now()
         self.source_text = source_text
+        # v2.3.13（P14）：右键纠错菜单回调（MainWindow 注入）——
+        # "看到错的→查原文→开设置→找词典→手打"五步链，压缩成"右键→打正解"一步
+        self._on_menu = on_menu
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
         layout.setSpacing(4)
@@ -95,6 +99,22 @@ class CaptionCard(QFrame):
     def is_pending(self):
         """是否仍处于"译文未落地"占位态（流式两段式，v2.1.4）。"""
         return self.target_label.text() in ("...", "⟳ …")
+
+    def translated_text(self):
+        """当前译文；占位/失败/已并入态返回空串（右键菜单据此决定可用性）。"""
+        if self.is_pending():
+            return ""
+        t = self.target_label.text()
+        return "" if (not t or t == "[翻译失败]") else t
+
+    def contextMenuEvent(self, event):
+        # v2.3.13（P14）：卡片右键 → 复制原文/译文、一键加入修正词典
+        if self._on_menu is None:
+            return
+        menu = self._on_menu(self)
+        if menu is not None:
+            menu.exec(event.globalPos())
+            menu.deleteLater()
 
     def set_failed(self, msg):
         self.target_label.setText("[翻译失败]")
@@ -1308,7 +1328,7 @@ class MainWindow(QMainWindow):
                 self._submit_for_translation(text, detected)
             return
         show_source = bool(self.config.get("show_source"))
-        card = CaptionCard(text)
+        card = self._new_card(text)
         card.source_label.setVisible(show_source)
         card.target_label.setText("⟳ …")
         card.t_start, card.dur_s = self._last_asr_timing  # v2.2.11：SRT 时间轴
@@ -1396,6 +1416,67 @@ class MainWindow(QMainWindow):
         self._tgroup_by_src[combined] = grp
         self.translate_thread.submit(combined, getattr(self, "_tgroup_lang", ""))
 
+    # ---------- v2.3.13（P14）：字幕卡右键一键纠错（词典可达性） ----------
+    # 第八轮实测：误听词典做了八轮仍空——不是没工具，是"看到错→查原文→
+    # 开设置→找词典→手打"链条太长。这里把纠错入口直接放卡片上：错的已
+    # 预填，用户只打"对的"。
+
+    def _new_card(self, text):
+        """字幕卡工厂：统一挂右键纠错菜单（三处创建点共用）。"""
+        return CaptionCard(text, on_menu=self._card_menu)
+
+    def _card_menu(self, card):
+        menu = QMenu(self)
+        act = menu.addAction("复制原文")
+        act.triggered.connect(lambda: QApplication.clipboard().setText(card.source_text))
+        tr = card.translated_text()
+        act = menu.addAction("复制译文")
+        act.setEnabled(bool(tr))
+        act.triggered.connect(lambda: QApplication.clipboard().setText(card.translated_text()))
+        menu.addSeparator()
+        act = menu.addAction("纠正识别（加入误听词典）…")
+        act.triggered.connect(lambda: self._correct_from_card(card, "mishear_map"))
+        act = menu.addAction("纠正译文（加入译文修正词典）…")
+        act.setEnabled(bool(tr))
+        act.triggered.connect(lambda: self._correct_from_card(card, "translate_fix_map"))
+        return menu
+
+    def _correct_from_card(self, card, dict_key):
+        wrong0 = card.source_text if dict_key == "mishear_map" else card.translated_text()
+        title = "纠正识别" if dict_key == "mishear_map" else "纠正译文"
+        wrong, right = self._dict_dialog(title, wrong0)
+        if wrong is None:
+            return
+        wrong, right = wrong.strip(), right.strip()
+        if wrong and right:
+            self._add_dict_entry(dict_key, wrong, right)
+
+    def _dict_dialog(self, title, wrong_prefill):
+        """双字段小对话框：错误片段（预填整句让用户删改）+ 正确文本。"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumWidth(480)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("错误片段（已从字幕预填，删改到只剩要纠正的词句即可）："))
+        e_wrong = QLineEdit(wrong_prefill)
+        v.addWidget(e_wrong)
+        v.addWidget(QLabel("正确文本："))
+        e_right = QLineEdit()
+        e_right.setPlaceholderText("例如：Norfolk")
+        v.addWidget(e_right)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        return (e_wrong.text(), e_right.text()) if dlg.exec() == QDialog.Accepted else (None, None)
+
+    def _add_dict_entry(self, dict_key, wrong, right):
+        m = dict(self.config.get(dict_key) or {})
+        m[wrong] = right
+        self.config.set(dict_key, m)   # Config.set 原子落盘
+        tip = "误听词典" if dict_key == "mishear_map" else "译文修正词典"
+        self._set_alert(f"已保存到{tip}：「{wrong[:16]}」→「{right[:16]}」· 下次开始翻译生效")
+
     def _take_pending(self, source_text):
         """按原文取出最早的待补齐卡片（流式两段式配对，v2.1.4）。"""
         pend = getattr(self, "_pending", None) or []
@@ -1437,7 +1518,7 @@ class MainWindow(QMainWindow):
         # 流式开（默认）优先原地补齐识别时已上屏的占位卡，找不到
         # （管线重启/被裁剪等）才新建，兜底兼容旧行为
         if not bool(self.config.get("instant_caption")):
-            card = CaptionCard(source_text)
+            card = self._new_card(source_text)
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
             card.t_start, card.dur_s = getattr(self, "_last_asr_timing", (None, None))
             # v2.1.5：切回一次性上屏时清掉流式占位队列（防陈旧配对）
@@ -1446,7 +1527,7 @@ class MainWindow(QMainWindow):
         else:
             card = self._take_pending(source_text)
             if card is None:
-                card = CaptionCard(source_text)
+                card = self._new_card(source_text)
                 self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
                 card.t_start, card.dur_s = getattr(self, "_last_asr_timing", (None, None))
         if self.stack.currentIndex() == 0:
