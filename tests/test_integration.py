@@ -853,6 +853,216 @@ def t_rerun_wizard_preserves_staged_choice():
         w._teardown()
 check("settings: 向导前暂存问询（BUG-4）", t_rerun_wizard_preserves_staged_choice)
 
+def t_panel_font_size_actually_applies():
+    # v2.5.0（F1 回归锁）：v2.4.0 起正文从未挂 font-size 规则，字号调节完全
+    # 失效（截图矩阵 16/30/40 三档像素相同才暴露）。锁：QSS 字号必须随
+    # apply_style 变化并回读到译文标签字体
+    ov = CaptionOverlay()
+    try:
+        ov.show(); app.processEvents()
+        ov.apply_style(22, "#ffffff", "#1c1f26", 92)
+        ov.show_caption("s", "t", True)
+        app.processEvents()
+        f22 = ov._rows[-1]["tgt"].font().pixelSize()
+        ov.apply_style(40, "#ffffff", "#1c1f26", 92)
+        app.processEvents()
+        f40 = ov._rows[-1]["tgt"].font().pixelSize()
+        assert f22 == 22 and f40 == 40, f"字号未生效：22→{f22}, 40→{f40}"
+        src_fs = ov._rows[-1]["src"].font().pixelSize()
+        assert src_fs == max(11, int(40 * 0.72)), f"原文层次字号未生效：{src_fs}"
+    finally:
+        ov.deleteLater()
+check("panel: 字号真实生效+原文层次（F1）", t_panel_font_size_actually_applies)
+
+def t_panel_height_converges_tgt_only():
+    # v2.5.0（F2 回归锁）：只译文模式 5 行不得塌陷（此前收敛判定比较被 min
+    # 钳住的 scroll 高度，链提前断，5 行塌成 2.5 行）
+    from PySide6.QtGui import QGuiApplication
+    ov = CaptionOverlay()
+    try:
+        ov.resize(560, 150)
+        ov.show(); app.processEvents()
+        for i in range(5):
+            ov.show_caption(f"sentence {i} with a bit of length here", f"译文第 {i} 句", False)
+        h = -1
+        for _ in range(15):
+            app.processEvents()
+            if ov._scroll.height() == h:
+                break
+            h = ov._scroll.height()
+        cap = int((QGuiApplication.primaryScreen().availableGeometry().height() or 800) * 0.55)
+        want = min(max(ov._body.sizeHint().height() + 8, 46), cap)
+        assert ov._scroll.height() == want, \
+            f"只译文高度塌陷：scroll={ov._scroll.height()} want={want}"
+    finally:
+        ov.deleteLater()
+check("panel: 只译文高度收敛（F2）", t_panel_height_converges_tgt_only)
+
+def t_panel_status_label_width_capped():
+    # v2.5.0（F3 回归锁）：窄面板状态行限宽，长错误文案不得溢出压到按钮。
+    # （未 show 的 widget 收不到 Python resizeEvent，限宽挂在 set_status/
+    # _relayout 必经路径，测试走 set_status 断言）
+    ov = CaptionOverlay()
+    try:
+        ov.resize(360, 100)
+        ov.set_status("翻译失败 · 检查网络或切换引擎", is_error=True)
+        assert ov.status_lbl.maximumWidth() == 120, ov.status_lbl.maximumWidth()
+        assert ov.status_lbl.width() <= 122, ov.status_lbl.width()
+        ov.resize(700, 100)
+        ov.set_status("运行中", is_error=False)
+        assert ov.status_lbl.maximumWidth() == 460, ov.status_lbl.maximumWidth()
+    finally:
+        ov.deleteLater()
+check("panel: 状态行限宽防重叠（F3）", t_panel_status_label_width_capped)
+
+def t_panel_mini_bar():
+    # v2.5.0：精简条——收起显示最新一句（原文+译文），新句跟随，
+    # 原地点击展开完整历史，真拖动不触发展开
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    LB = Qt.MouseButton.LeftButton
+    events = {"collapsed": []}
+    ov = CaptionOverlay(on_collapsed=lambda on: events["collapsed"].append(on))
+    try:
+        ov.show(); app.processEvents()
+        ov.show_caption("s1", "t1", True)
+        ov.show_caption("s2", "t2", True)
+        ov.set_collapsed(True)
+        app.processEvents()
+        assert ov._mini.isVisible() and not ov._scroll.isVisible()
+        assert ov._mini_src.text() == "s2" and ov._mini_tgt.text() == "t2"
+        ov.show_caption("s3", "t3", True)
+        assert ov._mini_tgt.text() == "t3", "精简条应跟随最新句"
+        ov.clear_caption()
+        assert "展开" in ov._mini_tgt.text(), "空状态应有展开引导"
+        ov.show_caption("s4", "t4", True)
+
+        class _Ev:
+            def __init__(s, x, y, gx=0, gy=0):
+                s._p = QPoint(x, y)
+                s._g = QPointF(gx, gy)
+                s._b = LB
+            def button(s): return s._b
+            def buttons(s): return s._b
+            def position(s): return s._p
+            def globalPosition(s): return s._g
+            def accept(s): pass
+        bar_bottom = ov._bar.geometry().bottom()
+        y = bar_bottom + 20
+        ov.mousePressEvent(_Ev(200, y, 200, y))
+        ov.mouseReleaseEvent(_Ev(200, y, 200, y))     # 原地点击 → 展开
+        assert not ov._collapsed and events["collapsed"][-1] is False
+        assert ov._scroll.isVisible() and not ov._mini.isVisible()
+        ov.set_collapsed(True)
+        ov.mousePressEvent(_Ev(200, y, 200, y))
+        ov.mouseMoveEvent(_Ev(260, y + 8, 260, y + 8))   # 真拖动
+        ov.mouseReleaseEvent(_Ev(260, y + 8, 260, y + 8))
+        assert ov._collapsed, "真拖动不得触发展开"
+    finally:
+        ov.deleteLater()
+check("panel: 精简条模式（v2.5.0）", t_panel_mini_bar)
+
+def t_panel_wheel_shortcuts():
+    # v2.5.0：工具条 Ctrl+滚轮=字号 ±1、Ctrl+Shift+滚轮=透明度 ∓5；
+    # 无修饰键不触发（正文历史滚动不受影响）
+    from PySide6.QtCore import QPoint, Qt
+
+    class _WEv:
+        def __init__(s, mods, up):
+            s._m, s._d = mods, (120 if up else -120)
+            s.accepted = False
+            s.ignored = False
+        def position(s): return QPoint(20, 10)
+        def angleDelta(s): return QPoint(0, s._d)
+        def modifiers(s): return s._m
+        def accept(s): s.accepted = True
+        def ignore(s): s.ignored = True
+
+    fonts, ops = [], []
+    ov = CaptionOverlay(on_font_size=lambda px: (fonts.append(px),
+                                                 setattr(ov, "_font_size", int(px))),
+                        on_opacity=lambda v: (ops.append(v),
+                                              setattr(ov, "_bg_alpha", int(v * 2.55))))
+    try:
+        ov.show(); app.processEvents()
+        C = Qt.KeyboardModifier.ControlModifier
+        CS = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        ov.wheelEvent(_WEv(C, True))
+        assert fonts == [23], fonts
+        ov.wheelEvent(_WEv(C, False))
+        assert fonts == [23, 22], fonts
+        ov.wheelEvent(_WEv(CS, True))
+        assert ops == [97], ops                      # 92 + 5
+        ov.wheelEvent(_WEv(CS, True))
+        assert ops == [97, 100], ops                 # 钳 100
+        ov.wheelEvent(_WEv(CS, False))
+        assert ops == [97, 100, 95], ops
+        wev = _WEv(Qt.KeyboardModifier.NoModifier, True)
+        ov.wheelEvent(wev)
+        assert wev.ignored and not wev.accepted, "无修饰键滚轮不得抢占"
+        assert fonts == [23, 22] and ops == [97, 100, 95]
+    finally:
+        ov.deleteLater()
+check("panel: 工具条滚轮快捷调节（v2.5.0）", t_panel_wheel_shortcuts)
+
+def t_panel_magnet_snap():
+    # v2.5.0：拖动松手近屏幕边缘自动磁吸（松手时面板顶缘距可用区顶 <24px → 贴顶）
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    LB = Qt.MouseButton.LeftButton
+
+    class _Ev:
+        def __init__(s, x, y, gx, gy):
+            s._p, s._g = QPoint(x, y), QPointF(gx, gy)
+        def button(s): return LB
+        def buttons(s): return LB
+        def position(s): return s._p
+        def globalPosition(s): return s._g
+        def accept(s): pass
+
+    moved = []
+    ov = CaptionOverlay(on_moved=lambda x, y: moved.append((x, y)))
+    try:
+        ov.show(); app.processEvents()
+        g = ov.screen().availableGeometry()
+        # 中部松手（面板顶缘距可用区顶 285px）不吸附
+        ov.move(g.left() + 300, g.top() + 285)
+        app.processEvents()
+        ov.mousePressEvent(_Ev(100, 20, g.left() + 400, g.top() + 305))
+        ov.mouseMoveEvent(_Ev(100, 20, g.left() + 400, g.top() + 305))
+        ov.mouseReleaseEvent(_Ev(100, 20, g.left() + 400, g.top() + 305))
+        assert ov.y() == g.top() + 285, f"中部松手不应吸附：{ov.y()}"
+        # 近顶松手（面板顶缘 y=5 <24px）磁吸到顶
+        ov.move(g.left() + 300, g.top() + 5)
+        app.processEvents()
+        ov.mousePressEvent(_Ev(100, 20, g.left() + 400, g.top() + 25))
+        ov.mouseMoveEvent(_Ev(100, 20, g.left() + 400, g.top() + 26))
+        ov.mouseReleaseEvent(_Ev(100, 20, g.left() + 400, g.top() + 26))
+        assert ov.y() == g.top(), f"近顶松手应磁吸到顶：{ov.y()}"
+        assert moved, "吸附后应落盘位置"
+    finally:
+        ov.deleteLater()
+check("panel: 拖动磁吸贴边（v2.5.0）", t_panel_magnet_snap)
+
+def t_panel_opacity_menu_preset():
+    # v2.5.0：⋯ 菜单透明度常用档，勾选态与当前值同步
+    ops = []
+    ov = CaptionOverlay(on_opacity=ops.append)
+    try:
+        menu = ov._build_menu()
+        op_menu = None
+        for a in menu.actions():
+            if a.text() == "背景透明度":
+                op_menu = a.menu()
+        assert op_menu is not None, "透明度子菜单缺失"
+        vals = [a.text() for a in op_menu.actions()]
+        assert vals == ["60%", "75%", "85%", "92%", "100%"], vals
+        sel = [a for a in op_menu.actions() if a.text() == "75%"][0]
+        sel.trigger()
+        assert ops == [75], ops
+        menu.deleteLater()
+    finally:
+        ov.deleteLater()
+check("panel: 菜单透明度档（v2.5.0）", t_panel_opacity_menu_preset)
+
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
     # on_correct 回调（与主窗卡片纠错同源）

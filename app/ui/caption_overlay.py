@@ -45,7 +45,7 @@ class CaptionOverlay(QWidget):
                  on_toggle_translation_only=None, on_resized=None,
                  on_correct=None, on_export_srt=None, on_language=None,
                  on_font_size=None, on_pin_changed=None, on_collapsed=None,
-                 on_first_show=None):
+                 on_first_show=None, on_opacity=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -69,6 +69,7 @@ class CaptionOverlay(QWidget):
         self._hint_guide = False    # v2.4.3（D）：空状态文案是否升级为手势引导
         self._first_show_seen = False
         self._relayout_pending = False
+        self._mini_press = False    # v2.5.0：精简条点击展开判定锚
         self._on_closed = on_closed
         self._on_moved = on_moved
         self._on_open_settings = on_open_settings
@@ -82,6 +83,7 @@ class CaptionOverlay(QWidget):
         self._on_pin_changed = on_pin_changed
         self._on_collapsed = on_collapsed
         self._on_first_show = on_first_show
+        self._on_opacity = on_opacity
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -183,7 +185,7 @@ class CaptionOverlay(QWidget):
         self._body.setAttribute(Qt.WA_TranslucentBackground, True)
         self._rows_lay = QVBoxLayout(self._body)
         self._rows_lay.setContentsMargins(8, 4, 14, 4)
-        self._rows_lay.setSpacing(10)
+        self._rows_lay.setSpacing(6)
         # v2.4.3（B）：空状态占位提示——空闲不再是一片空白（index 0 = 恒在行区上方）
         self._hint = QLabel("")
         self._hint.setObjectName("PanelHint")
@@ -193,6 +195,24 @@ class CaptionOverlay(QWidget):
         self._scroll.setWidget(self._body)
         outer.addWidget(self._scroll, 1)
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+        # v2.5.0：精简条（对标豆包"收起=最新一句小条"）——收起态不再只剩工具条，
+        # 正文区换成最新句的两行速览（原文小灰 + 译文大白），单击展开完整历史
+        self._mini = QWidget(self)
+        self._mini.setObjectName("PanelMini")
+        mini_l = QVBoxLayout(self._mini)
+        mini_l.setContentsMargins(10, 2, 10, 4)
+        mini_l.setSpacing(0)
+        self._mini_src = QLabel("")
+        self._mini_src.setObjectName("PanelMiniSrc")
+        self._mini_tgt = QLabel("")
+        self._mini_tgt.setObjectName("PanelMiniTgt")
+        self._mini_tgt.setWordWrap(True)
+        mini_l.addWidget(self._mini_src)
+        mini_l.addWidget(self._mini_tgt)
+        self._mini.setCursor(Qt.PointingHandCursor)
+        outer.addWidget(self._mini)
+        self._mini.hide()
 
         self._pin_btn.setChecked(self._pinned)
         self._sync_unread_btn()
@@ -208,10 +228,17 @@ class CaptionOverlay(QWidget):
         # 此前 _hint_guide 一经置位永久生效，"清空"后每次都弹三行小抄，
         # 与"首次只弹一次"的设计语义冲突
         self._hint_guide = False
+        # v2.5.0：行卡片化 + 最新行左侧主题色竖条（对标豆包"新句有强调"）
+        if self._rows:
+            old = self._rows[-1]["row"]
+            old.setObjectName("PanelRow")
+            old.style().unpolish(old)
+            old.style().polish(old)
         row = QWidget(self._body)
+        row.setObjectName("PanelRowNewest")
         v = QVBoxLayout(row)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(2)
+        v.setContentsMargins(8, 6, 8, 6)
+        v.setSpacing(1)
         s = QLabel(src)
         s.setObjectName("PanelSrc")
         s.setWordWrap(True)
@@ -229,6 +256,8 @@ class CaptionOverlay(QWidget):
             old = self._rows.pop(0)
             old["row"].setParent(None)
             old["row"].deleteLater()
+        if self._collapsed:
+            self._update_mini()          # v2.5.0：精简条跟随最新句
         self._update_empty_hint()
         self._relayout()
         self._schedule_relayout()
@@ -259,6 +288,8 @@ class CaptionOverlay(QWidget):
             r["src"].setVisible(bool(source_text) and self._show_source)
             r["tgt"].setText(target_text or "")
             self._pending_row = None
+            if self._collapsed:
+                self._update_mini()   # v2.5.0：精简条正在显示这句占位时同步成译文
             self._relayout()
             self._schedule_relayout()
         else:
@@ -284,6 +315,7 @@ class CaptionOverlay(QWidget):
         self._unread = 0
         self._sync_unread_btn()
         self._update_empty_hint()
+        self._update_mini()
         self._relayout()
         self._schedule_relayout()
 
@@ -308,6 +340,7 @@ class CaptionOverlay(QWidget):
 
     def set_status(self, text, is_error=False):
         # 状态列宽度主权让位：截短 + tooltip 全文（520px 面板实测长文案会盖住 ⋯）
+        self._cap_status_width()
         t = (text or "").strip()
         if len(t) > 10:
             t = t[:9] + "…"
@@ -331,10 +364,14 @@ class CaptionOverlay(QWidget):
         QTimer.singleShot(0, self._consume_relayout)
 
     def _consume_relayout(self):
-        self._relayout_pending = False
+        # v2.5.0（F2）：收敛判定改看"内容需求高度"——此前只比较 scroll 固定高，
+        # 而 scroll 被 min(46) 钳住期间 body.sizeHint 仍在多拍变化，链提前断，
+        # 只译文模式实测 5 行塌成 2.5 行
+        want0 = self._body.sizeHint().height()
         h0 = self._scroll.height()
         self._relayout()
-        if self._scroll.height() != h0 and self._relayout_passes < 8:
+        if ((self._body.sizeHint().height() != want0
+             or self._scroll.height() != h0) and self._relayout_passes < 12):
             self._relayout_passes += 1
             self._relayout_pending = True
             QTimer.singleShot(0, self._consume_relayout)
@@ -346,9 +383,14 @@ class CaptionOverlay(QWidget):
         return QSize(self.MIN_W, 40)
 
     def _relayout(self):
+        self._cap_status_width()
         if self._collapsed:
+            # v2.5.0：精简条模式——正文区换成最新句速览，高度贴两行内容
             self._scroll.setVisible(False)
+            self._mini.setVisible(True)
+            self._mini.setFixedHeight(min(self._mini.sizeHint().height(), 120))
         else:
+            self._mini.setVisible(False)
             self._scroll.setVisible(True)
             want = self._body.sizeHint().height() + 8
             cap = int((QGuiApplication.primaryScreen().availableGeometry().height()
@@ -403,6 +445,8 @@ class CaptionOverlay(QWidget):
         self._show_source = bool(on)
         for it in self._rows:
             it["src"].setVisible(bool(it["src_text"]) and self._show_source)
+        if self._collapsed:
+            self._update_mini()
         self._sync_bar_texts()
         self._relayout()
         self._schedule_relayout()
@@ -449,10 +493,26 @@ class CaptionOverlay(QWidget):
         if self._on_collapsed:
             self._on_collapsed(self._collapsed)
 
+    def _update_mini(self):
+        """v2.5.0：精简条内容 = 最新一句（尊重原文开关）；无字幕给引导占位。"""
+        if self._rows:
+            it = self._rows[-1]
+            src = it["src_text"] if self._show_source else ""
+            self._mini_src.setText(src)
+            self._mini_src.setVisible(bool(src))
+            self._mini_tgt.setText(it["tgt_text"] or "⟳ …")
+        else:
+            self._mini_src.setVisible(False)
+            self._mini_tgt.setText("暂无字幕 · 单击展开")
+
     def set_collapsed(self, on):
         self._collapsed = bool(on)
         self._sync_bar_texts()
         self._jump_btn.setVisible(not self._follow and not self._collapsed)
+        self._scroll.setVisible(not self._collapsed)
+        self._mini.setVisible(self._collapsed)
+        if self._collapsed:
+            self._update_mini()
         self._relayout()
 
     def _toggle_pin(self):
@@ -515,6 +575,12 @@ class CaptionOverlay(QWidget):
         self._schedule_relayout()
 
     def _apply_qss(self):
+        # v2.5.0：字号真实生效——v2.4.0 面板化时正文（PanelSrc/PanelTgt）从未
+        # 挂过 font-size 规则，设置页/工具条调字号完全无效（深度实测截图矩阵
+        # 16/30/40 三档像素级相同才暴露）。同时对齐豆包式双行层次：原文=主字号
+        # 72%、更淡的灰，译文=主字号加粗白，扫读时主次分明。
+        fs = int(self._font_size)
+        src_fs = max(11, int(fs * 0.72))
         self.setStyleSheet(f"""
             QWidget#SubtitlePanel {{ background: transparent; }}
             QWidget#PanelToolbar {{ background: rgba(255,255,255,16); border-radius: 8px; }}
@@ -525,6 +591,15 @@ class CaptionOverlay(QWidget):
             QToolButton:disabled {{ color: rgba(255,255,255,60); }}
             QToolButton#PanelClose {{ color: #ff8f8f; }}
             QLabel#PanelHint {{ color: rgba(255,255,255,72); font-size: 12px; }}
+            QLabel#PanelSrc {{ font-size: {src_fs}px; color: #98a2b3; }}
+            QLabel#PanelTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
+            QLabel#PanelMiniSrc {{ font-size: {max(11, int(fs * 0.62))}px; color: #98a2b3; }}
+            QLabel#PanelMiniTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
+            QWidget#PanelRow {{ background: rgba(255,255,255,8); border-radius: 8px;
+                                border-left: 3px solid transparent; }}
+            QWidget#PanelRowNewest {{ background: rgba(79,140,255,26); border-radius: 8px;
+                                      border-left: 3px solid #4f8cff; }}
+            QWidget#PanelMini {{ background: transparent; }}
             QScrollArea#PanelScroll {{ background: transparent; border: none; }}
             QScrollArea#PanelScroll > QWidget {{ background: transparent; }}
             QScrollArea#PanelScroll > QWidget > QWidget {{ background: transparent; }}
@@ -563,6 +638,11 @@ class CaptionOverlay(QWidget):
                 self._resize_start_w = self.width()
             else:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                # v2.5.0：精简条上"按住=拖、原地点击=展开"的判定锚点
+                self._mini_press = (self._collapsed
+                                    and event.position().y() > self._bar.geometry().bottom())
+                _p = event.position()
+                self._mini_press_at = _p.toPoint() if hasattr(_p, "toPoint") else _p
             event.accept()
 
     def mouseMoveEvent(self, event):
@@ -587,9 +667,84 @@ class CaptionOverlay(QWidget):
             if self._on_resized:
                 self._on_resized(self.width())
         elif self._drag_pos is not None:
-            QTimer.singleShot(0, self._save_final_pos)
-            QTimer.singleShot(400, self._save_final_pos)
+            pos = event.position()
+            pos = pos.toPoint() if hasattr(pos, "toPoint") else pos
+            # v2.5.0：精简条原地点击（位移<6px）= 展开完整历史；真拖动不触发
+            if (getattr(self, "_mini_press", False)
+                    and (pos - getattr(self, "_mini_press_at", pos)).manhattanLength() < 6):
+                self._mini_press = False
+                self.set_collapsed(False)
+                if self._on_collapsed:
+                    self._on_collapsed(False)
+            else:
+                self._magnet_snap()
+                QTimer.singleShot(0, self._save_final_pos)
+                QTimer.singleShot(400, self._save_final_pos)
         self._drag_pos = None
+        self._mini_press = False
+
+    def _magnet_snap(self):
+        """v2.5.0：拖动松手磁吸——面板边缘距屏幕可用区边缘 <24px 时自动贴齐
+        （此前只能靠右键菜单/双击贴边，随手一拖永远对不齐）。"""
+        scr = (QGuiApplication.screenAt(QPoint(self.frameGeometry().center()))
+               or QGuiApplication.primaryScreen())
+        g = scr.availableGeometry()
+        x, y, w, h = self.x(), self.y(), self.width(), self.height()
+        nx, ny = x, y
+        if abs(x - g.left()) < 24:
+            nx = g.left()
+        elif abs(x + w - g.right()) < 24:
+            nx = g.right() - w
+        if abs(y - g.top()) < 24:
+            ny = g.top()
+        elif abs(y + h - g.bottom()) < 24:
+            ny = g.bottom() - h
+        if (nx, ny) != (x, y):
+            self.move(nx, ny)
+
+    def wheelEvent(self, event):
+        # v2.5.0：工具条上快捷调节（豆包式顺手性）——Ctrl+滚轮=字号 ±1、
+        # Ctrl+Shift+滚轮=透明度 ∓5；正文区滚轮保持历史滚动不受影响
+        if event.position().y() <= self._bar.geometry().bottom() + 6:
+            mods = event.modifiers()
+            up = event.angleDelta().y() > 0
+            if mods & Qt.ControlModifier and mods & Qt.ShiftModifier:
+                cur = int(round(self._bg_alpha / 2.55))
+                self._apply_opacity(int(max(30, min(100, cur + (5 if up else -5)))))
+                event.accept()
+                return
+            if mods & Qt.ControlModifier:
+                self._apply_font(int(max(12, min(48, self._font_size + (1 if up else -1)))))
+                event.accept()
+                return
+        event.ignore()
+
+    def _apply_font(self, px):
+        if self._on_font_size:
+            self._on_font_size(int(px))
+        else:
+            self._font_size = int(px)
+            self._apply_qss()
+            self._sync_bar_texts()
+            self._relayout()
+            self._schedule_relayout()
+
+    def _apply_opacity(self, val):
+        """v2.5.0：透明度快捷调节统一出口（滚轮/菜单档）。"""
+        val = int(max(30, min(100, val)))
+        if self._on_opacity:
+            self._on_opacity(val)
+        else:
+            self._bg_alpha = int(val * 2.55)
+            self.update()
+
+    def _cap_status_width(self):
+        # v2.5.0（F3）：状态行动态限宽——Ignored 策略下布局可把状态行压没，
+        # 但 QLabel 溢出绘制会压到右侧按钮（360px 宽实测与"翻译失败"文字重叠）。
+        # 限宽 = 面板宽 − 按钮区（约 240px），超长文字被裁剪，全文在 tooltip。
+        # 注意：未 show 的 widget 收不到 Python resizeEvent（实测裸 QWidget 同样），
+        # 故挂在 set_status/_relayout 这两个必经路径上而非 resizeEvent
+        self.status_lbl.setMaximumWidth(max(60, self.width() - 240))
 
     def _save_final_pos(self):
         if self._on_moved:
@@ -643,6 +798,14 @@ class CaptionOverlay(QWidget):
         acts["snap_bottom"] = menu.addAction("贴到屏幕底部")
         acts["snap_left"] = menu.addAction("贴到屏幕左侧")
         acts["snap_right"] = menu.addAction("贴到屏幕右侧")
+        # v2.5.0：透明度常用档直调（滚轮 Ctrl+Shift 的菜单版；细调仍走设置页）
+        op_menu = menu.addMenu("背景透明度")
+        cur_op = int(round(self._bg_alpha / 2.55))
+        for val in (60, 75, 85, 92, 100):
+            a = op_menu.addAction(f"{val}%")
+            a.setCheckable(True)
+            a.setChecked(cur_op == val)
+            a.triggered.connect(lambda _c=False, v=val: self._apply_opacity(v))
         menu.addSeparator()
         acts["hide"] = menu.addAction("隐藏字幕面板")
         src, tgt = self._last_result

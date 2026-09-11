@@ -483,7 +483,8 @@ class MainWindow(QMainWindow):
                                        on_font_size=self._on_panel_font_size,
                                        on_pin_changed=self._on_panel_pin,
                                        on_collapsed=self._on_panel_collapsed,
-                                       on_first_show=self._on_panel_first_show)
+                                       on_first_show=self._on_panel_first_show,
+                                       on_opacity=self._on_panel_opacity)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -547,6 +548,12 @@ class MainWindow(QMainWindow):
     def _on_panel_font_size(self, px):
         self.config.set("overlay_font_size", int(px))
         self.apply_overlay_from_config()
+
+    def _on_panel_opacity(self, val):
+        """v2.5.0：面板滚轮/菜单档调透明度——落盘并本地重放（细调仍走设置页）。"""
+        self.config.set("overlay_bg_opacity", int(val))
+        self.overlay._bg_alpha = int(max(30, min(100, int(val))) * 2.55)
+        self.overlay.update()
 
     def _on_panel_pin(self, on):
         self.config.set("overlay_pin", bool(on))
