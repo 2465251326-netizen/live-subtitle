@@ -534,6 +534,24 @@ def t_tgroup_silent_early_flush():
     w._teardown()
 check("asr: 尾句静默+收尾双证据立送（P16 守卫版）", t_tgroup_silent_early_flush)
 
+def t_level_signal_scale():
+    # v2.3.15（P19）：电平量纲接线回归锁——capture 发 0~1 比例，槽必须按
+    # 比例消费。旧代码 value>=3 恒假：有声时间戳永不更新（P8/P16 守卫全部
+    # 形同虚设）、音量条恒 0。此测试直喂信号源真实量纲，不模拟时间。
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w._on_level(0.5)
+    assert getattr(w, "_last_level_sound", 0.0) > 0, "0.5 应有声→时间戳更新"
+    assert w.level_bar.value() >= 40, w.level_bar.value()   # 百分比换算生效
+    mark = w._last_level_sound
+    w._on_level(0.02)                      # 低于 3% 噪声地板：不算有声
+    assert w._last_level_sound == mark
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("ui: 电平信号量纲接线（P19）", t_level_signal_scale)
+
 def t_quiet_warn_on_starvation():
     # v2.3.12（P13）：完全无包（Chrome 暂停媒体等）也必须进入静默告警——
     # 旧行为：无包路径直接 continue，_quiet_s 永不累计，用户面对冻住的

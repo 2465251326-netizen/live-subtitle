@@ -1161,12 +1161,16 @@ class MainWindow(QMainWindow):
 
     def _on_level(self, value):
         # v2.0.4：停止后迟到的电平事件不再点亮音量条
+        # v2.3.15（P19）：capture 发的 value 是 0~1 的比例（min(1, level*8)），
+        # 旧条件 value>=3 恒假——"最近有声"时间戳永不更新（P8 电平守卫与 P16
+        # 静默巡查双双形同虚设，实测尾句 1s 抢送/跨片不合并）、音量条 setValue
+        # 收小数恒 0（界面让用户"看音量条波动"是空话）。统一换算成百分比。
         if not self.running:
             return
-        if value >= 3:
-            # v2.3.6（P8）：记录"最近有声"时刻，供无产出指引做电平守卫
+        if value >= 0.03:
+            # v2.3.6（P8）：记录"最近有声"时刻（3% 噪声地板之上算有声）
             self._last_level_sound = time.monotonic()
-        self.level_bar.setValue(value)
+        self.level_bar.setValue(int(value * 100))
 
     def _on_low_input(self, quiet):
         """采集线程报告输入信号持续过弱/恢复正常。"""
