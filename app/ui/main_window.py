@@ -252,7 +252,14 @@ class MainWindow(QMainWindow):
             self._auto_start_timer.timeout.connect(self.start_pipeline)
             self._auto_start_timer.start(800)
 
+    _wizard_shown = False   # v2.4.0：进程级守卫——多实例/嵌套事件泵下向导只弹一次
+
     def _show_first_run_wizard(self):
+        # 集成测试曾在此递归栈溢出：每个 MainWindow 各挂一个 singleShot，
+        # 向导 exec 嵌套泵事件时其余待触发定时器再开新向导，无限套娃。
+        if MainWindow._wizard_shown or not self.isVisible():
+            return
+        MainWindow._wizard_shown = True
         from app.ui.first_run import FirstRunWizard
         dlg = FirstRunWizard(self)
         dlg.exec()
@@ -449,8 +456,12 @@ class MainWindow(QMainWindow):
                                       on_toggle_source=self._toggle_source,
                                       on_toggle_translation_only=self._on_toggle_translation_only,
                                       on_resized=self._on_overlay_resized,
-                                      on_click_through=self._on_overlay_click_through,
-                                       on_correct=self._overlay_correct)
+                                      on_correct=self._overlay_correct,
+                                       on_export_srt=self._export_captions,
+                                       on_language=self._on_panel_language,
+                                       on_font_size=self._on_panel_font_size,
+                                       on_pin_changed=self._on_panel_pin,
+                                       on_collapsed=self._on_panel_collapsed)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -495,20 +506,37 @@ class MainWindow(QMainWindow):
         self.config.set("overlay_x", x)
         self.config.set("overlay_y", y)
 
-    def _on_overlay_resized(self, w, h):
-        """悬浮条尺寸持久化（v2.1.8）：0×0 = 恢复自动大小，清除记录。"""
-        if w > 0 and h > 0:
-            self.config.set("overlay_w", int(w))
-            self.config.set("overlay_h", int(h))
-        else:
-            self.config.set("overlay_w", 0)
-            self.config.set("overlay_h", 0)
+    def _on_overlay_resized(self, w):
+        """面板宽度持久化（v2.4.0：高度永远贴内容，不再有手动高度）。"""
+        self.config.set("overlay_w", int(w) if w and w > 0 else 0)
+
+    def _on_panel_language(self, code):
+        """工具条 🌐 下拉：写 target_lang；运行中提示重启生效（与设置页同语义）。"""
+        self.config.set("target_lang", code)
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is not None:
+            try:
+                dlg.reload_values()
+            except Exception:
+                pass
+        if self.running:
+            self._set_alert(f"目标语言已切换为 {code}，重启翻译后对新字幕生效")
+
+    def _on_panel_font_size(self, px):
+        self.config.set("overlay_font_size", int(px))
+        self.apply_overlay_from_config()
+
+    def _on_panel_pin(self, on):
+        self.config.set("overlay_pin", bool(on))
+
+    def _on_panel_collapsed(self, on):
+        self.config.set("overlay_collapsed", bool(on))
 
     def _on_toggle_translation_only(self, translation_only):
-        """右键"只显示译文"（v2.1.8）：写 show_source 并同步设置页复选框。"""
+        """工具条/菜单"只显示译文"：写 show_source 并同步设置页复选框。"""
         show_source = not bool(translation_only)
         self.config.set("show_source", show_source)
-        self.overlay._show_source = show_source
+        self.overlay.set_show_source(show_source)
         dlg = getattr(self, "_settings_dlg", None)
         if dlg is not None and hasattr(dlg, "show_source_check"):
             dlg.show_source_check.setChecked(show_source)
@@ -671,14 +699,13 @@ class MainWindow(QMainWindow):
         c = self.config
         x, y = self._clamp_overlay_pos(c.get("overlay_x"), c.get("overlay_y"))
         self.overlay.move(x, y)
-        # v2.1.8：恢复用户手动调整过的悬浮条尺寸（0 = 自动大小）
+        # v2.4.0：只恢复宽度（0=自动）；高度永远贴内容，旧 overlay_h 退役
         try:
             ow = int(c.get("overlay_w") or 0)
-            oh = int(c.get("overlay_h") or 0)
         except (TypeError, ValueError):
-            ow = oh = 0
-        if ow >= self.overlay.MIN_W and oh >= self.overlay.MIN_H:
-            self.overlay.resize(ow, oh)
+            ow = 0
+        if ow >= CaptionOverlay.MIN_W:
+            self.overlay.resize(ow, self.overlay.height())
             self.overlay._user_resized = True
         self.apply_overlay_from_config()
         self._refresh_quick_panel()
@@ -801,28 +828,18 @@ class MainWindow(QMainWindow):
 
     def apply_overlay_from_config(self):
         c = self.config
-        # v2.2.3：show_source 同步到悬浮条（连续流按此过滤原文/译文段——
-        # 此前只有右键开关会改 _show_source，设置页改了不生效）
-        self.overlay._show_source = bool(c.get("show_source"))
-        # v2.1.5：连续输出模式优先于列表模式
-        self.overlay.set_continuous_mode(bool(c.get("overlay_stream")))
-        self.overlay.set_list_mode(bool(c.get("overlay_list_mode")),
-                                   int(c.get("overlay_list_max")))
+        # v2.4.0 面板形态：三形态/穿透/描边全部退役，只剩内容相关的外观项
         self.overlay.apply_style(
             font_size=int(c.get("overlay_font_size")),
             text_color=c.get("overlay_text_color"),
             bg_color=c.get("overlay_bg_color"),
             bg_opacity=int(c.get("overlay_bg_opacity")),
-            outline=bool(c.get("overlay_outline")),
-            outline_width=int(c.get("overlay_outline_width")),
-            outline_color=c.get("overlay_outline_color"),
         )
-        # v2.3.19（P25a）：单条模式空白区点击穿透开关（右键菜单改后也回写配置）
-        self.overlay.set_click_through(bool(c.get("overlay_click_through")))
-
-    def _on_overlay_click_through(self, on):
-        # 悬浮条右键菜单切换 → 回写配置持久化（不改运行中的其它行为）
-        self.config.set("overlay_click_through", bool(on))
+        self.overlay.set_show_source(bool(c.get("show_source")))
+        self.overlay.set_target_lang(str(c.get("target_lang") or "zh-CN"))
+        # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
+        self.overlay.set_pinned(bool(c.get("overlay_pin")))
+        self.overlay.set_collapsed(bool(c.get("overlay_collapsed")))
 
     # ---------- v2.2.12：就绪未出字时的"正在聆听"呼吸反馈 ----------
 
@@ -1384,8 +1401,8 @@ class MainWindow(QMainWindow):
                 pass
         self._active_card = card
         card.set_active(True)
-        if self.overlay.isVisible() and not bool(self.config.get("overlay_stream")):
-            self.overlay.show_pending(text)
+        if self.overlay.isVisible():
+            self.overlay.show_pending(text)   # v2.4.0：面板恒历史滚动，占位直入
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         if self.translate_thread:

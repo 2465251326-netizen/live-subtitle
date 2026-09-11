@@ -170,13 +170,7 @@ _FIELD_SPECS = {
     "overlay_text_color":   ("overlay", "color"),
     "overlay_bg_color":     ("overlay", "color"),
     "overlay_bg_opacity":   ("overlay", "slider"),
-    "overlay_outline":      ("overlay", "check"),
-    "overlay_outline_width": ("overlay", "spin"),
-    "overlay_outline_color": ("overlay", "color"),
-    "overlay_list_mode":    ("overlay", "check"),
-    "overlay_list_max":     ("overlay", "spin"),
-    "overlay_stream":       ("overlay", "check"),
-    "overlay_click_through": ("overlay", "check"),
+    # v2.4.0 退役：outline 三件套 / list_mode / list_max / stream / click_through
     "close_action":         ("instant", "combo"),
     "auto_start":           ("instant", "check"),
     "max_history":          ("instant", "spin"),
@@ -251,33 +245,18 @@ _STD_ROWS = [
              "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
      "opts": {"items": _STD_ROW_ITEMS["target"], "on_change": "_on_engine_changed"}},
     {"key": "overlay_enabled", "attr": "overlay_check", "page": "display", "section": "字幕显示",
-     "kind": "check", "title": "启用悬浮字幕条（置顶）",
-     "desc": "悬浮在所有窗口之上的独立字幕条，默认屏幕下方居中、可拖到任意位置；"
-             "最小化主窗口后继续显示。不必进本页开关——托盘菜单「显隐悬浮字幕条」"
-             "或全局热键（默认 Ctrl+Alt+O）随时可切。",
+     "kind": "check", "title": "启用字幕面板（置顶）",
+     "desc": "悬浮在所有窗口之上的字幕面板：顶部工具条（目标语言/原文开关/字号/收起），"
+             "正文是原文+译文成对的历史滚动区，上滚暂停自动跟随。整板可拖、右缘拖宽、"
+             "双击工具条贴顶/底。托盘「显隐字幕面板」或热键（默认 Ctrl+Alt+O）随时可切。",
      "opts": {"on_change": "_on_overlay_toggle"}},
     {"key": "show_source", "attr": "show_source_check", "page": "display", "section": "字幕显示",
      "kind": "check", "title": "同时显示原文",
-     "desc": "开启后字幕与悬浮字幕同时保留原语言文本。"},
-    {"key": "overlay_stream", "attr": "overlay_stream_check", "page": "display", "section": "紧凑列表模式",
-     "kind": "check", "title": "悬浮条连续输出模式",
-     "desc": "开启后悬浮条不再逐句替换，而是不断累积追加：原文浅色行先落，译文白色行随后，"
-             "满了自动换行、自动滚到最新（优先级高于列表模式，主窗口不受影响）。"},
-    {"key": "overlay_click_through", "attr": "overlay_click_check", "page": "display", "section": "紧凑列表模式",
-     "kind": "check", "title": "悬浮条空白处点击穿透",
-     "desc": "单条模式下，光标不在文字/边缘/按钮上时，点击穿透到下层窗口——不再挡住视频进度条；"
-             "关闭则整块可点。保存并应用后生效（也可右键悬浮条即时切换，无需进设置）。"},
-    {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "紧凑列表模式",
+     "desc": "开启后字幕与字幕面板同时保留原语言文本（面板上也可一键开关）。"},
+    {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
      "desc": "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
              "关闭：等识别+翻译都完成后一次性显示整条字幕（旧行为）。"},
-    {"key": "overlay_list_mode", "attr": "list_mode_check", "page": "display", "section": "紧凑列表模式",
-     "kind": "check", "title": "悬浮条显示最近多条字幕",
-     "desc": "开启后悬浮条以可滚动列表显示最近几条字幕（适合单屏用户回看历史）。"},
-    {"key": "overlay_list_max", "attr": "list_max_spin", "page": "display", "section": "紧凑列表模式",
-     "kind": "spin", "title": "列表保留条数",
-     "desc": "列表模式下保留的最近字幕条数（2-10 条）。",
-     "opts": {"range": (2, 10)}},
     {"key": "close_action", "attr": "close_combo", "page": "general", "section": "窗口行为",
      "kind": "combo", "title": "点击关闭按钮时",
      "desc": "「隐藏到托盘」后主窗口消失，识别与翻译在后台继续，悬浮字幕正常显示，"
@@ -1054,44 +1033,28 @@ class SettingsDialog(QDialog):
         slider_row.setSpacing(8)
         self.bg_opacity_slider = ClickableSlider(Qt.Horizontal)
         self.bg_opacity_slider.setRange(0, 95)
-        self.bg_opacity_label = QLabel("78%")
+        self.bg_opacity_label = QLabel("92%")
         self.bg_opacity_label.setObjectName("SettingDesc")
         slider_row.addWidget(self.bg_opacity_slider)
         slider_row.addWidget(self.bg_opacity_label)
         grid.addLayout(slider_row, 3, 1)
-
-        self.outline_check = QCheckBox()
-        grid.addWidget(self._gl("字体描边"), 4, 0)
-        grid.addWidget(self.outline_check, 4, 1)
-        grid.addWidget(self._gl("描边宽度"), 5, 0)
-        self.outline_width_spin = QSpinBox()
-        self.outline_width_spin.setRange(1, 6)
-        self.outline_width_spin.setSuffix(" px")
-        grid.addWidget(self.outline_width_spin, 5, 1)
-        grid.addWidget(self._gl("描边颜色"), 6, 0)
-        self.outline_color_button = QPushButton("选择")
-        self.outline_color_button.setObjectName("ColorPickButton")
-        grid.addWidget(self.outline_color_button, 6, 1)
+        # v2.4.0：字体描边三件套退役——面板是不透明板，描边是透明玻璃时代的补丁
         page._inner_layout.addLayout(grid)
 
-        self._section(page, "紧凑列表模式")
+        self._section(page, "上屏行为")
         # v2.3.0：stream/instant/list_mode/list_max 四行改表驱动
-        self._std_rows(page, "display", "紧凑列表模式")
+        # v2.4.0：面板形态下仅剩 instant_caption 一行
+        self._std_rows(page, "display", "上屏行为")
 
         self.overlay_font_spin.valueChanged.connect(self._apply_overlay_style)
-        self.outline_width_spin.valueChanged.connect(self._apply_overlay_style)
         self.bg_opacity_slider.valueChanged.connect(
             lambda v: (self.bg_opacity_label.setText(f"{v}%"), self._apply_overlay_style()))
-        self.outline_check.toggled.connect(self._apply_overlay_style)
         self.text_color_button.clicked.connect(lambda: self._pick_color("text"))
         self.bg_color_button.clicked.connect(lambda: self._pick_color("bg"))
-        self.outline_color_button.clicked.connect(lambda: self._pick_color("outline"))
         self._text_color = QColor(self.c.get("overlay_text_color"))
         self._bg_color = QColor(self.c.get("overlay_bg_color"))
-        self._outline_color = QColor(self.c.get("overlay_outline_color"))
         self._update_color_button(self.text_color_button, self._text_color)
         self._update_color_button(self.bg_color_button, self._bg_color)
-        self._update_color_button(self.outline_color_button, self._outline_color)
         page._inner_layout.addStretch()
         return page
 
@@ -1799,9 +1762,6 @@ class SettingsDialog(QDialog):
             text_color=g("overlay_text_color"),
             bg_color=g("overlay_bg_color"),
             bg_opacity=int(g("overlay_bg_opacity")),
-            outline=bool(g("overlay_outline")),
-            outline_width=int(g("overlay_outline_width")),
-            outline_color=g("overlay_outline_color"),
         )
 
     def _apply_staged(self):
@@ -1892,10 +1852,8 @@ class SettingsDialog(QDialog):
                 self._staged[key] = default
         self._text_color = QColor(d["overlay_text_color"])
         self._bg_color = QColor(d["overlay_bg_color"])
-        self._outline_color = QColor(d["overlay_outline_color"])
         self._update_color_button(self.text_color_button, self._text_color)
         self._update_color_button(self.bg_color_button, self._bg_color)
-        self._update_color_button(self.outline_color_button, self._outline_color)
         self._load_devices()
         self._refresh_argos_section()
         self._update_proxy_manual_enabled()
@@ -1933,8 +1891,6 @@ class SettingsDialog(QDialog):
         self.overlay_font_spin.setValue(int(values.get("overlay_font_size", c.get("overlay_font_size"))))
         self.bg_opacity_slider.setValue(int(values.get("overlay_bg_opacity", c.get("overlay_bg_opacity"))))
         self.bg_opacity_label.setText(f"{self.bg_opacity_slider.value()}%")
-        self.outline_check.setChecked(bool(values.get("overlay_outline", c.get("overlay_outline"))))
-        self.outline_width_spin.setValue(int(values.get("overlay_outline_width", c.get("overlay_outline_width"))))
         self.hotkey_check.setChecked(bool(values.get("hotkey_enabled", c.get("hotkey_enabled"))))
         self.hotkey_edit.setKeySequence(str(values.get("hotkey_sequence", c.get("hotkey_sequence") or "Ctrl+Alt+S")))
         # v2.2.6：显隐悬浮条热键（空 = 禁用）
@@ -2034,25 +1990,19 @@ class SettingsDialog(QDialog):
         self._stage("overlay_text_color", self._text_color.name())
         self._stage("overlay_bg_color", self._bg_color.name())
         self._stage("overlay_bg_opacity", int(self.bg_opacity_slider.value()))
-        self._stage("overlay_outline", bool(self.outline_check.isChecked()))
-        self._stage("overlay_outline_width", int(self.outline_width_spin.value()))
-        self._stage("overlay_outline_color", self._outline_color.name())
 
     def _pick_color(self, which):
         from PySide6.QtWidgets import QColorDialog
-        cur = {"text": self._text_color, "bg": self._bg_color, "outline": self._outline_color}[which]
+        cur = {"text": self._text_color, "bg": self._bg_color}[which]
         color = QColorDialog.getColor(cur, self, "选择颜色")
         if not color.isValid():
             return
         if which == "text":
             self._text_color = color
             self._update_color_button(self.text_color_button, color)
-        elif which == "bg":
+        else:
             self._bg_color = color
             self._update_color_button(self.bg_color_button, color)
-        else:
-            self._outline_color = color
-            self._update_color_button(self.outline_color_button, color)
         self._apply_overlay_style()
 
     def _update_color_button(self, btn, color):
@@ -2328,10 +2278,8 @@ class SettingsDialog(QDialog):
             self._refresh_argos_section()
             self._text_color = QColor(c.get("overlay_text_color"))
             self._bg_color = QColor(c.get("overlay_bg_color"))
-            self._outline_color = QColor(c.get("overlay_outline_color"))
             self._update_color_button(self.text_color_button, self._text_color)
             self._update_color_button(self.bg_color_button, self._bg_color)
-            self._update_color_button(self.outline_color_button, self._outline_color)
             self._set_widgets_from({})
         finally:
             self._loading = False

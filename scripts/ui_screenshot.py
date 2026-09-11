@@ -51,20 +51,22 @@ app.processEvents()
 w.grab().save(str(out / "ui_captions.png"))
 
 ov = CaptionOverlay()
-ov.show_caption("The quick brown fox jumps over the lazy dog.", "敏捷的棕色狐狸跳过了懒狗。", True)
-ov.apply_style(
-    font_size=24, text_color="#ffe066", bg_color="#1a2b4a", bg_opacity=60,
-    outline=True, outline_width=2, outline_color="#000000")
+# v2.4.0 面板：成对历史行（原文灰 + 译文白）
+for src, tgt in [
+    ("Welcome back to the channel.", "大家好，欢迎回到频道。"),
+    ("The browser captures audio from your system.", "浏览器从您的系统捕获音频。"),
+    ("These aren't isolated findings.", "这些并非孤立的发现。"),
+]:
+    ov.show_caption(src, tgt, True)
+ov.apply_style(font_size=24, text_color="#ffffff", bg_color="#1c1f26", bg_opacity=92)
 ov.show()
 app.processEvents()
 ov.grab().save(str(out / "ui_overlay.png"))
 ov2 = CaptionOverlay()
-ov2.show_caption("Styled overlay", "无描边 · 半透明背景", True)
-ov2.apply_style(
-    font_size=16, text_color="#7dffce", bg_color="#2d1b3d", bg_opacity=35,
-    outline=False, outline_width=0, outline_color="#000000")
+ov2.show_caption("Styled overlay", "自定义配色面板", True)
+ov2.apply_style(font_size=16, text_color="#7dffce", bg_color="#2d1b3d", bg_opacity=80)
 ov2.show()
-ov2.move(0, 200)
+ov2.move(0, 300)
 app.processEvents()
 ov2.grab().save(str(out / "ui_overlay2.png"))
 

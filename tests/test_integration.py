@@ -129,63 +129,72 @@ def t_segmenter_flow():
     assert isinstance(out, list)
 check("segmenter: 1.8s 连续语音喂入不崩溃", t_segmenter_flow)
 
-# ---------- 3) 悬浮条三模式互斥 + 内容路由 ----------
-def t_overlay_modes():
+# ---------- 3) 字幕面板（v2.4.0）：成对行 / 路由 / 淘汰 / 清空 / 收起 ----------
+def t_overlay_pairing():
     ov = CaptionOverlay()
     ov.show()
-    ov.set_continuous_mode(True)
-    assert ov.stream_view.isVisible() and not ov.list_widget.isVisible()
-    ov.set_list_mode(True, 4)
-    assert ov.stream_view.isVisible()  # 连续模式优先级更高
-    ov.set_continuous_mode(False)
-    assert ov.list_widget.isVisible() and not ov.stream_view.isVisible()
-    ov.set_list_mode(False)
-    assert ov.target_label.isVisible()
-    ov.set_continuous_mode(True)
-    ov.set_continuous_mode(False)
-    assert ov.target_label.isVisible()  # 恢复单条
-check("overlay: 三模式互斥与恢复", t_overlay_modes)
-
-def t_overlay_stream_routing():
-    ov = CaptionOverlay()
-    ov.show()
-    ov._show_source = True
-    ov.set_continuous_mode(True)
+    ov.set_show_source(True)
     ov.show_pending("hello")
+    assert len(ov._rows) == 1 and ov._rows[0]["pending"]
+    assert "⟳" in ov._rows[0]["tgt"].text()
     ov.show_pending_result("hello", "你好", True)
-    txt = ov.stream_view.toPlainText()
-    assert "hello" in txt and "你好" in txt, txt
-    # 只显示译文
-    ov._show_source = False
+    assert len(ov._rows) == 1 and not ov._rows[0]["pending"]   # 原地补齐不新建
+    assert ov._rows[0]["src"].text() == "hello" and ov._rows[0]["tgt"].text() == "你好"
+    # 原文关：新行原文隐藏，译文照常（旧内容不追溯隐藏已见行——与主窗一致按当下开关）
     ov.show_pending("world")
     ov.show_pending_result("world", "世界", False)
-    txt2 = ov.stream_view.toPlainText()
-    assert "world" not in txt2 and "世界" in txt2
-    assert "你好" in txt2  # 旧内容保留
-check("overlay: 连续流 show_source 双向路由", t_overlay_stream_routing)
+    assert len(ov._rows) == 2
+    assert not ov._rows[1]["src"].isVisible() and ov._rows[1]["tgt"].text() == "世界"
+    ov.deleteLater()
+check("panel: 成对行与占位补齐", t_overlay_pairing)
 
 def t_overlay_trim():
     ov = CaptionOverlay()
-    ov.set_continuous_mode(True)
     for i in range(60):
-        ov.stream_append(f"长句内容编号{i}填充填充填充填充填充", "target")
-    plain = ov.stream_view.toPlainText()
-    assert len(plain) < 4000, len(plain)
-    assert "长句内容编号59" in plain  # 最新内容必须在
-check("overlay: 超长淘汰保最新", t_overlay_trim)
+        ov.show_caption(f"src{i}", f"译文内容{i}", True)
+    assert len(ov._rows) <= ov.MAX_ROWS, len(ov._rows)
+    assert ov._rows[-1]["tgt_text"] == "译文内容59"          # 最新必在
+    assert all("src0" != it["src_text"] for it in ov._rows)  # 最旧已淘汰
+    ov.deleteLater()
+check("panel: 历史淘汰保最新", t_overlay_trim)
 
-def t_overlay_clear_in_modes():
+def t_overlay_clear():
     ov = CaptionOverlay()
-    ov.show()
-    ov.set_continuous_mode(True)
     ov.show_pending("x")
-    ov.clear_caption()
-    assert ov.stream_view.toPlainText() == ""
-    ov.set_continuous_mode(False)
     ov.show_caption("s", "t", True)
     ov.clear_caption()
-    assert ov.source_label.text() == "" and ov.target_label.text() == ""
-check("overlay: 两模式 clear 完整", t_overlay_clear_in_modes)
+    assert ov._rows == [] and ov._last_result == ("", "")
+    ov.deleteLater()
+check("panel: 清空彻底", t_overlay_clear)
+
+def t_overlay_collapse_and_bar():
+    # 收起态：正文隐藏、按钮文案翻转、回调持久化；工具条语言/字号回调
+    got = {"collapsed": [], "lang": [], "font": []}
+    ov = CaptionOverlay(on_collapsed=got["collapsed"].append,
+                        on_language=got["lang"].append,
+                        on_font_size=got["font"].append)
+    ov.show()
+    h_full = ov._scroll.height()
+    ov._toggle_collapse()
+    assert got["collapsed"] == [True] and not ov._scroll.isVisible()
+    assert ov._collapse_btn.text() == "展开"
+    ov._toggle_collapse()
+    assert got["collapsed"] == [True, False] and ov._scroll.isVisible()
+    assert ov._scroll.height() >= h_full or ov._scroll.height() >= 46
+    # 语言菜单：选英语 → 回调 + 按钮文案更新
+    acts = ov._lang_btn.menu().actions()
+    en = [a for a in acts if a.text() == "英语"][0]
+    en.trigger()
+    assert got["lang"] == ["en"] and "英语" in ov._lang_btn.text()
+    ov.set_target_lang("zh-CN")   # 回写不重复触发回调
+    assert got["lang"] == ["en"]
+    # 字号菜单
+    facts = ov._font_btn.menu().actions()
+    big = [a for a in facts if "大号" in a.text()][0]
+    big.trigger()
+    assert got["font"] == [30]
+    ov.deleteLater()
+check("panel: 收起态与工具条回调", t_overlay_collapse_and_bar)
 
 # ---------- 4) 字幕卡生命周期 ----------
 def t_card_lifecycle():
@@ -406,47 +415,58 @@ def t_overlay_snap():
     ov.deleteLater()
 check("overlay: 贴屏幕四缘一键归位（P2/P25c）", t_overlay_snap)
 
-def t_overlay_click_through_region():
-    # v2.3.19（P25a）：穿透区几何——单条模式只认"文字紧凑带/把手带/状态行"，
-    # 大片透明区判死；连续流整块可交互；紧凑带必须真贴合文字（widget 矩形陷阱）
-    from PySide6.QtCore import QPoint
+def t_panel_drag_contract():
+    # v2.4.0：面板是"诚实的板"——整板可拖、右缘调宽、双击工具条贴边；
+    # 穿透/紧凑带/三形态旧 API 必须已随旧字幕条退役（防幽灵回归）
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    LB = Qt.MouseButton.LeftButton   # PySide6 枚举不与 int 互通，fake 事件必须用真枚举
+
+    class _Ev:
+        def __init__(self, x, y, gx=0, gy=0, buttons=LB):
+            self._p, self._g, self._btns = QPoint(x, y), QPointF(gx, gy), buttons
+        def button(self):
+            return LB
+        def buttons(self):
+            return self._btns
+        def position(self):
+            return self._p
+        def globalPosition(self):
+            return self._g
+        def accept(self):
+            pass
+
     ov = CaptionOverlay()
+    assert not hasattr(ov, "set_click_through"), "穿透 API 应已退役"
+    assert not hasattr(ov, "_interactive_rects"), "紧凑带 API 应已退役"
+    assert not hasattr(ov, "set_continuous_mode"), "三形态 API 应已退役"
+    resized = []
+    ov._on_resized = resized.append
+    ov.resize(560, 150)
     ov.show()
     app.processEvents()
-    ov.resize(776, 309)
-    ov.show_caption("some source line", "这是一条完整的中文译文。", show_source=False)
-    tb = ov._text_band(ov.target_label)
-    assert tb.height() < 200, tb          # 紧凑带 ≠ 被布局拉伸的 widget 全高
-    assert ov._cursor_interactive(QPoint(ov.width() // 2, tb.center().y())), "文字区必须可交互"
-    assert ov._cursor_interactive(QPoint(2, 2)), "边缘把手带必须可交互"
-    dead = QPoint(ov.width() // 2, tb.bottom() + 25)
-    if dead.y() < ov.height() - ov.RESIZE_MARGIN - 8:
-        assert not ov._cursor_interactive(dead), "文字下方透明死区应判为可穿透"
-    ov.set_continuous_mode(True)
-    ov.stream_append("one short line", kind="target")
-    app.processEvents()
-    doc_h = int(ov.stream_view.document().size().height())
-    rects = ov._interactive_rects()
-    if doc_h > 0 and ov.height() - doc_h > 40:
-        # v2.3.21（P28）：流式文字不满窗 → 上方空区判穿透。旧版"整窗可交互"
-        # 保护的是不存在的手势（只读浏览器关着滚动条），代价是继续吞视频点击
-        assert rects != [ov.rect()], "流式模式不再整窗保护"
-        band = rects[-1]
-        assert 0 < band.height() <= ov.height()
-        gap_y = (band.top() + ov.RESIZE_MARGIN) // 2   # 顶把手与文字带之间空档
-        if band.top() - ov.RESIZE_MARGIN > 24:
-            assert not ov._cursor_interactive(QPoint(ov.width() // 2, gap_y)), \
-                f"流式文字带上方空区应可穿透（band.top={band.top()}）"
-        assert ov._cursor_interactive(QPoint(ov.width() // 2, band.center().y())), \
-            "文字带内部必须可交互"
-    assert ov._cursor_interactive(QPoint(2, 2)), "流式模式边缘把手仍可交互"
-    ov.set_continuous_mode(False)
-    ov.set_list_mode(True, 5)
-    assert ov._interactive_rects() == [ov.rect()], "列表模式（真有滚动条）仍整窗保护"
-    ov.set_list_mode(False, 5)
-    ov.set_click_through(False)           # 不得抛异常（关闭路径）
+    p0 = (ov.x(), ov.y())
+    ov.mousePressEvent(_Ev(100, 75, 500, 500))          # 板体任意处 = 拖
+    assert ov._drag_pos is not None and not ov._resizing
+    ov.mouseMoveEvent(_Ev(100, 75, 560, 540))           # 拖 +60/+40
+    assert (ov.x(), ov.y()) == (p0[0] + 60, p0[1] + 40), (ov.x(), ov.y(), p0)
+    ov.mouseReleaseEvent(_Ev(100, 75, 560, 540))
+    assert ov._drag_pos is None
+    ov.mousePressEvent(_Ev(ov.width() - 3, 75, 1000, 1000))  # 右缘 = 调宽
+    assert ov._resizing and ov._drag_pos is None
+    ov.mouseMoveEvent(_Ev(ov.width() - 3, 75, 1100, 1000))
+    assert ov.width() >= 560
+    ov.mouseReleaseEvent(_Ev(ov.width() - 3, 75, 1100, 1000))
+    assert resized and resized[-1] == ov.width()       # 宽度回调持久化通道
+    w_before = ov.width()
+    ov.show_caption("probe source", "宽度稳定探针：这句较长，用于验证 adjustSize 不再横向改宽度。", True)
+    assert ov.width() == w_before, "宽度不得随内容跳变（实机抓到过 722→432→698）"
+    from PySide6.QtGui import QGuiApplication
+    g = QGuiApplication.primaryScreen().availableGeometry()
+    ov.move(g.center())
+    ov.mouseDoubleClickEvent(_Ev(100, 10))             # 双击工具条 → 贴更近的缘
+    assert ov.y() <= g.top() + 20 or ov.y() + ov.height() >= g.bottom() - 20, ov.y()
     ov.deleteLater()
-check("overlay: 点击穿透区几何（P25a/P28）", t_overlay_click_through_region)
+check("panel: 整板拖移/右缘调宽/双击贴边契约（P31）", t_panel_drag_contract)
 
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
@@ -766,8 +786,8 @@ def t_settings_fields():
     w = MainWindow()
     dlg = SettingsDialog(w)
     dlg.load_from_config()
-    # 每个非 internal 键都有控件承载（抽样关键键）
-    for key in ("hotkey_overlay", "overlay_stream", "instant_caption",
+    # 每个非 internal 键都有控件承载（抽样关键键；v2.4.0 面板化后换样）
+    for key in ("hotkey_overlay", "overlay_font_size", "instant_caption",
                 "show_source", "asr_device", "engine"):
         assert key in _FIELD_SPECS, key
     # 恢复默认不含 internal
