@@ -176,6 +176,7 @@ _FIELD_SPECS = {
     "overlay_list_mode":    ("overlay", "check"),
     "overlay_list_max":     ("overlay", "spin"),
     "overlay_stream":       ("overlay", "check"),
+    "overlay_click_through": ("overlay", "check"),
     "close_action":         ("instant", "combo"),
     "auto_start":           ("instant", "check"),
     "max_history":          ("instant", "spin"),
@@ -262,6 +263,10 @@ _STD_ROWS = [
      "kind": "check", "title": "悬浮条连续输出模式",
      "desc": "开启后悬浮条不再逐句替换，而是不断累积追加：原文浅色行先落，译文白色行随后，"
              "满了自动换行、自动滚到最新（优先级高于列表模式，主窗口不受影响）。"},
+    {"key": "overlay_click_through", "attr": "overlay_click_check", "page": "display", "section": "紧凑列表模式",
+     "kind": "check", "title": "悬浮条空白处点击穿透",
+     "desc": "单条模式下，光标不在文字/边缘/按钮上时，点击穿透到下层窗口——不再挡住视频进度条；"
+             "关闭则整块可点。保存并应用后生效（也可右键悬浮条即时切换，无需进设置）。"},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "紧凑列表模式",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
      "desc": "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"

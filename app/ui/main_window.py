@@ -440,7 +440,8 @@ class MainWindow(QMainWindow):
                                       on_open_settings=self._open_overlay_settings,
                                       on_toggle_source=self._toggle_source,
                                       on_toggle_translation_only=self._on_toggle_translation_only,
-                                      on_resized=self._on_overlay_resized)
+                                      on_resized=self._on_overlay_resized,
+                                      on_click_through=self._on_overlay_click_through)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -807,6 +808,12 @@ class MainWindow(QMainWindow):
             outline_width=int(c.get("overlay_outline_width")),
             outline_color=c.get("overlay_outline_color"),
         )
+        # v2.3.19（P25a）：单条模式空白区点击穿透开关（右键菜单改后也回写配置）
+        self.overlay.set_click_through(bool(c.get("overlay_click_through")))
+
+    def _on_overlay_click_through(self, on):
+        # 悬浮条右键菜单切换 → 回写配置持久化（不改运行中的其它行为）
+        self.config.set("overlay_click_through", bool(on))
 
     # ---------- v2.2.12：就绪未出字时的"正在聆听"呼吸反馈 ----------
 

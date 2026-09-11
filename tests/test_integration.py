@@ -374,8 +374,36 @@ def t_overlay_snap():
     ov._snap_to_edge("bottom")
     assert ov.y() + ov.height() >= g.bottom() - 20, (ov.y(), ov.height(), g.bottom())
     assert moved[-1][1] == ov.y()
+    # v2.3.19（P25c）：左右缘磁吸
+    ov._snap_to_edge("left")
+    assert ov.x() <= g.left() + 12, (ov.x(), g.left())
+    ov._snap_to_edge("right")
+    assert ov.x() + ov.width() >= g.right() - 12, (ov.x(), ov.width(), g.right())
     ov.deleteLater()
-check("overlay: 贴屏幕顶/底一键归位（P2）", t_overlay_snap)
+check("overlay: 贴屏幕四缘一键归位（P2/P25c）", t_overlay_snap)
+
+def t_overlay_click_through_region():
+    # v2.3.19（P25a）：穿透区几何——单条模式只认"文字紧凑带/把手带/状态行"，
+    # 大片透明区判死；连续流整块可交互；紧凑带必须真贴合文字（widget 矩形陷阱）
+    from PySide6.QtCore import QPoint
+    ov = CaptionOverlay()
+    ov.show()
+    app.processEvents()
+    ov.resize(776, 309)
+    ov.show_caption("some source line", "这是一条完整的中文译文。", show_source=False)
+    tb = ov._text_band(ov.target_label)
+    assert tb.height() < 200, tb          # 紧凑带 ≠ 被布局拉伸的 widget 全高
+    assert ov._cursor_interactive(QPoint(ov.width() // 2, tb.center().y())), "文字区必须可交互"
+    assert ov._cursor_interactive(QPoint(2, 2)), "边缘把手带必须可交互"
+    dead = QPoint(ov.width() // 2, tb.bottom() + 25)
+    if dead.y() < ov.height() - ov.RESIZE_MARGIN - 8:
+        assert not ov._cursor_interactive(dead), "文字下方透明死区应判为可穿透"
+    ov.set_continuous_mode(True)
+    assert ov._interactive_rects() == [ov.rect()], "连续流模式整窗可交互"
+    ov.set_continuous_mode(False)
+    ov.set_click_through(False)           # 不得抛异常（关闭路径）
+    ov.deleteLater()
+check("overlay: 点击穿透区几何（P25a）", t_overlay_click_through_region)
 
 def t_prewarm_skip_uncached():
     # v2.3.5（P5）：预热的安全边界——模型未完整下载时必须直接返回，

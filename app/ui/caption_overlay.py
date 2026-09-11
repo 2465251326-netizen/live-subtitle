@@ -90,13 +90,14 @@ class CaptionOverlay(QWidget):
     手动调整后尺寸固定并持久化，右键可"恢复自动大小"。
     """
 
-    RESIZE_MARGIN = 10
+    RESIZE_MARGIN = 16   # v2.3.19（P25b）：10→16px 命中带 + hover 亮边提示
     MIN_W = 320
     MIN_H = 120
 
     def __init__(self, on_closed=None, on_moved=None,
                  on_open_settings=None, on_toggle_source=None,
-                 on_toggle_translation_only=None, on_resized=None):
+                 on_toggle_translation_only=None, on_resized=None,
+                 on_click_through=None):
         super().__init__(None)
         # 背景参数必须先于任何可能触发 paintEvent 的调用（setStyleSheet 等）
         self._bg_color = QColor("#0c0e14")
@@ -121,6 +122,7 @@ class CaptionOverlay(QWidget):
         self._on_toggle_source = on_toggle_source
         self._on_toggle_translation_only = on_toggle_translation_only
         self._on_resized = on_resized
+        self._on_click_through = on_click_through
         self._show_source = True
 
         layout = QVBoxLayout(self)
@@ -190,6 +192,114 @@ class CaptionOverlay(QWidget):
         self._STREAM_KEEP_CHARS = 700  # 淘汰后保留的尾部字符量
         layout.addWidget(self.stream_view, 1)  # 连续模式占满正文区，悬浮条高度由它撑起
         self.adjustSize()
+
+        # v2.3.19（P25）：空白区鼠标点击穿透——把玩报告头号痛点：单条/跑马灯
+        # 模式下文字只占中间一条，上下大片透明区却吞掉鼠标（挡住视频播放器的
+        # 进度条/暂停键）。光标落在"文字/状态行/边缘把手/关闭键"之外时，给
+        # HWND 加 WS_EX_TRANSPARENT 让点击穿到下层应用（Qt 属性做不到，见
+        # _apply_os_transparency）；光标探回即恢复交互。穿透后本窗收不到任何
+        # 鼠标事件，只能靠全局光标轮询判断"是否该醒"。
+        self._click_through_enabled = True   # 右键菜单可切换，并持久化到配置
+        self._transparent_now = False
+        self._hover_edges = []
+        self._pt_timer = QTimer(self)
+        self._pt_timer.setInterval(140)
+        self._pt_timer.timeout.connect(self._poll_transparency)
+        self._pt_timer.start()
+
+    # ---------- v2.3.19（P25）：点击穿透 + 缩放可发现性 ----------
+
+    def set_click_through(self, enabled):
+        """开/关"空白区点击穿透"。关闭时立即恢复整窗可交互。"""
+        self._click_through_enabled = bool(enabled)
+        if not self._click_through_enabled and self._transparent_now:
+            self._apply_os_transparency(False)
+            self._transparent_now = False
+
+    def _apply_os_transparency(self, on):
+        """v2.3.19（P25a）OS 级点击穿透。实机取证：Qt 的
+        WA_TransparentForMouseEvents 在 Windows 上**不设 WS_EX_TRANSPARENT**
+        ——只改 Qt 内部事件路由，顶层窗口照样吞掉点击、穿不到下层应用。
+        真穿透必须直改 HWND 扩展样式：本窗因 WA_TranslucentBackground 已带
+        WS_EX_LAYERED，只需增删 WS_EX_TRANSPARENT 位并以 SWP_FRAMECHANGED 刷新。"""
+        import ctypes
+        hwnd = int(self.winId())
+        GWL_EXSTYLE = -20
+        WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_LAYERED = 0x00080000
+        user32 = ctypes.windll.user32
+        ex = ctypes.c_long(user32.GetWindowLongW(hwnd, GWL_EXSTYLE)).value
+        if on:
+            ex |= (WS_EX_TRANSPARENT | WS_EX_LAYERED)
+        else:
+            ex &= ~WS_EX_TRANSPARENT
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex)
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+                            0x1 | 0x2 | 0x4 | 0x20)   # NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED
+
+    def _text_band(self, label):
+        """标签内**真实文字**的紧凑包围带（居中排版 → 以 label 垂直中心展开；
+        用 QFontMetrics 算行数高）。不能直接用 label.geometry()——布局拉伸后
+        它的 widget 矩形远大于文字本身，会把大片死区误标为可交互，穿透形同虚设。"""
+        from PySide6.QtCore import QRect
+        fm = label.fontMetrics()
+        text = label.text()
+        w = max(40, label.width() - 16)
+        br = fm.boundingRect(0, 0, w, 100000, Qt.TextWordWrap, text or " ")
+        h = br.height() + fm.lineSpacing()   # 一行余量，防边缘擦到字
+        cy = label.geometry().center().y()
+        return QRect(0, cy - h // 2, self.width(), h)
+
+    def _interactive_rects(self):
+        """交互区（局部坐标）：连续流/列表模式整窗可交互；单条/跑马灯只保留
+        状态行 + **文字紧凑带** + 四边缩放把手带 + 右上关闭键区。"""
+        from PySide6.QtCore import QRect
+        R = self.rect()
+        if self._continuous or self._list_mode:
+            return [R]  # 可滚动区，整块可交互
+        m = self.RESIZE_MARGIN
+        rects = [
+            QRect(0, 0, R.width(), m),            # 四边把手带（缩放/抓取入口）
+            QRect(0, R.height() - m, R.width(), m),
+            QRect(0, 0, m, R.height()),
+            QRect(R.width() - m, 0, m, R.height()),
+            self.status_label.geometry(),         # 状态行（其右侧即 X 键区）
+        ]
+        if self.source_label.isVisible():
+            rects.append(self._text_band(self.source_label))
+        if self.target_label.isVisible():
+            rects.append(self._text_band(self.target_label))
+        return rects
+
+    def _cursor_interactive(self, local_pt):
+        from PySide6.QtCore import QPoint
+        p = QPoint(int(local_pt.x()), int(local_pt.y()))
+        for r in self._interactive_rects():
+            if r.adjusted(-6, -6, 6, 6).contains(p):
+                return True
+        return False
+
+    def _poll_transparency(self):
+        """140ms 轮询全局光标：不在交互区且窗口可见→置穿透；否则撤销。
+        拖移/缩放进行中绝不切换（会打断抓取）。"""
+        if not self.isVisible():
+            return
+        if self._drag_pos is not None or self._resizing:
+            return
+        from PySide6.QtGui import QCursor
+        g = QCursor.pos()
+        local = self.mapFromGlobal(g)
+        inside = (0 <= local.x() < self.width() and 0 <= local.y() < self.height())
+        want_transparent = bool(self._click_through_enabled) and not (
+            inside and self._cursor_interactive(local))
+        if want_transparent != self._transparent_now:
+            self._transparent_now = want_transparent
+            self._apply_os_transparency(want_transparent)
+            if want_transparent:
+                self.close_button.hide()
+                self._hover_edges = []
+                self.setCursor(Qt.ArrowCursor)
+                self.update()
 
     # ---------- 连续文本流（v2.2.0/v2.2.3） ----------
 
@@ -410,6 +520,20 @@ class CaptionOverlay(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 24), 1))
         p.setBrush(QBrush(bg))
         p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 14, 14)
+        # v2.3.19（P25b）：hover 到的边缘画 2px 亮蓝线，提示可拖拽缩放
+        if getattr(self, "_hover_edges", []):
+            hl = QPen(QColor(120, 170, 255, 210), 2)
+            p.setPen(hl)
+            r = self.rect()
+            for e in self._hover_edges:
+                if e == "n":
+                    p.drawLine(r.left() + 8, r.top() + 1, r.right() - 8, r.top() + 1)
+                elif e == "s":
+                    p.drawLine(r.left() + 8, r.bottom() - 2, r.right() - 8, r.bottom() - 2)
+                elif e == "w":
+                    p.drawLine(r.left() + 1, r.top() + 8, r.left() + 1, r.bottom() - 8)
+                elif e == "e":
+                    p.drawLine(r.right() - 2, r.top() + 8, r.right() - 2, r.bottom() - 8)
 
     def apply_style(self, font_size, text_color, bg_color, bg_opacity,
                     outline, outline_width, outline_color):
@@ -554,7 +678,12 @@ class CaptionOverlay(QWidget):
             event.accept()
             return
         if not self._resizing:
-            cur = self._cursor_for(self._edge_at(event.position().toPoint()))
+            edges = self._edge_at(event.position().toPoint())
+            if edges != getattr(self, "_hover_edges", []):
+                # v2.3.19（P25b）：悬停边缘画亮线——"可缩放"从隐藏功能变可见
+                self._hover_edges = edges
+                self.update()
+            cur = self._cursor_for(edges)
             self.setCursor(cur if cur is not None else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, event):
@@ -586,17 +715,27 @@ class CaptionOverlay(QWidget):
         self.close_button.hide()
         if not self._resizing:
             self.setCursor(Qt.ArrowCursor)
+        if getattr(self, "_hover_edges", []):
+            self._hover_edges = []
+            self.update()
 
     def _snap_to_edge(self, edge):
-        """v2.3.3（P2）：一键贴到所在屏幕顶部/底部——模拟用户实测痛点：
-        悬浮条默认压着网页播放器控制条，此前只有手动拖拽一条路。"""
+        """v2.3.3（P2）：一键贴屏幕顶/底；v2.3.19（P25c）扩展左/右缘磁吸。
+        悬浮条默认压着网页播放器控制条——模拟用户把玩报告实锤。"""
         from PySide6.QtGui import QGuiApplication
         from PySide6.QtCore import QPoint
         scr = (QGuiApplication.screenAt(QPoint(self.frameGeometry().center()))
                or QGuiApplication.primaryScreen())
         g = scr.availableGeometry()
-        x = min(max(self.x(), g.left()), max(g.left(), g.right() - self.width() + 1))
-        y = g.top() + 8 if edge == "top" else max(g.top(), g.bottom() - self.height() - 7)
+        if edge in ("top", "bottom"):
+            x = min(max(self.x(), g.left()), max(g.left(), g.right() - self.width() + 1))
+            y = g.top() + 8 if edge == "top" else max(g.top(), g.bottom() - self.height() - 7)
+        elif edge == "left":
+            y = min(max(self.y(), g.top()), max(g.top(), g.bottom() - self.height() + 1))
+            x = g.left() + 8
+        else:  # right
+            y = min(max(self.y(), g.top()), max(g.top(), g.bottom() - self.height() + 1))
+            x = max(g.left(), g.right() - self.width() + 1 - 8)
         self.move(x, y)
         if self._on_moved:
             self._on_moved(x, y)
@@ -611,9 +750,16 @@ class CaptionOverlay(QWidget):
         act_auto_size = menu.addAction("恢复自动大小")
         act_auto_size.setEnabled(self._user_resized)
         menu.addSeparator()
-        # v2.3.3（P2）：快捷归位
+        # v2.3.3（P2）：快捷归位；v2.3.19（P25c）：补左/右缘磁吸
         act_snap_top = menu.addAction("贴到屏幕顶部")
         act_snap_bottom = menu.addAction("贴到屏幕底部")
+        act_snap_left = menu.addAction("贴到屏幕左侧")
+        act_snap_right = menu.addAction("贴到屏幕右侧")
+        menu.addSeparator()
+        # v2.3.19（P25a）：空白处点击穿透开关（把玩报告头号痛点）
+        act_through = menu.addAction("空白处点击穿透")
+        act_through.setCheckable(True)
+        act_through.setChecked(self._click_through_enabled)
         menu.addSeparator()
         act_hide = menu.addAction("隐藏字幕条")
         chosen = menu.exec(event.globalPos())
@@ -636,5 +782,13 @@ class CaptionOverlay(QWidget):
             self._snap_to_edge("top")
         elif chosen == act_snap_bottom:
             self._snap_to_edge("bottom")
+        elif chosen == act_snap_left:
+            self._snap_to_edge("left")
+        elif chosen == act_snap_right:
+            self._snap_to_edge("right")
+        elif chosen == act_through:
+            self.set_click_through(act_through.isChecked())
+            if self._on_click_through:
+                self._on_click_through(act_through.isChecked())
         elif chosen == act_hide:
             self._request_close()
