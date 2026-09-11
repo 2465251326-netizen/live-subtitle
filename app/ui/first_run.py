@@ -133,9 +133,9 @@ class FirstRunWizard(QDialog):
         # 用户改过键/关过热键时向导教错（A4 文案诚实修复）
         hk = str(self.main.config.get("hotkey_overlay") or "").strip()
         if hk and bool(self.main.config.get("hotkey_enabled")):
-            ov_line = f"· 悬浮字幕条：勾选「启用悬浮字幕条」，或任何界面按 {hk} 直接显隐\n"
+            ov_line = f"· 字幕面板：勾选「启用字幕面板（置顶）」，或任何界面按 {hk} 直接显隐\n"
         else:
-            ov_line = ("· 悬浮字幕条：勾选「启用悬浮字幕条」即置顶显示；"
+            ov_line = ("· 字幕面板：勾选「启用字幕面板（置顶）」即置顶显示；"
                        "显隐组合热键可在「设置-通用」开启并设置\n")
         tips = QLabel(
             "· 点主窗口右上角「开始翻译」，播放视频即可看到字幕逐句出现\n"

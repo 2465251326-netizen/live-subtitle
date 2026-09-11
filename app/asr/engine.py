@@ -411,42 +411,53 @@ class AsrThread(QThread):
         model_ref = model_repo_id(self.model_size)
         t0 = _time.perf_counter()
         try:
-            self._model = WhisperModel(
-                model_ref,
-                device=device,
-                compute_type=compute_type,
-                download_root=str(HF_HOME / "hub"),
-                # 缓存完整时离线加载：跳过联网校验，避免代理抖动时卡在「正在加载模型」
-                local_files_only=cached,
-            )
-            # v2.2.1：构造完成后先查 _stop——加载期停止的孤儿线程构造虽已完成，
-            # 但不再入池/复用（否则①停止后 RAM/显存被占住直到进程退出，
-            # ②与重启线程并发构造时败者覆盖胜者的池缓存）
+            self._model = self._construct_model(
+                model_ref, device, compute_type, local_only=cached)
             if self._stop:
                 self._model = None
                 return False
-            self._model._ls_device = device
-            with _MODEL_CACHE_LOCK:
-                _MODEL_CACHE.clear()
-                _MODEL_CACHE[cache_key] = self._model
+            self._after_model_constructed(device, cache_key)
             app_log.log("asr.model_loaded", model=self.model_size, device=device,
                         cached=cached, seconds=round(_time.perf_counter() - t0, 2))
             self._device_used = device
             return True
         except Exception as e:
-            if device == "cuda":
+            # v2.4.4（BUG-2）：判定"缓存完整"却加载失败 = 快照结构损坏/校验不过
+            # （实测：huggingface_hub 1.30 离线完整性校验拒载体积完好的缓存）——
+            # 先同设备联网重试一次（校验/补全快照），而不是直接降到 CPU：
+            # 此前 GPU 用户被静默回落 CPU，延迟 6~10 倍且界面仍显示 GPU。
+            if cached and not self._stop:
+                try:
+                    self.status_changed.emit("模型缓存校验异常，正在联网修复…")
+                    self._model = self._construct_model(
+                        model_ref, device, compute_type, local_only=False)
+                    if self._stop:
+                        self._model = None
+                        return False
+                    self._after_model_constructed(device, cache_key)
+                    app_log.log("asr.model_repaired_online", model=self.model_size,
+                                device=device, first_error=str(e)[:120])
+                    self.status_changed.emit("模型缓存已修复")
+                    self._device_used = device
+                    return True
+                except Exception as e2:
+                    e = e2
+            if device == "cuda" and not self._stop:
                 # v2.0.11：显式 CUDA 加载失败（缺运行时等）回落 CPU，不再依赖 auto 分支
                 try:
-                    self._model = WhisperModel(model_ref, device="cpu", compute_type="int8")
+                    self._model = self._construct_model(
+                        model_ref, "cpu", "int8", local_only=False)
                     # v2.2.1：与主路径同款 _stop 后置检查（构造期可能被停止）
                     if self._stop:
                         self._model = None
                         return False
-                    self._model._ls_device = "cpu"
-                    with _MODEL_CACHE_LOCK:
-                        _MODEL_CACHE.clear()
-                        _MODEL_CACHE[(self.model_size, "cpu", "int8")] = self._model
+                    self._after_model_constructed("cpu", (self.model_size, "cpu", "int8"))
                     self._device_used = "cpu"
+                    # v2.4.4（BUG-2）：回落必须告知用户（此前只写日志，界面仍显示
+                    # GPU，用户无感损失 6~10 倍速度）。走状态通道进主窗状态行
+                    self.status_changed.emit(
+                        "⚠ GPU 加载失败已回落 CPU（模型较重时字幕明显滞后）——"
+                        f"原因：{str(e)[:60]}。可在「设置-语音识别」检测 GPU 环境")
                     app_log.log("asr.cuda_fallback_cpu", model=self.model_size, err=str(e)[:120])
                     return True
                 except Exception:
@@ -457,6 +468,26 @@ class AsrThread(QThread):
             app_log.exception("asr.model_load_failed", e, model=self.model_size)
             self.error_occurred.emit(f"模型加载失败：{friendly_error(e)}")
             return False
+
+    def _construct_model(self, model_ref, device, compute_type, local_only):
+        # v2.4.4：WhisperModel 构造参数唯一出口（原三处手写易漂移）
+        from faster_whisper import WhisperModel
+        from app.config import HF_HOME
+        return WhisperModel(
+            model_ref,
+            device=device,
+            compute_type=compute_type,
+            download_root=str(HF_HOME / "hub"),
+            local_files_only=local_only,
+        )
+
+    def _after_model_constructed(self, device, cache_key):
+        # v2.4.4：入池（原 _load_model 内联逻辑提取；_stop 检查留在调用点，
+        # 停止路径不得被 except-重试链吞掉）
+        self._model._ls_device = device
+        with _MODEL_CACHE_LOCK:
+            _MODEL_CACHE.clear()
+            _MODEL_CACHE[cache_key] = self._model
 
     def run(self):
         # v2.0.1：加载阶段整体兜底——此前 import/端点探测/构造只有构造在 try

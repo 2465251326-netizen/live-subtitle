@@ -204,6 +204,10 @@ class CaptionOverlay(QWidget):
     # ---------- 内容 ----------
 
     def _add_row(self, src, tgt, pending):
+        # v2.4.4（BUG-7）：字幕到来 = 引导完成使命，复位后空状态回退单行占位——
+        # 此前 _hint_guide 一经置位永久生效，"清空"后每次都弹三行小抄，
+        # 与"首次只弹一次"的设计语义冲突
+        self._hint_guide = False
         row = QWidget(self._body)
         v = QVBoxLayout(row)
         v.setContentsMargins(0, 0, 0, 0)

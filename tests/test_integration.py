@@ -350,7 +350,7 @@ def t_overlay_status_row():
     # v2.3.2（G1）：速览卡"悬浮字幕条"状态行跟随显隐（用户痛点：关了没人说）
     w = MainWindow()
     w.show()
-    lab = w._quick_labels["悬浮字幕条"]
+    lab = w._quick_labels["字幕面板"]
     w.overlay.hide()
     w._refresh_quick_panel()
     assert "已关闭" in lab.text() and "Ctrl+Alt+O" in lab.text(), lab.text()
@@ -647,6 +647,211 @@ def t_panel_height_settles():
         f"高度滞后未复排：scroll={ov._scroll.height()} want={want}"
     ov.deleteLater()
 check("panel: 高度贴内容真实成立（延迟复排）", t_panel_height_settles)
+
+def t_wizard_scheduled_vs_shown():
+    # v2.4.4（BUG-1）：v2.4.1 在排期时就置"已显示"标志，回调守卫查同一标志
+    # → 向导被自己的守卫拦截，首启永不弹出（隔离新配置实测抓到）。回归锁：
+    # 构造排期后 scheduled=True 而 shown=False；可见实例回调真正弹窗才置
+    # shown 且只弹一次；不可见实例有限顺延、不置位、不弹
+    from app.ui import first_run as fr
+    from app.ui.main_window import MainWindow
+    made = []
+    class _FakeWiz:
+        def __init__(self, parent): made.append(1)
+        def exec(self): return 0
+    orig = fr.FirstRunWizard
+    fr.FirstRunWizard = _FakeWiz
+    try:
+        MainWindow._wizard_shown = False
+        MainWindow._wizard_scheduled = False
+        MainWindow._wizard_defers = 0
+        cfg = Config()
+        orig_done = bool(cfg.get("wizard_done"))
+        cfg.set("wizard_done", False)
+        cfg.set("overlay_enabled", False)
+        w = MainWindow()
+        assert MainWindow._wizard_scheduled, "构造后应已排期"
+        assert not MainWindow._wizard_shown, "排期不得置已显标志（BUG-1 回归点）"
+        w.show(); app.processEvents()
+        w._show_first_run_wizard()
+        assert made == [1], "可见实例回调应弹一次向导"
+        assert MainWindow._wizard_shown
+        w._show_first_run_wizard()
+        assert made == [1], "已显守卫：不得重复弹"
+        MainWindow._wizard_shown = False
+        MainWindow._wizard_defers = 0
+        w.hide(); app.processEvents()
+        w._show_first_run_wizard()
+        assert made == [1] and not MainWindow._wizard_shown, "不可见不得弹"
+        assert MainWindow._wizard_defers == 1, "不可见时应顺延一次"
+        w.deleteLater()
+        w._quitting = True
+        w._teardown()
+    finally:
+        fr.FirstRunWizard = orig
+        MainWindow._wizard_shown = False
+        MainWindow._wizard_scheduled = False
+        MainWindow._wizard_defers = 0
+        # itest_home 是测试专用 home：无条件回到"向导已完成"——残留
+        # wizard_done=False 会让后续任何 MainWindow 构造后排向导，400ms 后
+        # 在别的测试的事件循环里真 exec 阻塞整个套件（本测试首跑踩过）
+        Config().set("wizard_done", True)
+check("wizard: 排期/已显标志分离+有限顺延（BUG-1）", t_wizard_scheduled_vs_shown)
+
+def t_quick_gpu_hint_actual_device():
+    # v2.4.4（BUG-2）：GPU 静默回落 CPU 后，速览卡不得按配置谎报"（GPU）"
+    from types import SimpleNamespace
+    w = MainWindow()
+    try:
+        cfg_dev = str(w.config.get("asr_device")) == "cuda"
+        w.asr_thread = None
+        assert w._quick_gpu_hint() == cfg_dev, "无线程时回退配置"
+        w.asr_thread = SimpleNamespace(_device_used="cpu")
+        assert not w._quick_gpu_hint(), "实际 CPU 不得显示 GPU"
+        w.asr_thread = SimpleNamespace(_device_used="cuda")
+        assert w._quick_gpu_hint(), "实际 GPU 显示 GPU"
+        w.asr_thread = SimpleNamespace()
+        assert w._quick_gpu_hint() == cfg_dev, "线程早期无设备值：回退配置"
+    finally:
+        w.asr_thread = None
+        w._quitting = True
+        w._teardown()
+check("quickpanel: 速览卡按实际加载设备显示（BUG-2）", t_quick_gpu_hint_actual_device)
+
+def t_low_input_cleared_on_caption():
+    # v2.4.4（BUG-3）：字幕成功上屏必须撤"信号过弱"告警（此前挂到会话结束，
+    # 一边出字幕一边警示"字幕可能无法识别"，主窗横幅与面板状态双端矛盾）
+    w = MainWindow()
+    try:
+        w.running = True
+        w._set_engine_status("识别: 就绪，正在聆听…")
+        w._on_low_input(True)
+        assert "信号过弱" in w.engine_status_label.text()
+        assert w.overlay.status_lbl.text() == "信号弱"
+        w._on_asr_text("hello", "en", "1.0", -1.0)
+        assert not w._low_input_warn, "字幕上屏应撤告警标志"
+        assert "信号过弱" not in w.engine_status_label.text()
+        assert w.overlay.status_lbl.text() != "信号弱"
+        # 撤回后的静音期（quiet=True 再触发）不得重挂——会话已证明可识别
+        w._on_low_input(True)
+        assert not w._low_input_warn, "证明过可识别后静音不再挂告警"
+        assert "信号过弱" not in w.engine_status_label.text()
+    finally:
+        w.running = False
+        w._quitting = True
+        w._teardown()
+check("status: 字幕上屏撤低电平告警（BUG-3）", t_low_input_cleared_on_caption)
+
+def t_card_labels_defer_context_menu():
+    # v2.4.4（BUG-5）：QLabel 不得拦截卡片右键——此前英文 Copy/Select All
+    # 菜单挡死 P14 纠错入口，且集成测试直接调内部构建从未暴露
+    from PySide6.QtCore import Qt
+    card = CaptionCard("src text", on_menu=lambda c: None)
+    try:
+        assert card.source_label.contextMenuPolicy() == Qt.ContextMenuPolicy.NoContextMenu
+        assert card.target_label.contextMenuPolicy() == Qt.ContextMenuPolicy.NoContextMenu
+    finally:
+        card.deleteLater()
+check("card: 文本标签右键交还父级（BUG-5）", t_card_labels_defer_context_menu)
+
+def t_export_srt_default():
+    # v2.4.4（BUG-6）："导出 SRT…"入口的默认文件名与首选过滤器必须是 SRT
+    # （此前与通用导出共用，照文案直接保存得到 txt）。注意：PySide6 类型类体
+    # 不可靠 monkeypatch，改为替换 main_window 模块命名空间的 QFileDialog 绑定
+    import app.ui.main_window as mw
+    w = MainWindow()
+    try:
+        w.running = True
+        w._on_translated("a", "一", "google", "en", None)
+        got = {}
+        class _FakeFD:
+            @staticmethod
+            def getSaveFileName(parent, title, d, f):
+                got["dir"], got["filter"] = d, f
+                return ("", "")
+        orig_cls = mw.QFileDialog
+        mw.QFileDialog = _FakeFD
+        try:
+            w._export_srt()
+            assert got["dir"].endswith(".srt"), f"SRT 入口默认名错误：{got['dir']}"
+            assert got["filter"].startswith("SRT"), got["filter"]
+            w._export_captions()
+            assert got["dir"].endswith(".txt"), "通用导出仍默认 txt"
+            assert got["filter"].startswith("文本文件")
+        finally:
+            mw.QFileDialog = orig_cls
+    finally:
+        w._quitting = True
+        w._teardown()
+check("export: SRT 入口默认 SRT（BUG-6）", t_export_srt_default)
+
+def t_hint_guide_resets_on_caption():
+    # v2.4.4（BUG-7）：手势引导只陪首段字幕之前——字幕到来即复位，
+    # 此后清空回退单行占位（此前引导每次清空都重现）
+    ov = CaptionOverlay()
+    try:
+        ov.show(); app.processEvents()
+        ov.show_first_hint()
+        assert "首次使用小抄" in ov._hint.text()
+        ov.show_caption("a", "b", True)
+        ov.clear_caption()
+        assert ov._hint.text() == ov.HINT_IDLE, "清空后应回退单行占位"
+    finally:
+        ov.deleteLater()
+check("panel: 引导首句后复位（BUG-7）", t_hint_guide_resets_on_caption)
+
+def t_stop_keeps_cards():
+    # v2.4.4（BUG-9）：停止翻译后仍有字幕卡时不得切回速览卡（会话记录要能回看）
+    import inspect
+    w = MainWindow()
+    try:
+        w.running = True
+        w._on_translated("keep", "保留", "google", "en", None)
+        assert w._has_cards()
+        src_txt = inspect.getsource(type(w).stop_pipeline)
+        assert "_has_cards" in src_txt, "stop_pipeline 应按有无卡片决定切页"
+    finally:
+        w._quitting = True
+        w._teardown()
+check("ui: 停止保留字幕列表（BUG-9）", t_stop_keeps_cards)
+
+def t_rerun_wizard_preserves_staged_choice():
+    # v2.4.4（BUG-4）：有未保存暂存时运行向导必须先问；取消则不进向导
+    # （此前 load_from_config 无条件回填，暂存被静默丢弃）。
+    # patch 走 settings_dialog 模块命名空间（PySide6 类型类体不可 monkeypatch）
+    import app.ui.settings_dialog as sd
+    from app.ui import first_run as fr
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    try:
+        dlg = SettingsDialog(w)
+        dlg._staged["auto_start"] = True
+        made = []
+        class _FakeWiz:
+            def __init__(self, p): made.append(1)
+            def exec(self): return 0
+        class _FakeQMB:
+            Cancel = 0x00400000
+            Yes = 0x00004000
+            No = 0x00010000
+            @staticmethod
+            def question(*a, **k):
+                return _FakeQMB.Cancel
+        orig_w = fr.FirstRunWizard
+        orig_m = sd.QMessageBox
+        fr.FirstRunWizard = _FakeWiz
+        sd.QMessageBox = _FakeQMB
+        try:
+            dlg._rerun_wizard()
+            assert made == [], "用户取消时不得运行向导"
+        finally:
+            fr.FirstRunWizard = orig_w
+            sd.QMessageBox = orig_m
+        dlg.deleteLater()
+    finally:
+        w._quitting = True
+        w._teardown()
+check("settings: 向导前暂存问询（BUG-4）", t_rerun_wizard_preserves_staged_choice)
 
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走

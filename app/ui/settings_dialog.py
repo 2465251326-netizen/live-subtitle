@@ -1091,8 +1091,8 @@ class SettingsDialog(QDialog):
                   self.hotkey_edit)
         # v2.2.6：显隐悬浮条热键（可留空禁用）
         self.hotkey_overlay_edit = QKeySequenceEdit()
-        self._row(page, "悬浮条显隐热键",
-                  "默认 Ctrl+Alt+O，任何界面按键即可显示/隐藏悬浮字幕条；清空后禁用该热键。",
+        self._row(page, "字幕面板显隐热键",
+                  "默认 Ctrl+Alt+O，任何界面按键即可显示/隐藏字幕面板；清空后禁用该热键。",
                   self.hotkey_overlay_edit)
         self.hotkey_status = QLabel("")
         self.hotkey_status.setObjectName("SettingDesc")
@@ -1129,6 +1129,19 @@ class SettingsDialog(QDialog):
 
     def _rerun_wizard(self):
         """重新打开首启三步向导（默认项即当前配置，一路「下一步」无副作用）。"""
+        # v2.4.4（BUG-4）：向导结束后会 load_from_config() 回填控件，未保存的
+        # 暂存修改会被静默丢弃且状态栏误导性显示"所有改动已保存"（摸底实测
+        # 丢失"强制 GPU"暂存）。先给用户保存/放弃的选择，不再无声吞掉。
+        if getattr(self, "_staged", None):
+            ret = QMessageBox.question(
+                self, "未保存的修改",
+                "当前有未保存的设置修改，运行向导会丢弃这些修改。\n\n"
+                "要先「保存并应用」再运行向导吗？",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if ret == QMessageBox.Cancel:
+                return
+            if ret == QMessageBox.Yes:
+                self._apply_staged()
         from app.ui.first_run import FirstRunWizard
         # v2.0.4：必须传 MainWindow——向导内部访问 self.main.config /
         # stop_pipeline / start_pipeline（first_run.py），传设置对话框自身

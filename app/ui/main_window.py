@@ -79,6 +79,12 @@ class CaptionCard(QFrame):
         self.target_label.setObjectName("CaptionTarget")
         self.target_label.setWordWrap(True)
         self.target_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # v2.4.4（BUG-5）：两个大文本标签占满整卡，右键落在文字上被 QLabel
+        # 自带英文菜单（Copy/Select All）拦截，P14 纠错菜单实机永远弹不出来
+        # （集成测试直接调内部菜单构建，从未覆盖真实右键路由）。NoContextMenu
+        # 把右键交还父级（卡片菜单含"复制原文/译文"，选中 Ctrl+C 仍可用）
+        self.source_label.setContextMenuPolicy(Qt.NoContextMenu)
+        self.target_label.setContextMenuPolicy(Qt.NoContextMenu)
 
         layout.addWidget(self.meta_label)
         layout.addWidget(self.source_label)
@@ -242,11 +248,12 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
         self._load_settings()
-        if not self.config.get("wizard_done") and not MainWindow._wizard_shown:
-            # v2.4.1：排期即消耗——进程内只排一次向导。旧写法把置位放在回调里，
-            # 隐藏实例到点 isVisible=False 提前返回却不置位，标志悬空，之后任一
-            # 可见实例（或测试里遗留定时器）触发就弹模态 exec 挂住事件泵。
-            MainWindow._wizard_shown = True
+        if not self.config.get("wizard_done") and not MainWindow._wizard_scheduled:
+            # v2.4.4（BUG-1）：排期标志与"已显示"标志分离——v2.4.1 把置位放在排期时，
+            # 而回调守卫查的是同一标志，向导被自己的守卫拦截永不弹出（新用户首启
+            # 静默失效，隔离配置实测抓到）。排期即消耗防重复排期；"已显示"只由
+            # 回调真正弹窗时置位。
+            MainWindow._wizard_scheduled = True
             QTimer.singleShot(400, self._show_first_run_wizard)
         if self.config.get("auto_start"):
             # v2.0.1：改为可撤销的成员定时器——启动后 800ms 内手动开始又停止，
@@ -256,12 +263,22 @@ class MainWindow(QMainWindow):
             self._auto_start_timer.timeout.connect(self.start_pipeline)
             self._auto_start_timer.start(800)
 
-    _wizard_shown = False   # v2.4.0：进程级守卫——多实例/嵌套事件泵下向导只弹一次
+    _wizard_scheduled = False  # v2.4.4：排期即消耗（进程内只排一次，防多实例重复）
+    _wizard_shown = False      # v2.4.4：已真正弹过（回调守卫；原单标志自我拦截见 BUG-1）
+    _wizard_defers = 0
 
     def _show_first_run_wizard(self):
         # 集成测试曾在此递归栈溢出：每个 MainWindow 各挂一个 singleShot，
         # 向导 exec 嵌套泵事件时其余待触发定时器再开新向导，无限套娃。
-        if MainWindow._wizard_shown or not self.isVisible():
+        if MainWindow._wizard_shown or getattr(self, "_quitting", False):
+            return
+        if not self.isVisible():
+            # v2.4.4：排期实例到点不可见（最小化/多实例隐藏者先到期）时有限次
+            # 顺延等主窗真正显示——v2.4.1 在此直接放弃导致向导永不弹；顺延
+            # 封顶 5 次防无限定时器（原始挂死风险仍被"进程内只排一个链"挡住）
+            if MainWindow._wizard_defers < 5:
+                MainWindow._wizard_defers += 1
+                QTimer.singleShot(400, self._show_first_run_wizard)
             return
         MainWindow._wizard_shown = True
         from app.ui.first_run import FirstRunWizard
@@ -367,13 +384,13 @@ class MainWindow(QMainWindow):
             qgrid.addWidget(v, i, 1, Qt.AlignTop)
         # v2.3.2（G1）：悬浮字幕条状态行——用户关了悬浮条后软件从不提醒，
         # "关了都忘了"是模拟用户报告的真实痛点；空页面仪表盘常驻显示状态与开启方法
-        ov_key = QLabel("悬浮字幕条")
+        ov_key = QLabel("字幕面板")
         ov_key.setObjectName("PanelTitle")
         ov_key.setMinimumHeight(18)
         ov_val = QLabel("—")
         ov_val.setObjectName("EmptyHint")
         ov_val.setMinimumHeight(20)
-        self._quick_labels["悬浮字幕条"] = ov_val
+        self._quick_labels["字幕面板"] = ov_val
         qgrid.addWidget(ov_key, 3, 0, Qt.AlignTop)
         qgrid.addWidget(ov_val, 3, 1, Qt.AlignTop)
         # v2.2.13（用户实拍"别扭"修正）：热键拆两行显示——单行拼接必换行，
@@ -391,7 +408,7 @@ class MainWindow(QMainWindow):
             self._quick_labels[name] = v
             qgrid.addWidget(v, r, 1, Qt.AlignTop)
         qv.addLayout(qgrid)
-        qtip = QLabel("提示：托盘图标右键可显隐悬浮字幕条、快速切换输入来源；"
+        qtip = QLabel("提示：托盘图标右键可显隐字幕面板、快速切换输入来源；"
                      "热键可在「设置-通用」修改")
         qtip.setObjectName("SettingDesc")
         qtip.setAlignment(Qt.AlignCenter)
@@ -460,8 +477,8 @@ class MainWindow(QMainWindow):
                                       on_toggle_source=self._toggle_source,
                                       on_toggle_translation_only=self._on_toggle_translation_only,
                                       on_resized=self._on_overlay_resized,
-                                      on_correct=self._overlay_correct,
-                                       on_export_srt=self._export_captions,
+                                       on_correct=self._overlay_correct,
+                                       on_export_srt=self._export_srt,
                                        on_language=self._on_panel_language,
                                        on_font_size=self._on_panel_font_size,
                                        on_pin_changed=self._on_panel_pin,
@@ -683,7 +700,7 @@ class MainWindow(QMainWindow):
         act_toggle = QAction("开始 / 停止翻译", self)
         act_toggle.triggered.connect(self.toggle_running)
         # v2.2.8：速览卡承诺过的托盘快捷操作补齐（此前文案撒谎）
-        act_overlay = QAction("显隐悬浮字幕条", self)
+        act_overlay = QAction("显隐字幕面板", self)
         act_overlay.triggered.connect(self._toggle_overlay_hotkey)
         self._tray_overlay_action = act_overlay
         act_source = QAction("切换输入来源", self)
@@ -763,11 +780,11 @@ class MainWindow(QMainWindow):
         # v2.3.2（G1）：悬浮条状态常驻仪表盘——关闭时明说怎么再打开
         # （文案刻意短：值列不换行，长句会撑爆卡片 520px 上限）
         if self.overlay.isVisible():
-            labels["悬浮字幕条"].setText("已开启（可拖动位置）")
-            labels["悬浮字幕条"].setStyleSheet("")
+            labels["字幕面板"].setText("已开启（可拖动位置）")
+            labels["字幕面板"].setStyleSheet("")
         else:
-            labels["悬浮字幕条"].setText("已关闭 · 按 Ctrl+Alt+O 打开")
-            labels["悬浮字幕条"].setStyleSheet("color: #fbbf24;")
+            labels["字幕面板"].setText("已关闭 · 按 Ctrl+Alt+O 打开")
+            labels["字幕面板"].setStyleSheet("color: #fbbf24;")
         # v2.2.11：热键行以“实际注册成功”为准显示——配置了但被占用未注册时
         # 标红“（未生效）”，不再拿配置值谎称可用（文案不许承诺做不到的事）
         hk_live = hotkey.current_text()
@@ -797,8 +814,13 @@ class MainWindow(QMainWindow):
                                       if (failed and o_failed) else "")
 
     def _quick_gpu_hint(self):
-        """算力档判定（v2.2.10 修正）：读 asr_device——此前误读不存在的
-        compute_type 键（恒为 None），导致 GPU 用户速览卡永远显示 CPU。"""
+        """算力档判定：优先读 AsrThread 实际加载设备——v2.4.4（BUG-2）修复
+        GPU 静默回落 CPU 时速览卡仍按配置谎报"（GPU）"；线程未跑时回退配置值
+        （v2.2.10 修正：此前误读不存在的 compute_type 键，恒为 None）。"""
+        t = getattr(self, "asr_thread", None)
+        used = getattr(t, "_device_used", None) if t is not None else None
+        if used in ("cpu", "cuda"):
+            return used == "cuda"
         return str(self.config.get("asr_device") or "auto") == "cuda"
 
     def _open_docs(self):
@@ -895,7 +917,23 @@ class MainWindow(QMainWindow):
         self.session_label.setText("本次会话：0 条")
         self.stack.setCurrentIndex(0)
 
+    def _has_cards(self):
+        """v2.4.4（BUG-9）：列表页是否存在字幕卡（layout 里有 stretch 等非卡项，
+        不能拿 count() 直接判）。"""
+        for i in range(self.scroll_layout.count()):
+            if isinstance(self.scroll_layout.itemAt(i).widget(), CaptionCard):
+                return True
+        return False
+
     def _export_captions(self):
+        self._do_export("txt")
+
+    def _export_srt(self):
+        """面板菜单「导出 SRT…」入口（v2.4.4 BUG-6）：此前与通用导出共用，
+        默认文件名与过滤器都是 txt——照菜单文案直接点保存得到 txt，承诺落空。"""
+        self._do_export("srt")
+
+    def _do_export(self, fmt):
         cards = []
         for i in range(self.scroll_layout.count()):
             w = self.scroll_layout.itemAt(i).widget()
@@ -904,12 +942,15 @@ class MainWindow(QMainWindow):
         if not cards:
             QMessageBox.information(self, "导出字幕", "当前会话还没有可导出的字幕。")
             return
-        default_name = f"LiveSubtitle_{datetime.now():%Y%m%d_%H%M%S}.txt"
+        ext = "srt" if fmt == "srt" else "txt"
+        default_name = f"LiveSubtitle_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
         # 默认落到用户文档目录：安装目录（Program Files）对标准权限用户不可写
         docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or str(Path.home())
+        # v2.4.4（BUG-6）：默认过滤器与菜单入口一致——SRT 入口首选 SRT
+        filt = ("SRT 字幕 (*.srt);;文本文件 (*.txt);;所有文件 (*)" if fmt == "srt"
+                else "文本文件 (*.txt);;SRT 字幕 (*.srt);;所有文件 (*)")
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出字幕", str(Path(docs) / default_name),
-            "文本文件 (*.txt);;SRT 字幕 (*.srt);;所有文件 (*)")
+            self, "导出字幕", str(Path(docs) / default_name), filt)
         if not path:
             return
         # v2.2.11：按扩展名选格式——.srt 生成带时间轴的标准字幕（播放器/剪映
@@ -924,7 +965,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "导出字幕", f"写入文件失败：{e}")
             return
-        QMessageBox.information(self, "导出字幕", f"已导出 {count} 条字幕到：\n{path}")
+        # v2.4.4（BUG-8）：完成提示路径规范化为 Windows 反斜杠——QFileDialog
+        # 返回正斜杠路径，用户复制到资源管理器打不开
+        QMessageBox.information(
+            self, "导出字幕", f"已导出 {count} 条字幕到：\n{os.path.normpath(path)}")
 
     def toggle_running(self):
         # v2.0.4：热键连按防抖——界面被 stop_pipeline 短暂阻塞时按下的热键
@@ -994,6 +1038,9 @@ class MainWindow(QMainWindow):
         # v2.3.1：重模型+CPU 组合预警（常驻横幅，见 _set_engine_status）
         self._heavy_cpu_warn = (str(c.get("asr_model")) in ("medium", "large-v3-turbo")
                                 and str(c.get("asr_device")) in ("cpu", "auto"))
+        # v2.4.4（BUG-3）：每会话重置"已证明可识别"标记——出过字幕的会话内
+        # 低电平不再挂过弱告警
+        self._caption_seen = False
         self.asr_thread = AsrThread(
             c.get("asr_model"),
             c.get("asr_device"),
@@ -1193,6 +1240,9 @@ class MainWindow(QMainWindow):
     def _on_model_ready(self):
         # v2.0.4：模型就绪标记 + 停止下载进度反馈（原直连拆槽）
         self._asr_ready = True
+        # v2.4.4（BUG-2）：就绪即刷新速览卡——加载后才知道实际设备
+        # （GPU 回落 CPU 时"识别模型 xxx（GPU）"的谎报由本行纠正）
+        self._refresh_quick_panel()
         self._stop_model_download_feedback()
         # v2.2.11：无产出指引计时改由"模型就绪"起算——此前在
         # start_pipeline 起算单发 30s，模型加载>30s（首次下载/大模型CPU）
@@ -1231,6 +1281,13 @@ class MainWindow(QMainWindow):
             return
         self._low_input_warn = quiet
         if quiet and self.running:
+            # v2.4.4（BUG-3）：本会话已成功出过字幕 = 信号可识别已被事实证明，
+            # 之后的静音期（句间停顿/音频播完）不再挂"信号过弱"——告警服务的
+            # 是"还没证明过可识别"的阶段；"有字幕在出却说可能识别不了"和
+            # "播完静音仍警示"都是误导（无产出场景另有 25s 无字幕指引兜底）
+            if getattr(self, "_caption_seen", False):
+                self._low_input_warn = False
+                return
             self.engine_status_label.setText(
                 "⚠ 输入信号过弱：字幕可能无法识别，请检查系统音量或音频设备")
         else:
@@ -1302,7 +1359,10 @@ class MainWindow(QMainWindow):
         if timer is not None:
             timer.stop()
         self._no_segment_hint_done = True
-        self.stack.setCurrentIndex(0)
+        # v2.4.4（BUG-9）：还有字幕卡时停在列表页——此前停止一律切回速览卡，
+        # 用户想回看/导出刚才的会话记录时列表凭空消失（计数还在、内容没了）
+        if not self._has_cards():
+            self.stack.setCurrentIndex(0)
 
         threads = (self.capture_thread, self.asr_thread, self.translate_thread)
         # 先断开全部信号再停止：否则停止过程中/停止后仍会收到迟到的状态信号，
@@ -1367,6 +1427,14 @@ class MainWindow(QMainWindow):
     def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
         if not self.running:
             return
+        # v2.4.4（BUG-3）：字幕成功上屏即证明输入信号可识别——撤"输入信号过弱"
+        # 告警。此前该告警挂到会话结束，一边出字幕一边说"字幕可能无法识别"，
+        # 与事实自相矛盾（摸底实测：10 条字幕在屏、横幅仍警示）
+        if getattr(self, "_low_input_warn", False):
+            self._low_input_warn = False
+            self._set_engine_status(getattr(self, "_engine_status_text", ""))
+            self.update_overlay_status()
+        self._caption_seen = True
         # v2.3.20（P26）：识别段延迟——"音频切分完成→原文上屏"（含判停、
         # 排队、转写、上屏全程）。t_flush 由 AsrThread 随 text_ready 第 4 参带来。
         if t_flush and t_flush > 0:
