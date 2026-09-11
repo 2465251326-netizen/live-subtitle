@@ -91,7 +91,8 @@ class CaptionOverlay(QWidget):
         # v2.4.1：开鼠标追踪——否则不按住鼠标收不到 move 事件，右缘"↔"调宽光标
         # 永不显示（用户实测"无法手动调大小"的直接原因之一：够不着也看不见）。
         self.setMouseTracking(True)
-        self.setToolTip("拖动工具条移动 · 拖右缘改宽度 · 双击工具条贴顶/底 · 右键/⋯ 更多")
+        # v2.5.2（R1）：面板级 tooltip 移除——悬停弹出的原生 tooltip 窗口会拦截
+        # 整板点击（拖动/按钮全失灵）；手势说明由首次手势引导（D）承担
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 8, self.RESIZE_EDGE, 10)
@@ -340,13 +341,16 @@ class CaptionOverlay(QWidget):
         self._jump_btn.setStyleSheet("color: #ff8f8f;" if n else "color: #cfd6e4;")
 
     def set_status(self, text, is_error=False):
-        # 状态列宽度主权让位：截短 + tooltip 全文（520px 面板实测长文案会盖住 ⋯）
+        # 状态列宽度主权让位：截短 + 限宽（520px 面板实测长文案会盖住 ⋯）
         self._cap_status_width()
         t = (text or "").strip()
         if len(t) > 10:
             t = t[:9] + "…"
         self.status_lbl.setText(t)
-        self.status_lbl.setToolTip(text or "")
+        # v2.5.2（R1）：不再设 tooltip——悬停 1s 弹出的原生 tooltip 窗口会拦截
+        # 光标区域后续所有点击（随机测试实锤：清空/⋯/📌/收起/✕ 全部"点了没反应"
+        # = tooltip 窗口吃事件）。全文保留在主窗状态行（同源文本）
+        self.status_lbl.setToolTip("")
         self.status_lbl.setStyleSheet(
             "color: #fbbf24;" if is_error else "color: rgba(255,255,255,120);")
 

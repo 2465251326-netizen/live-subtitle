@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 5, 1, 0),
-    prodvers=(2, 5, 1, 0),
+    filevers=(2, 5, 2, 0),
+    prodvers=(2, 5, 2, 0),
     mask=0x3F,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'LiveSubtitle'),
             StringStruct('FileDescription', '实时字幕翻译 - 系统声音识别与中文翻译'),
-            StringStruct('FileVersion', '2.5.1.0'),
+            StringStruct('FileVersion', '2.5.2.0'),
             StringStruct('InternalName', 'LiveSubtitle'),
             StringStruct('LegalCopyright', 'MIT License'),
             StringStruct('OriginalFilename', 'LiveSubtitle.exe'),
             StringStruct('ProductName', 'LiveSubtitle'),
-            StringStruct('ProductVersion', '2.5.1.0'),
+            StringStruct('ProductVersion', '2.5.2.0'),
           ],
         )
       ]
