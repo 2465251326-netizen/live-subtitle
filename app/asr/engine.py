@@ -29,7 +29,14 @@ def split_long_caption(text, limit=60):
     text = text.strip()
     if len(text) <= limit:
         return [text]
-    parts = [p.strip() for p in re.split(r"(?<=[.!?。！？；;])\s*", text) if p.strip()]
+    # v2.3.14（P17）：旧切分 (?<=[.!?])\s* 允许"零宽空格"下刀，把 "U.S."
+    # 这类缩写从词内劈成 "U." / "S. strikes..."（第九轮实况新闻实锤）。
+    # 新规则：拉丁句末标点须"后有空格且点前不是单字母大写"才切——
+    # "U.S. strikes" 两处句号（U. 前是词首、S. 前是大写字母）都不下刀；
+    # CJK 句末标点后通常无空格，直切。（已知边界：Mr./Dr. 等头衔仍可能切，
+    # 但后续小写延续合并会吸收大部分此类碎片。）
+    parts = [p.strip() for p in
+             re.split(r"(?<=[^A-Z][.!?;])\s+|(?<=[。！？；])", text) if p.strip()]
     if len(parts) <= 1:
         return [text]
     merged = []

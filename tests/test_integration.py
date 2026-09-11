@@ -453,10 +453,12 @@ def t_low_latency_group():
     assert submitted == [], "whisper 自补句号也不触发（v2.3.8 修正核心）"
     w._flush_tgroup()   # 模拟静默兜底
     assert submitted == ["and authorities to understand what happened."], submitted
-    # v2.3.9 回归锁：兜底窗口必须 > 6s 分片周期（2.5s 实机打穿过）
-    tt = getattr(w, "_tgroup_timer", None)
-    assert tt is not None and tt.interval() > 6000, \
-        f"兜底窗口 {tt.interval() if tt else None}ms 不大于分片周期，攒句会失效"
+    # v2.3.14：7 秒硬兜底改为 _tgroup_deadline（定时器降频为 1s 轮询）——
+    # 兜底窗口仍必须 > 6s 分片周期（v2.3.9 教训），断言跟着搬到家法上
+    import time as _time
+    dl = getattr(w, "_tgroup_deadline", None)
+    assert dl is not None and dl - _time.monotonic() > 6.0, \
+        f"硬兜底 deadline 不大于分片周期，攒句会失效"
     w._on_translated("and authorities to understand what happened.",
                      "有关部门正在了解发生了什么。", "google", "en", "")
     assert not getattr(w, "_pending", []), "组内占位卡应全部消化"
@@ -483,6 +485,54 @@ def t_low_latency_group():
     w._quitting = True
     w._teardown()
 check("asr: 低延迟攒句两轨制（P9）", t_low_latency_group)
+
+def t_tgroup_silent_early_flush():
+    # v2.3.14（P16+收尾守卫）：静默立送需"音频停了 + 末片像说完了"双证据；
+    # 未完片（省略号）即使静默也 held，由 7 秒硬兜底最终送出
+    import time as _t
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.config.set("low_latency_mode", True)
+    w._last_asr_timing = (0.0, 2.0)
+    submitted = []
+
+    class FakeT:
+        def submit(self, text, detected):
+            submitted.append(text)
+    real_tt = w.translate_thread
+    w.translate_thread = FakeT()
+    # ① 收尾完整但音频活跃 → 不送
+    w._on_asr_text("The market closed higher today.", "en", "2.0")
+    w._last_level_sound = _t.monotonic()
+    w._tgroup_tick()
+    assert submitted == [], "音频仍活跃时不应送出"
+    # ② 收尾完整 + 静默 3.5s → 立送（P16 提速主场景）
+    w._last_level_sound = _t.monotonic() - 4.0
+    w._tgroup_tick()
+    assert submitted == ["The market closed higher today."], submitted
+    # ③ 省略号未完 + 深度静默 → 仍不送（R9 实况腰斩案例回归锁）
+    w._on_asr_text("Iran's state media claims that stockpiles of uranium...", "en", "2.0")
+    w._last_level_sound = _t.monotonic() - 5.0
+    w._tgroup_tick()
+    assert submitted == ["The market closed higher today."], "未完片不得因静默提前冲"
+    # ④ 小写延续片到达 → held 并入同组（不即时送）
+    w._on_asr_text("were transferred away from Iranian nuclear sites.", "en", "2.0")
+    assert submitted == ["The market closed higher today."], "延续片到达即送是倒退"
+    w._flush_tgroup()
+    assert submitted[-1] == ("Iran's state media claims that stockpiles of uranium... "
+                             "were transferred away from Iranian nuclear sites."), submitted[-1]
+    # ⑤ 7 秒硬兜底：无标点未完片最终仍会送出，不会永远卡死
+    w._on_asr_text("an open ending without punctuation", "en", "2.0")
+    w._tgroup_deadline = _t.monotonic() - 1.0
+    w._last_level_sound = _t.monotonic()
+    w._tgroup_tick()
+    assert submitted[-1] == "an open ending without punctuation", submitted[-1]
+    w.translate_thread = real_tt
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("asr: 尾句静默+收尾双证据立送（P16 守卫版）", t_tgroup_silent_early_flush)
 
 def t_quiet_warn_on_starvation():
     # v2.3.12（P13）：完全无包（Chrome 暂停媒体等）也必须进入静默告警——

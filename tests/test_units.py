@@ -435,6 +435,37 @@ def test_starts_new_sentence():
     assert not f("   ")
 
 
+def test_looks_final():
+    """v2.3.14（P16 守卫）：静默提前立送要求末片"看起来完整"。"""
+    from app.ui.main_window import MainWindow
+    f = MainWindow._looks_final
+    assert f("The market closed higher today.")
+    assert f('他说"走吧。"')
+    assert f("今天天气不错！")
+    assert not f("stockpiles of uranium...")     # whisper 省略号=显式未完
+    assert not f("the story continues…")
+    assert not f("what a fast moving")           # 无标点=音频上限截断
+    assert not f("Despite the triumphal tone in Washington,")
+    assert f("")                                  # 空串按完整处理（防御）
+
+
+def test_split_preserves_abbreviations():
+    """v2.3.14（P17）：拉丁缩写内的句号不作句子边界（实况抓到的
+    "…of U." / "S. strikes…" 腰斩）；真句界（小写词尾+空格）仍要切；
+    中文句末标点后无空格也需直切。"""
+    from app.asr.engine import split_long_caption
+    text = ("There are fresh questions today about the effectiveness of U.S. "
+            "strikes on Iran. Officials said the review is still ongoing now.")
+    pieces = split_long_caption(text)
+    joined = " ".join(pieces)
+    assert "U.S. strikes" in joined, pieces          # 缩写不被劈开
+    assert not any(p.startswith("S.") for p in pieces), pieces
+    assert any(p.startswith("Officials said") for p in pieces), pieces  # 真句界仍切
+    zh = ("今天全国多地气温突破历史极值。多家航空公司取消了前往热门枢纽城市的航班。"
+          "机长在客舱广播中反复提醒旅客注意防暑降温并补充了大量细节。")
+    assert len(split_long_caption(zh, limit=20)) >= 2
+
+
 def test_log_day_rotation():
     """v2.3.7（P10）：跨天首写归档旧日志，当前文件只留当天。"""
     import io

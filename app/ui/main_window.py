@@ -1382,16 +1382,49 @@ class MainWindow(QMainWindow):
         if len(grp) >= 5:
             self._flush_tgroup()
             return
+        # v2.3.14（P16）：兜底从"单发 7 秒"升级为 1 秒巡查——音频已静默 ≥3.5s
+        # 说明后面大概率没内容了，尾句立送（实测尾句 7.2~7.8s → ~4s）；
+        # 噪声环境（电视背景音让电平常跳）不满足静默条件，仍由 7s 硬兜底接管。
+        self._tgroup_deadline = time.monotonic() + 7.0
         t = getattr(self, "_tgroup_timer", None)
         if t is None:
             t = QTimer(self)
-            t.setSingleShot(True)
-            t.timeout.connect(self._flush_tgroup)
+            t.setInterval(1000)
+            t.timeout.connect(self._tgroup_tick)
             self._tgroup_timer = t
-        # v2.3.9：兜底窗口必须大于 6s 分片周期——实测 2.5s 会在前后片
-        # 之间先行冲出，连续语音下攒句永不发生（重播验证：两段各自成键）。
-        # 7s 下连续语音中计时器永远到不了期，只在真正停顿/尾句时兜底。
-        t.start(7000)
+        t.start()
+
+    def _tgroup_tick(self):
+        """v2.3.14（P16+守卫）：攒句巡查——"音频静默"不等于"句子说完"：
+        whisper 分片之间天然有 2~4 秒交付间隙，实况新闻实测被 P16 初版误判
+        成句尾、当场腰斩攒句（uranium.../were transferred.../before the US
+        strikes. 三条各走）。因此静默立送只在末片"长得像说完了"时才允许；
+        省略号/逗号/无标点收尾=明显未完，交给 7 秒硬兜底最终送出。"""
+        if not getattr(self, "_tgroup", None):
+            t = getattr(self, "_tgroup_timer", None)
+            if t is not None:
+                t.stop()
+            return
+        now = time.monotonic()
+        quiet_for = now - getattr(self, "_last_level_sound", 0.0)
+        final_looking = self._looks_final(self._tgroup[-1])
+        if (quiet_for >= 3.5 and final_looking) or now >= getattr(self, "_tgroup_deadline", 0.0):
+            self._flush_tgroup()
+            t = getattr(self, "_tgroup_timer", None)
+            if t is not None:
+                t.stop()
+
+    @staticmethod
+    def _looks_final(text):
+        """收尾判据（v2.3.14）：末片是否"看起来完整"。
+        省略号（"…"/"..."，whisper 对未完语句的显式标记）→ 未完；
+        逗号/无标点 → 未完；句末标点 .!?。！？ 及跟随引号/括号 → 完整。"""
+        t = (text or "").rstrip()
+        if not t:
+            return True
+        if t.endswith("...") or t.endswith("…"):
+            return False
+        return t[-1] in ".!?。！？\"'」』）)"
 
     @staticmethod
     def _starts_new_sentence(text):
