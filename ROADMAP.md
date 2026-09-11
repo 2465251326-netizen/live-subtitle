@@ -732,4 +732,16 @@ README 号召 Fork/PR 但仓库无 LICENSE，建议补 MIT（version_info 里已
 
 ---
 
+## 五十一、v2.3.19 把玩三件套（P25）+ 一场停电的恢复演练（2026-09-11）
+
+> 悬浮条把玩报告三条（穿透/缩放可见/左右磁吸）并入一版；中途遭遇**停电**，从"核对工作树→还原被测试改脏的配置→重启实例续验"完整恢复，无一行代码丢失。
+
+- 🔴→✅ **P25a OS 级点击穿透**：第一版用 `Qt.WA_TransparentForMouseEvents`——实机取证（读 HWND GWL_EXSTYLE）三种光标位 **全部 False**，Qt 在 Windows 上压根不设 WS_EX_TRANSPARENT，跨应用穿透是假的（又一例"没实机验证的声明"）。改为直接 SetWindowLongW 增删 `WS_EX_TRANSPARENT|WS_EX_LAYERED` + `SetWindowPos(SWP_FRAMECHANGED)`；穿透后窗口收不到事件，故用 **140ms 全局光标轮询**决定醒/睡，文字带用 QFontMetrics 紧凑算（用 widget 矩形会把被布局拉伸的大片死区误标可交互）。实机 VERDICT PASS：far=WS_EX_TRANSPARENT True，corner 把手=回落交互
+- ✅ **P25b 缩放可见性**：命中带 10→16px + 悬停边缘亮蓝描边（paintEvent 按 _hover_edges 画线）；**P25c** 贴边补左/右缘（四缘全）
+- 交互取证副产物：悬浮条窗口标题也叫 "LiveSubtitle"（Qt Tool 类），主窗是 "LiveSubtitle · …"（Icon 类）——枚举定位要用 **class 含 Tool** 判别，"无标题"判据会误杀（本轮验证脚本踩过）
+- 停电恢复 checklist（有效）：git status 核对照常→临时配置逐键还原（overlay_stream/enabled 都被我测试改脏过）→回归复跑→续验→清理临时脚本；用户机器不留测试痕迹
+- 发布：v2.3.19 CI success 双资产；测试 38/40；用户配置终态 turbo+auto+低延迟开+连续流开+穿透开
+
+---
+
 （历史：v2.1.8 曾发布字幕墙+跑马灯过渡形态，v2.2.0 起被连续文本流取代）
