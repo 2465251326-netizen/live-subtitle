@@ -85,7 +85,8 @@ class CaptionOverlay(QWidget):
         self._on_first_show = on_first_show
         self._on_opacity = on_opacity
 
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self._pinned = True
+        self._apply_window_flags()   # v2.5.1（P2）：统一窗口标志（清 Tool 隐含的拒绝焦点）
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         # v2.4.1：开鼠标追踪——否则不按住鼠标收不到 move 事件，右缘"↔"调宽光标
         # 永不显示（用户实测"无法手动调大小"的直接原因之一：够不着也看不见）。
@@ -529,12 +530,21 @@ class CaptionOverlay(QWidget):
         self._pinned = on
         self._pin_btn.setChecked(on)
         vis = self.isVisible()
-        flags = Qt.FramelessWindowHint | Qt.Tool
-        if on:
-            flags |= Qt.WindowStaysOnTopHint
-        self.setWindowFlags(flags)
+        self._apply_window_flags()
         if vis:
             self.show()
+
+    def _apply_window_flags(self):
+        """v2.5.1（P2）：清除 Qt.Tool 隐含的 WindowDoesNotAcceptFocus——
+        隐含标志让面板点击也不激活（前台始终停在视频/浏览器），系统滚轮
+        全部发给焦点窗口，Ctrl+滚轮调节与滚轮滚动在真实使用中永远失效
+        （实测：点击面板后前台仍是 Chrome）。允许激活后：点面板=面板前台=
+        滚轮可用。构造时也走本函数统一维护。"""
+        flags = Qt.FramelessWindowHint | Qt.Tool
+        if self._pinned:
+            flags |= Qt.WindowStaysOnTopHint
+        flags &= ~Qt.WindowType.WindowDoesNotAcceptFocus
+        self.setWindowFlags(flags)
 
     def is_pinned(self):
         return self._pinned

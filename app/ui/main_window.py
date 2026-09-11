@@ -489,6 +489,10 @@ class MainWindow(QMainWindow):
         self._build_tray()
         self._install_global_hotkey()
         self._maybe_prewarm()
+        # v2.5.1（P1）：启动按配置恢复字幕面板显隐——此前 overlay_enabled=true
+        # 也要等"开始翻译"才显示，用户"明明开着面板"重启后却没了（设置不兑现）
+        if bool(self.config.get("overlay_enabled")) and not self.overlay.isVisible():
+            self.set_overlay_visible(True)
 
     def _maybe_prewarm(self):
         """v2.3.5（P5-A）：启动即后台预热模型——把 GPU 近 1 分钟的冷初始化
