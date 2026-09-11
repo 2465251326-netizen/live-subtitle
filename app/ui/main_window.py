@@ -465,7 +465,8 @@ class MainWindow(QMainWindow):
                                        on_language=self._on_panel_language,
                                        on_font_size=self._on_panel_font_size,
                                        on_pin_changed=self._on_panel_pin,
-                                       on_collapsed=self._on_panel_collapsed)
+                                       on_collapsed=self._on_panel_collapsed,
+                                       on_first_show=self._on_panel_first_show)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -535,6 +536,13 @@ class MainWindow(QMainWindow):
 
     def _on_panel_collapsed(self, on):
         self.config.set("overlay_collapsed", bool(on))
+
+    def _on_panel_first_show(self):
+        """v2.4.3（D）：面板本进程首次显示时，若这份配置还没看过手势引导，
+        把空状态文案升级为操作小抄并落盘 overlay_hint_shown（只弹一次）。"""
+        if not bool(self.config.get("overlay_hint_shown")):
+            self.overlay.show_first_hint()
+            self.config.set("overlay_hint_shown", True)
 
     def _on_toggle_translation_only(self, translation_only):
         """工具条/菜单"只显示译文"：写 show_source 并同步设置页复选框。"""

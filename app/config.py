@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.4.3"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -55,6 +55,7 @@ DEFAULTS = {
     "overlay_w": 0,                    # v2.1.8：面板手动调整的宽度（0 = 自动）；高度永远贴内容
     "overlay_pin": True,               # v2.4.0：面板置顶显示（⋯ 菜单可切）
     "overlay_collapsed": False,        # v2.4.0：面板收起态（只留工具条）
+    "overlay_hint_shown": False,       # v2.4.3：面板手势引导只弹一次（首次显示面板后置 True）
     # v2.4.0 删除：overlay_list_mode/overlay_list_max/overlay_stream（面板天生历史滚动）、
     # overlay_h（高度贴内容）、overlay_click_through（不透明板无空区）、
     # overlay_outline/_width/_color（描边是透明玻璃时代的可读性补丁，面板不需要）

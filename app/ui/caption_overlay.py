@@ -1,8 +1,10 @@
 """v2.4.0 字幕面板（用户裁决：旧字幕条退役，工具条+历史滚动面板上位）。
 
 形态：深灰圆角不透明面板。顶部工具条 = 🌐目标语言▾ | 关闭原文 | Aa字号▾ |
-状态 | ↓最新 | ⋯ | 收起 | ✕；正文 = "原文(灰) + 译文(白加粗)" 成对左对齐的
-历史滚动区，自动跟随最新，上滚暂停跟随。
+状态 | ↓最新 | 清空 | ⋯ | 📌 | 收起 | ✕；正文 = "原文(灰) + 译文(白加粗)"
+成对左对齐的历史滚动区，自动跟随最新，上滚暂停跟随（v2.4.3 起非跟随时
+"↓最新"按新到句数计数，回底归零）。空闲时正文显示占位提示，首次使用升级
+为手势引导（每份配置只弹一次，主窗按 overlay_hint_shown 控制）。
 
 交互（对旧字幕条的全面翻案）：
 - 面板是不透明的板——整板任意处可拖（工具条是显式把手），不再玩"透明区
@@ -31,12 +33,19 @@ class CaptionOverlay(QWidget):
     LANGS = [("zh-CN", "中文"), ("en", "英语"), ("ja", "日语"), ("ko", "韩语"),
              ("fr", "法语"), ("de", "德语"), ("ru", "俄语"), ("es", "西班牙语")]
     FONTS = [("小号", 16), ("中号", 22), ("大号", 30), ("特大", 40)]
+    # v2.4.3（B/D）：空状态占位。亮度压在 rgba(255,255,255,72)——混到深底上仍
+    # <RGB(120,120,120)，不触碰 v2.4.2"空闲正文无浅灰块"像素回归锁的阈值
+    HINT_IDLE = "字幕将在这里逐句显示"
+    HINT_GUIDE = ("首次使用小抄：拖工具条移动面板 · 拖右缘改宽度\n"
+                  "双击工具条贴屏幕顶/底 · 右键或 ⋯ 打开更多操作\n"
+                  "字幕将在这里逐句显示")
 
     def __init__(self, on_closed=None, on_moved=None,
                  on_open_settings=None, on_toggle_source=None,
                  on_toggle_translation_only=None, on_resized=None,
                  on_correct=None, on_export_srt=None, on_language=None,
-                 on_font_size=None, on_pin_changed=None, on_collapsed=None):
+                 on_font_size=None, on_pin_changed=None, on_collapsed=None,
+                 on_first_show=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -56,6 +65,10 @@ class CaptionOverlay(QWidget):
         self._resize_start = None
         self._resize_start_w = 0
         self._user_resized = False
+        self._unread = 0            # v2.4.3（E）：非跟随时新到句数
+        self._hint_guide = False    # v2.4.3（D）：空状态文案是否升级为手势引导
+        self._first_show_seen = False
+        self._relayout_pending = False
         self._on_closed = on_closed
         self._on_moved = on_moved
         self._on_open_settings = on_open_settings
@@ -68,6 +81,7 @@ class CaptionOverlay(QWidget):
         self._on_font_size = on_font_size
         self._on_pin_changed = on_pin_changed
         self._on_collapsed = on_collapsed
+        self._on_first_show = on_first_show
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -118,10 +132,27 @@ class CaptionOverlay(QWidget):
         self._jump_btn.hide()
         bl.addWidget(self._jump_btn)
 
+        # v2.4.3（A）：一键清空面板历史（⋯/右键菜单同源"清空面板字幕"）；
+        # 只动面板行，不碰主窗历史与 SRT 导出
+        self._clear_btn = QToolButton()
+        self._clear_btn.setText("清空")
+        self._clear_btn.setToolTip("清空面板字幕（主窗历史与导出不受影响）")
+        self._clear_btn.clicked.connect(self.clear_caption)
+        bl.addWidget(self._clear_btn)
+
         self._more_btn = QToolButton()
         self._more_btn.setText("⋯")
         self._more_btn.clicked.connect(self._show_more_menu)
         bl.addWidget(self._more_btn)
+
+        # v2.4.3（C）：置顶图钉上工具条——高频模式不该藏在 ⋯ 二级里；
+        # 与菜单"置顶显示"同源（set_pinned 内双向同步）
+        self._pin_btn = QToolButton()
+        self._pin_btn.setText("📌")
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.setToolTip("置顶显示：开 = 面板始终浮在其他窗口之上")
+        self._pin_btn.clicked.connect(self._toggle_pin)
+        bl.addWidget(self._pin_btn)
 
         self._collapse_btn = QToolButton()
         self._collapse_btn.setText("收起")
@@ -153,11 +184,19 @@ class CaptionOverlay(QWidget):
         self._rows_lay = QVBoxLayout(self._body)
         self._rows_lay.setContentsMargins(8, 4, 14, 4)
         self._rows_lay.setSpacing(10)
+        # v2.4.3（B）：空状态占位提示——空闲不再是一片空白（index 0 = 恒在行区上方）
+        self._hint = QLabel("")
+        self._hint.setObjectName("PanelHint")
+        self._hint.setWordWrap(True)
         self._rows_lay.addStretch(1)
+        self._rows_lay.insertWidget(0, self._hint)
         self._scroll.setWidget(self._body)
         outer.addWidget(self._scroll, 1)
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
+        self._pin_btn.setChecked(self._pinned)
+        self._sync_unread_btn()
+        self._update_empty_hint()
         self._sync_bar_texts()
         self._apply_qss()
         self.resize(560, 150)
@@ -186,7 +225,9 @@ class CaptionOverlay(QWidget):
             old = self._rows.pop(0)
             old["row"].setParent(None)
             old["row"].deleteLater()
+        self._update_empty_hint()
         self._relayout()
+        self._schedule_relayout()
         return item
 
     def show_pending(self, source_text):
@@ -198,6 +239,7 @@ class CaptionOverlay(QWidget):
             r["src"].setVisible(bool(source_text) and self._show_source)
             r["tgt"].setText("⟳ …")
             self._relayout()
+            self._schedule_relayout()
             return
         self._pending_row = self._add_row(source_text, "⟳ …", True)
 
@@ -214,8 +256,10 @@ class CaptionOverlay(QWidget):
             r["tgt"].setText(target_text or "")
             self._pending_row = None
             self._relayout()
+            self._schedule_relayout()
         else:
             self._add_row(source_text or "", target_text or "", False)
+        self._count_unread()
         self._sync_bar_texts()
 
     def show_caption(self, source_text, target_text, show_source=True):
@@ -223,6 +267,7 @@ class CaptionOverlay(QWidget):
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
         self._add_row(source_text or "", target_text or "", False)
+        self._count_unread()
         self._sync_bar_texts()
 
     def clear_caption(self):
@@ -232,7 +277,30 @@ class CaptionOverlay(QWidget):
         self._rows = []
         self._pending_row = None
         self._last_result = ("", "")
+        self._unread = 0
+        self._sync_unread_btn()
+        self._update_empty_hint()
         self._relayout()
+        self._schedule_relayout()
+
+    # ---------- v2.4.3：空状态占位 / 未读计数 ----------
+
+    def _update_empty_hint(self):
+        """B/D：无行时显示占位（或首次手势引导），来字即隐；顺带门控清空按钮。"""
+        self._hint.setText(self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
+        self._hint.setVisible(not self._rows)
+        self._clear_btn.setEnabled(bool(self._rows))
+
+    def _count_unread(self):
+        """E：非跟随时每完成一句计数 +1（占位行不算，只数出结果的新句）。"""
+        if not self._follow:
+            self._unread += 1
+            self._sync_unread_btn()
+
+    def _sync_unread_btn(self):
+        n = self._unread
+        self._jump_btn.setText(f"↓ 最新 {n}" if n else "↓ 最新")
+        self._jump_btn.setStyleSheet("color: #ff8f8f;" if n else "color: #cfd6e4;")
 
     def set_status(self, text, is_error=False):
         # 状态列宽度主权让位：截短 + tooltip 全文（520px 面板实测长文案会盖住 ⋯）
@@ -245,6 +313,27 @@ class CaptionOverlay(QWidget):
             "color: #fbbf24;" if is_error else "color: rgba(255,255,255,120);")
 
     # ---------- 尺寸与跟随 ----------
+
+    def _schedule_relayout(self):
+        """v2.4.3：插入/改文本当拍 QLabel 的 sizeHint 还没定型（实机插桩：新行
+        读出 8px，事件循环后才是 139px）——立即 _relayout 只能定出过期高度，
+        面板"高度贴内容"实际滞后一拍甚至停在空闲高度。排期即消耗（v2.4.1
+        教训：守卫防链式重排）补延迟复排；换行宽度跨事件拍还会变，高度未
+        收敛就再排一拍（封顶 8 拍防振荡环）。"""
+        if self._relayout_pending:
+            return
+        self._relayout_pending = True
+        self._relayout_passes = 0
+        QTimer.singleShot(0, self._consume_relayout)
+
+    def _consume_relayout(self):
+        self._relayout_pending = False
+        h0 = self._scroll.height()
+        self._relayout()
+        if self._scroll.height() != h0 and self._relayout_passes < 8:
+            self._relayout_passes += 1
+            self._relayout_pending = True
+            QTimer.singleShot(0, self._consume_relayout)
 
     def minimumSizeHint(self):
         # v2.4.0 实机验收：布局最小宽度（按钮 sizeHint 总和）会把 resize 钳到
@@ -275,12 +364,17 @@ class CaptionOverlay(QWidget):
     def _on_scroll(self, v):
         sb = self._scroll.verticalScrollBar()
         self._follow = (v >= sb.maximum() - 4)
+        if self._follow and self._unread:      # E：回到最新处即清零
+            self._unread = 0
+            self._sync_unread_btn()
         self._jump_btn.setVisible(not self._follow and not self._collapsed)
 
     def _scroll_bottom(self):
         sb = self._scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         self._follow = True
+        self._unread = 0
+        self._sync_unread_btn()
         self._jump_btn.setVisible(False)
 
     # ---------- 工具条动作 ----------
@@ -307,6 +401,7 @@ class CaptionOverlay(QWidget):
             it["src"].setVisible(bool(it["src_text"]) and self._show_source)
         self._sync_bar_texts()
         self._relayout()
+        self._schedule_relayout()
 
     def _build_lang_menu(self):
         m = QMenu(self)
@@ -356,11 +451,19 @@ class CaptionOverlay(QWidget):
         self._jump_btn.setVisible(not self._follow and not self._collapsed)
         self._relayout()
 
+    def _toggle_pin(self):
+        # v2.4.3（C）：工具条图钉与 ⋯ 菜单"置顶显示"同一落点（set_pinned 双向同步）
+        on = not self._pinned
+        self.set_pinned(on)
+        if self._on_pin_changed:
+            self._on_pin_changed(on)
+
     def set_pinned(self, on):
         on = bool(on)
         if on == self._pinned:
             return
         self._pinned = on
+        self._pin_btn.setChecked(on)
         vis = self.isVisible()
         flags = Qt.FramelessWindowHint | Qt.Tool
         if on:
@@ -379,6 +482,22 @@ class CaptionOverlay(QWidget):
         if self._on_closed:
             self._on_closed()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # v2.4.3（D）：本进程首次显示只发一次回调；主窗按 overlay_hint_shown
+        # 决定是否升级为手势引导（热键/设置预览/启动恢复全走 showEvent，无需逐处补调用）
+        if not self._first_show_seen:
+            self._first_show_seen = True
+            if self._on_first_show:
+                self._on_first_show()
+
+    def show_first_hint(self):
+        """D：空状态文案升级为手势引导（主窗按配置只调一次）。"""
+        self._hint_guide = True
+        self._update_empty_hint()
+        self._relayout()
+        self._schedule_relayout()
+
     # ---------- 样式 ----------
 
     def apply_style(self, font_size, text_color, bg_color, bg_opacity):
@@ -389,6 +508,7 @@ class CaptionOverlay(QWidget):
         self._apply_qss()
         self._sync_bar_texts()
         self._relayout()
+        self._schedule_relayout()
 
     def _apply_qss(self):
         self.setStyleSheet(f"""
@@ -397,7 +517,10 @@ class CaptionOverlay(QWidget):
             QToolButton {{ color: #cfd6e4; background: transparent; border: none;
                            padding: 2px 5px; font-size: 12px; border-radius: 6px; }}
             QToolButton:hover {{ background: rgba(255,255,255,30); }}
+            QToolButton:checked {{ background: rgba(255,255,255,45); }}
+            QToolButton:disabled {{ color: rgba(255,255,255,60); }}
             QToolButton#PanelClose {{ color: #ff8f8f; }}
+            QLabel#PanelHint {{ color: rgba(255,255,255,72); font-size: 12px; }}
             QScrollArea#PanelScroll {{ background: transparent; border: none; }}
             QScrollArea#PanelScroll > QWidget {{ background: transparent; }}
             QScrollArea#PanelScroll > QWidget > QWidget {{ background: transparent; }}
@@ -507,6 +630,7 @@ class CaptionOverlay(QWidget):
         acts["fix_asr"] = menu.addAction("纠正最近识别…")
         acts["fix_tr"] = menu.addAction("纠正最近译文…")
         acts["export"] = menu.addAction("导出 SRT…")
+        acts["clear"] = menu.addAction("清空面板字幕")   # v2.4.3（A）：与工具条清空同源
         menu.addSeparator()
         acts["pin"] = menu.addAction("置顶显示")
         acts["pin"].setCheckable(True)
@@ -521,6 +645,7 @@ class CaptionOverlay(QWidget):
         acts["copy"].setEnabled(bool(src.strip() or tgt.strip()))
         acts["fix_asr"].setEnabled(bool(src.strip()))
         acts["fix_tr"].setEnabled(bool(tgt.strip()))
+        acts["clear"].setEnabled(bool(self._rows))
         self._menu_acts = acts
         self._menu_last = (src, tgt)
         return menu
@@ -547,6 +672,8 @@ class CaptionOverlay(QWidget):
         elif chosen == acts.get("export"):
             if self._on_export_srt:
                 self._on_export_srt()
+        elif chosen == acts.get("clear"):
+            self.clear_caption()
         elif chosen == acts.get("pin"):
             self.set_pinned(acts["pin"].isChecked())
             if self._on_pin_changed:

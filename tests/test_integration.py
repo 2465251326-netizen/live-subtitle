@@ -513,6 +513,141 @@ def t_panel_body_transparent():
     ov.deleteLater()
 check("panel: 空闲正文透明无灰块（v2.4.1）", t_panel_body_transparent)
 
+def t_panel_clear_button_and_empty_hint():
+    # v2.4.3（A/B）：工具条"清空"一键清面板（行/占位/最近一句全清），空状态
+    # 占位提示随行数显隐；⋯/右键菜单同源"清空面板字幕"按有无内容门控
+    ov = CaptionOverlay()
+    ov.show(); app.processEvents()
+    assert ov._hint.isVisible() and ov._hint.text().strip(), "空闲时应有占位提示"
+    assert not ov._clear_btn.isEnabled(), "无内容时清空按钮置灰"
+    ov.show_caption("hello", "你好", True)
+    assert not ov._hint.isVisible(), "来字即隐"
+    assert ov._clear_btn.isEnabled()
+    ov.show_caption("world", "世界", True)
+    ov._clear_btn.click()
+    assert ov._rows == [] and ov._pending_row is None, "行与占位必须全清"
+    assert ov._last_result == ("", ""), "最近一句也要清（复制/纠错入口同步失效）"
+    assert ov._hint.isVisible(), "清空后占位提示回归"
+    assert not ov._clear_btn.isEnabled()
+    menu = ov._build_menu()
+    assert ov._menu_acts["clear"].text() == "清空面板字幕"
+    assert not ov._menu_acts["clear"].isEnabled(), "空态时菜单清空置灰"
+    menu.deleteLater()
+    ov.show_caption("x", "y", True)
+    menu = ov._build_menu()
+    assert ov._menu_acts["clear"].isEnabled()
+    menu.deleteLater()
+    ov.deleteLater()
+check("panel: 清空按钮+空状态占位（A/B）", t_panel_clear_button_and_empty_hint)
+
+def t_panel_pin_toolbar_button():
+    # v2.4.3（C）：📌 图钉上工具条——点击翻转置顶态、回调落盘、与菜单"置顶显示"同源
+    pins = []
+    ov = CaptionOverlay(on_pin_changed=lambda on: pins.append(bool(on)))
+    ov.show(); app.processEvents()
+    assert ov._pin_btn.isCheckable(), "图钉必须可勾选"
+    assert ov._pin_btn.isChecked() == ov.is_pinned(), "初态与置顶态一致"
+    ov._pin_btn.click()
+    assert not ov.is_pinned() and pins == [False], "点击翻转 + 回调"
+    assert not ov._pin_btn.isChecked()
+    menu = ov._build_menu()
+    assert not ov._menu_acts["pin"].isChecked(), "菜单勾选态与图钉同源"
+    menu.deleteLater()
+    ov._pin_btn.click()
+    assert ov.is_pinned() and pins == [False, True]
+    assert ov._pin_btn.isChecked()
+    ov.deleteLater()
+check("panel: 置顶图钉上工具条与菜单同源（C）", t_panel_pin_toolbar_button)
+
+def t_panel_first_show_hint_once():
+    # v2.4.3（D）：面板本进程首次显示发一次 on_first_show；引导文案含手势提示，
+    # 且只在空状态展示（来字即随占位一起隐去）。（回调→文案升级的落盘接线
+    # 由主窗级用例覆盖，此处直接调 show_first_hint 验证文案）
+    calls = []
+    ov = CaptionOverlay(on_first_show=lambda: calls.append(1))
+    ov.show(); app.processEvents()
+    assert calls == [1], "首次显示应触发一次回调"
+    ov.hide(); ov.show(); app.processEvents()
+    assert calls == [1], "回调每进程只发一次"
+    ov.show_first_hint()
+    assert "拖工具条" in ov._hint.text() and "右缘" in ov._hint.text(), \
+        "引导文案应覆盖移动/调宽手势"
+    ov.show_caption("a", "b", True)
+    assert not ov._hint.isVisible()
+    ov.deleteLater()
+check("panel: 首次手势引导一次性（D）", t_panel_first_show_hint_once)
+
+def t_panel_first_show_flag_persist():
+    # v2.4.3（D）：主窗接线——注意首次显示发生在 MainWindow() 构造期内
+    # （_load_settings 的启动恢复：overlay_enabled=True 即 show），所以必须在
+    # 构造前用裸 Config 重置标记，构造后断言已落盘且文案升级为引导
+    from app.config import Config
+    cfg = Config()
+    cfg.set("overlay_hint_shown", False)
+    cfg.set("overlay_enabled", True)
+    w = MainWindow()
+    assert bool(w.config.get("overlay_hint_shown")), "构造期首次显示就应落盘标记"
+    assert "拖工具条" in w.overlay._hint.text(), "空状态应升级为手势引导"
+    w.overlay.deleteLater()
+    w._quitting = True
+    w._teardown()
+check("panel: 首次引导标记落盘（D·主窗接线）", t_panel_first_show_flag_persist)
+
+def t_panel_unread_badge():
+    # v2.4.3（E）：非跟随时新句计数 +1、按钮变红显示"N"；回底两种路径（点按钮/
+    # 滚到底）都归零复原。offscreen 字体度量退化（30 行仅 ~2px 溢出、maximum<4
+    # 时任何值都判"在底部"），第二轮直接置 _follow 构造非跟随态；_on_scroll 的
+    # 非跟随/回底分支由第一轮与收尾断言覆盖
+    ov = CaptionOverlay()
+    ov.resize(420, 140)
+    ov.show(); app.processEvents()
+    for i in range(30):
+        ov.show_caption(f"source sentence {i} of the live stream", f"译文第 {i} 句", True)
+    app.processEvents()
+    assert ov._unread == 0 and ov._jump_btn.text() == "↓ 最新", "跟随时不计数"
+    ov._on_scroll(-98)                       # 真实处理器路径：人为滚离底部
+    assert not ov._follow and ov._jump_btn.isVisible(), "暂停跟随后应浮出 ↓最新"
+    ov.show_caption("new one", "新的一句", True)
+    assert ov._unread == 1 and "1" in ov._jump_btn.text(), "新句计数 +1"
+    ov.show_pending("another")
+    ov.show_pending_result("another", "又一句", True)
+    assert ov._unread == 2, "占位补齐也计一次（只数完成句）"
+    ov._scroll_bottom()
+    assert ov._unread == 0 and ov._jump_btn.text() == "↓ 最新", "回底归零复原"
+    assert not ov._jump_btn.isVisible()
+    ov._follow = False                        # 第二轮：直设非跟随（绕开退化滚动条；
+    ov._unread = 3                            # 其间若有 relayout 会经 valueChanged 判回底部）
+    ov._sync_unread_btn()
+    assert "3" in ov._jump_btn.text(), "计数徽标文案"
+    ov._on_scroll(ov._scroll.verticalScrollBar().maximum())   # 滚到底同样归零
+    assert ov._unread == 0 and ov._follow and ov._jump_btn.text() == "↓ 最新"
+    ov.deleteLater()
+check("panel: ↓最新未读计数（E）", t_panel_unread_badge)
+
+def t_panel_height_settles():
+    # v2.4.3：高度贴内容必须真实成立——插入当拍 QLabel 的 sizeHint 未定型
+    # （实机插桩：新行读出 8px，事件循环后才是 139px），v2.4.0~v2.4.2 面板
+    # 高度一直滞后一拍甚至停在空闲高度。延迟复排（排期即消耗）后，scroll
+    # 固定高必须等于 want = body.sizeHint+8（限幅内）
+    from PySide6.QtGui import QGuiApplication
+    ov = CaptionOverlay()
+    ov.resize(560, 150)
+    ov.show(); app.processEvents()
+    for i in range(5):
+        ov.show_caption(f"sentence {i} with a bit of length here", f"译文第 {i} 句", True)
+    h = -1
+    for _ in range(12):            # 放行收敛链（每拍一个零时器复排，高度稳定即止）
+        app.processEvents()
+        if ov._scroll.height() == h:
+            break
+        h = ov._scroll.height()
+    cap = int((QGuiApplication.primaryScreen().availableGeometry().height() or 800) * 0.55)
+    want = min(max(ov._body.sizeHint().height() + 8, 46), cap)
+    assert ov._scroll.height() == want, \
+        f"高度滞后未复排：scroll={ov._scroll.height()} want={want}"
+    ov.deleteLater()
+check("panel: 高度贴内容真实成立（延迟复排）", t_panel_height_settles)
+
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
     # on_correct 回调（与主窗卡片纠错同源）
