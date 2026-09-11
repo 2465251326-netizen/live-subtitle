@@ -179,6 +179,9 @@ def has_content(text: str) -> bool:
 
 
 class AsrThread(QThread):
+    # v2.3.16（P21）信号契约：text_ready = (识别文本, whisper 语言码,
+    # **音频秒数**字符串如 "4.3"——不是毫秒、不是百分数)；消费方
+    # _on_asr_text/_asr_timing 按秒 float()。
     text_ready = Signal(str, str, str)  # text, whisper_lang, duration
     status_changed = Signal(str)
     model_ready = Signal()

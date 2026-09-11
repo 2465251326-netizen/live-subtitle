@@ -1160,6 +1160,8 @@ class MainWindow(QMainWindow):
             self._set_listen_pulse(True)
 
     def _on_level(self, value):
+        """电平槽。契约：value 为 capture 的 0~1 比例（见 CaptureThread
+        .level_changed v2.3.16 注释）——有声判据 3%、音量条换算百分数。"""
         # v2.0.4：停止后迟到的电平事件不再点亮音量条
         # v2.3.15（P19）：capture 发的 value 是 0~1 的比例（min(1, level*8)），
         # 旧条件 value>=3 恒假——"最近有声"时间戳永不更新（P8 电平守卫与 P16

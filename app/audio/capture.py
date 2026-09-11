@@ -237,13 +237,16 @@ class Segmenter:
 
 class CaptureThread(QThread):
     segment_ready = Signal(object)
+    # v2.3.16（P21）信号契约：level_changed 发的是 0~1 **比例**
+    # （min(1.0, peak*8)），不是百分数！消费方换算/阈值按此写——
+    # P19 曾因 `_on_level` 按 0~100 理解（value>=3 恒假）废掉整条电平守卫。
     level_changed = Signal(float)
     error_occurred = Signal(str)
     low_input = Signal(bool)  # True=输入信号持续过弱（可能音量过低/抓错设备）
     muted = Signal(bool)      # True=系统处于静音状态（补充5：静音盲区提示）
 
-    QUIET_WARN_S = 12.0
-    QUIET_LEVEL = 0.012
+    QUIET_WARN_S = 12.0       # 单位：秒
+    QUIET_LEVEL = 0.012       # 单位：原始峰值幅度 0~1（与发出比例同量纲，8 倍增益前）
 
     def __init__(self, source_type: str, device_index: int, parent=None,
                  device_name: str = "", low_latency: bool = False):

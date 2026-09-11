@@ -2,6 +2,12 @@
 
 最新版本说明见 [Releases](https://github.com/2465251326-netizen/live-subtitle/releases)；本文件保留完整历史（v1.6 起）。
 
+### v2.3.16
+
+**工程**（P19 的制度化收尾，无功能变化）
+
+- **跨模块信号契约审计**（P21）：把仓库所有带数值的信号（`level_changed` / `text_ready` duration / `progress_pct` / `low_input` / `muted` 等）逐一做"生产量纲 vs 消费阈值"对账——除 v2.3.15 已修的电平错配外**未发现新的活体错配**（progress_pct 全链 0~100 整数一致、duration 秒数消费一致）。审计成果落防：单位契约钉进信号声明处（capture.py / engine.py）、消费槽 docstring（_on_level）与常量注释（QUIET_WARN_S 秒 / QUIET_LEVEL 原始峰值 0~1），配合既有 `t_level_signal_scale` 接线回归锁——下一个"猜单位"的 value>=3 在写下的那一刻就该看见契约
+
 ### v2.3.15
 
 **修复**（第十轮速度/形态专项，实测揪出潜伏三版的老 bug）

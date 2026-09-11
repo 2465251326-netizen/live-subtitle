@@ -3,7 +3,7 @@
 
 #define MyAppName "LiveSubtitle"
 #define MyAppNameZh "LiveSubtitle 实时字幕翻译"
-#define MyAppVersion "2.3.15"
+#define MyAppVersion "2.3.16"
 #define MyAppExeName "LiveSubtitle.exe"
 
 [Setup]
