@@ -242,7 +242,11 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
         self._load_settings()
-        if not self.config.get("wizard_done"):
+        if not self.config.get("wizard_done") and not MainWindow._wizard_shown:
+            # v2.4.1：排期即消耗——进程内只排一次向导。旧写法把置位放在回调里，
+            # 隐藏实例到点 isVisible=False 提前返回却不置位，标志悬空，之后任一
+            # 可见实例（或测试里遗留定时器）触发就弹模态 exec 挂住事件泵。
+            MainWindow._wizard_shown = True
             QTimer.singleShot(400, self._show_first_run_wizard)
         if self.config.get("auto_start"):
             # v2.0.1：改为可撤销的成员定时器——启动后 800ms 内手动开始又停止，

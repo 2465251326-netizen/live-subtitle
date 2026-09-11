@@ -468,6 +468,37 @@ def t_panel_drag_contract():
     ov.deleteLater()
 check("panel: 整板拖移/右缘调宽/双击贴边契约（P31）", t_panel_drag_contract)
 
+def t_panel_close_and_resize_edge():
+    # v2.4.1 回归锁：① ✕ 关闭必须隐藏（v2.4.0 把 hide() 误放进 else 分支，主窗
+    # 永远传 on_closed → 点了没反应）；② 右缘调宽命中带 = RESIZE_EDGE 且开鼠标追踪
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    LB = Qt.MouseButton.LeftButton
+
+    class _Ev:
+        def __init__(s, x, y, gx=0, gy=0):
+            s._p, s._g = QPoint(x, y), QPointF(gx, gy)
+        def button(s): return LB
+        def buttons(s): return LB
+        def position(s): return s._p
+        def globalPosition(s): return s._g
+        def accept(s): pass
+
+    closed = []
+    ov = CaptionOverlay(on_closed=lambda: closed.append(1))
+    ov.show(); app.processEvents()
+    assert ov.hasMouseTracking(), "右缘调宽需鼠标追踪，否则悬停光标永不显示"
+    assert ov.RESIZE_EDGE >= 12, "命中带太窄普通人够不着"
+    # 命中带内按下 = 进入调宽（不误判为拖移）
+    ov.mousePressEvent(_Ev(ov.width() - 3, 60, 800, 600))
+    assert ov._resizing and ov._drag_pos is None
+    ov.mouseReleaseEvent(_Ev(ov.width() - 3, 60, 800, 600))
+    # ✕ 关闭：隐藏 + 回调都发生（回归点）
+    ov._request_close()
+    assert not ov.isVisible(), "✕ 必须真正隐藏面板（v2.4.0 回归）"
+    assert closed == [1], "✕ 仍须回调主窗落盘 overlay_enabled"
+    ov.deleteLater()
+check("panel: ✕关闭隐藏+右缘命中带回归锁（v2.4.1）", t_panel_close_and_resize_edge)
+
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
     # on_correct 回调（与主窗卡片纠错同源）

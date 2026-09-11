@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 class CaptionOverlay(QWidget):
     MIN_W = 360
+    RESIZE_EDGE = 14   # v2.4.1：右缘调宽命中带（10px 太窄且无光标反馈→普通人找不到）
     MAX_ROWS = 40
     LANGS = [("zh-CN", "中文"), ("en", "英语"), ("ja", "日语"), ("ko", "韩语"),
              ("fr", "法语"), ("de", "德语"), ("ru", "俄语"), ("es", "西班牙语")]
@@ -70,9 +71,13 @@ class CaptionOverlay(QWidget):
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # v2.4.1：开鼠标追踪——否则不按住鼠标收不到 move 事件，右缘"↔"调宽光标
+        # 永不显示（用户实测"无法手动调大小"的直接原因之一：够不着也看不见）。
+        self.setMouseTracking(True)
+        self.setToolTip("拖动工具条移动 · 拖右缘改宽度 · 双击工具条贴顶/底 · 右键/⋯ 更多")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 10)
+        outer.setContentsMargins(10, 8, self.RESIZE_EDGE, 10)
         outer.setSpacing(6)
         # v2.4.0：解除布局最小宽钳制——否则 resize(用户450) 会被按钮 sizeHint
         # 总和顶回 ~580（实机插桩实证）；窄时尾部按钮裁切，宽度主权归用户。
@@ -360,10 +365,11 @@ class CaptionOverlay(QWidget):
         return self._pinned
 
     def _request_close(self):
+        # v2.4.1 回归修复：v2.4.0 重写时把 hide() 误塞进 else 分支，而主窗永远
+        # 传 on_closed 回调 → else 永不执行 → 点✕只改配置不隐藏（用户实测"没反应"）。
+        self.hide()
         if self._on_closed:
             self._on_closed()
-        else:
-            self.hide()
 
     # ---------- 样式 ----------
 
@@ -401,12 +407,20 @@ class CaptionOverlay(QWidget):
         p.setBrush(bg)
         r = self.rect().adjusted(0, 0, -1, -1)
         p.drawRoundedRect(r, 12, 12)
+        # v2.4.1：右缘"⋮"把手——调宽从隐形手势变看得见（体验报告的"加提示"）
+        if not self._collapsed:
+            grip = QColor(255, 255, 255, 90 if not self._resizing else 180)
+            p.setBrush(grip)
+            cx = self.width() - self.RESIZE_EDGE // 2 - 1
+            cy = self.height() // 2
+            for dy in (-7, 0, 7):
+                p.drawEllipse(QPoint(cx - 1, cy + dy - 1), 1, 1)
 
     # ---------- 鼠标：整板拖移 + 右缘调宽 + 双击贴边 ----------
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            if event.position().x() >= self.width() - 10 and not self._collapsed:
+            if event.position().x() >= self.width() - self.RESIZE_EDGE and not self._collapsed:
                 self._resizing = True
                 self._resize_start = event.globalPosition().toPoint()
                 self._resize_start_w = self.width()
@@ -427,7 +441,7 @@ class CaptionOverlay(QWidget):
             event.accept()
             return
         self.setCursor(Qt.SizeHorCursor
-                       if (event.position().x() >= self.width() - 10 and not self._collapsed)
+                       if (event.position().x() >= self.width() - self.RESIZE_EDGE and not self._collapsed)
                        else Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, event):
