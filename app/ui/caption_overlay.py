@@ -141,7 +141,15 @@ class CaptionOverlay(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # v2.4.1：QScrollArea 设了透明还不够——它的 viewport 是独立子控件，
+        # 不被 `QScrollArea{...}` 那条 QSS 命中，默认浅色底会在空闲时露成一块
+        # 灰矩形（实机截图实证）。viewport 连父级 QSS 的 `> QWidget` 都不吃，
+        # 必须直接给它和正文容器挂 WA_TranslucentBackground。
+        self._scroll.viewport().setAutoFillBackground(False)
+        self._scroll.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
         self._body = QWidget()
+        self._body.setAutoFillBackground(False)
+        self._body.setAttribute(Qt.WA_TranslucentBackground, True)
         self._rows_lay = QVBoxLayout(self._body)
         self._rows_lay.setContentsMargins(8, 4, 14, 4)
         self._rows_lay.setSpacing(10)
@@ -391,6 +399,8 @@ class CaptionOverlay(QWidget):
             QToolButton:hover {{ background: rgba(255,255,255,30); }}
             QToolButton#PanelClose {{ color: #ff8f8f; }}
             QScrollArea#PanelScroll {{ background: transparent; border: none; }}
+            QScrollArea#PanelScroll > QWidget {{ background: transparent; }}
+            QScrollArea#PanelScroll > QWidget > QWidget {{ background: transparent; }}
             QScrollBar:vertical {{ width: 8px; background: transparent; }}
             QScrollBar::handle:vertical {{ background: rgba(255,255,255,70); border-radius: 4px; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}

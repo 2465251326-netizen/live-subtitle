@@ -499,6 +499,20 @@ def t_panel_close_and_resize_edge():
     ov.deleteLater()
 check("panel: ✕关闭隐藏+右缘命中带回归锁（v2.4.1）", t_panel_close_and_resize_edge)
 
+def t_panel_body_transparent():
+    # v2.4.1：空闲面板正文不得露出浅色矩形——QScrollArea 的 viewport 是独立子控件，
+    # 父级 QSS 命中不到，必须直接挂 WA_TranslucentBackground，否则无字幕时是一大块灰
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 92)
+    ov.show()
+    app.processEvents()
+    pm = ov.grab()
+    mid = pm.toImage().pixelColor(ov.width() // 2, int(ov.height() * 0.75))
+    assert mid.red() < 120 and mid.green() < 120, \
+        f"正文中部露出浅色底 {mid.name()}——viewport 未透明"
+    ov.deleteLater()
+check("panel: 空闲正文透明无灰块（v2.4.1）", t_panel_body_transparent)
+
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
     # on_correct 回调（与主窗卡片纠错同源）
