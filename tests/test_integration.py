@@ -519,9 +519,16 @@ def t_tgroup_silent_early_flush():
     # ④ 小写延续片到达 → held 并入同组（不即时送）
     w._on_asr_text("were transferred away from Iranian nuclear sites.", "en", "2.0")
     assert submitted == ["The market closed higher today."], "延续片到达即送是倒退"
-    w._flush_tgroup()
+    # v2.3.18（P23）回归锁：组寿命绝对上限 10s——续片不得给 deadline 续命
+    assert w._tgroup_deadline - w._tgroup_start <= 10.05, \
+        "deadline 仍可被逐片重置，头号句等待不封顶"
+    w._tgroup_start = _t.monotonic() - 12.0     # 伪造"组已活 12 秒"
+    w._on_asr_text("and a third late continuation", "en", "2.0")
+    w._last_level_sound = _t.monotonic()        # 音频活跃，静默通道排除
+    w._tgroup_tick()                            # 只能由绝对上限放行
     assert submitted[-1] == ("Iran's state media claims that stockpiles of uranium... "
-                             "were transferred away from Iranian nuclear sites."), submitted[-1]
+                             "were transferred away from Iranian nuclear sites. "
+                             "and a third late continuation"), submitted[-1]
     # ⑤ 7 秒硬兜底：无标点未完片最终仍会送出，不会永远卡死
     w._on_asr_text("an open ending without punctuation", "en", "2.0")
     w._tgroup_deadline = _t.monotonic() - 1.0

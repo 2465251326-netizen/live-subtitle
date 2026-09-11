@@ -1391,14 +1391,22 @@ class MainWindow(QMainWindow):
             self._flush_tgroup()
             grp = self._tgroup
         grp.append(text)
+        if len(grp) == 1:
+            # v2.3.18（P23）：组寿命起点——绝对上限用它算，续片无法续命
+            self._tgroup_start = time.monotonic()
         self._tgroup_lang = detected or self._tgroup_lang
         if len(grp) >= 5:
             self._flush_tgroup()
             return
         # v2.3.14（P16）：兜底从"单发 7 秒"升级为 1 秒巡查——音频已静默 ≥3.5s
-        # 说明后面大概率没内容了，尾句立送（实测尾句 7.2~7.8s → ~4s）；
-        # 噪声环境（电视背景音让电平常跳）不满足静默条件，仍由 7s 硬兜底接管。
-        self._tgroup_deadline = time.monotonic() + 7.0
+        # 且末片收尾完整即立送；噪声环境仍由硬兜底接管。
+        # v2.3.18（P23）修正：deadline 旧写法每次到达重置（now+7），链式续片
+        # 会让头号句被后面的碎片无限扣住（第十二轮实测 13.4~13.6 秒，5 片链
+        # 理论 ~30 秒）。现取"逐片 7s 间距"与"组寿命 10s 绝对上限"的较小值：
+        # 单跳真延续（6~7.5s 到达）仍完整合并，多跳长链 10s 剪断，尾句有界。
+        now = time.monotonic()
+        self._tgroup_deadline = min(
+            now + 7.0, getattr(self, "_tgroup_start", now) + 10.0)
         t = getattr(self, "_tgroup_timer", None)
         if t is None:
             t = QTimer(self)
@@ -1451,6 +1459,7 @@ class MainWindow(QMainWindow):
     def _flush_tgroup(self):
         grp = getattr(self, "_tgroup", None) or []
         self._tgroup = []
+        self._tgroup_start = None      # v2.3.18（P23）：组起点随组清空
         t = getattr(self, "_tgroup_timer", None)
         if t is not None:
             t.stop()
