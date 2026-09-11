@@ -146,6 +146,14 @@ def _srt_ts(sec):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def _pct(values, p):
+    """v2.3.20（P26）：近邻法分位数，空列返回 0。仅供延迟日志摘要。"""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    return s[min(len(s) - 1, int(round(p * (len(s) - 1))))]
+
+
 def _srt_wrap(text, limit=44):
     """v2.2.12：SRT 长句折两行——优先中间附近的词边界（英文），其次 CJK
     标点之后，都没有就硬切中点。播放器与剪辑软件通用习惯：单行 ≤44 字。"""
@@ -928,6 +936,8 @@ class MainWindow(QMainWindow):
                     model=self.config.get("asr_model"), engine=self.config.get("engine"),
                     target=self.config.get("target_lang"))
         self.running = True
+        # v2.3.20（P26）：新会话清零延迟样本与提交时刻表（防跨会话混算）
+        self._lat_reco, self._lat_tr, self._submit_ts = [], [], {}
         self.toggle_button.setText("停止翻译")
         self.toggle_button.setObjectName("StopButton")
         self.toggle_button.style().unpolish(self.toggle_button)
@@ -1304,6 +1314,7 @@ class MainWindow(QMainWindow):
         self.asr_thread = None
         self.translate_thread = None
         self.engine_status_label.setText("引擎：已停止")
+        self._log_latency_summary()   # v2.3.20（P26）：会话延迟摘要入日志
         self.update_overlay_status()
 
     def _on_pipeline_error(self, msg):
@@ -1323,9 +1334,13 @@ class MainWindow(QMainWindow):
         else:
             self.engine_status_label.setText(msg)
 
-    def _on_asr_text(self, text, detected, duration):
+    def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
         if not self.running:
             return
+        # v2.3.20（P26）：识别段延迟——"音频切分完成→原文上屏"（含判停、
+        # 排队、转写、上屏全程）。t_flush 由 AsrThread 随 text_ready 第 4 参带来。
+        if t_flush and t_flush > 0:
+            self._lat_add("_lat_reco", time.monotonic() - t_flush)
         self._set_listen_pulse(False)  # v2.2.12：首段文字上屏即停呼吸（#3）
         # v2.2.11：记录本段音频时间轴（会话相对秒 + Whisper 语音时长）；
         # 流式路径直接写上占位卡，一次性路径由 _on_translated 建卡时取快照
@@ -1388,6 +1403,8 @@ class MainWindow(QMainWindow):
         周期——2.5s 实测会在前后片之间先行冲出，攒句永不发生）。
         默认模式行为不变。"""
         if not bool(self.config.get("low_latency_mode")):
+            self._submit_ts = getattr(self, "_submit_ts", {})
+            self._submit_ts[text] = time.monotonic()  # v2.3.20（P26）
             self.translate_thread.submit(text, detected)
             return
         grp = getattr(self, "_tgroup", None)
@@ -1476,7 +1493,37 @@ class MainWindow(QMainWindow):
         combined = "".join(grp) if any("\u4e00" <= c <= "\u9fff" for c in joined) else joined
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
         self._tgroup_by_src[combined] = grp
+        self._submit_ts = getattr(self, "_submit_ts", {})
+        self._submit_ts[combined] = time.monotonic()  # v2.3.20（P26）
         self.translate_thread.submit(combined, getattr(self, "_tgroup_lang", ""))
+
+    # ---------- v2.3.20（P26）：内置延迟自测 ----------
+
+    def _lat_add(self, name, val):
+        """惰性初始化 + 追加一条延迟样本（识别段 _lat_reco / 翻译段 _lat_tr）。"""
+        lst = getattr(self, name, None)
+        if lst is None:
+            lst = []
+            setattr(self, name, lst)
+        lst.append(val)
+
+    def _log_latency_summary(self):
+        """会话结束把识别/翻译两段延迟的 p50/p95 打进日志——想测速看日志
+        一行即可，不必再搭仪器（第十三轮三度折腾的教训）。随后清零。"""
+        reco = getattr(self, "_lat_reco", []) or []
+        tr = getattr(self, "_lat_tr", []) or []
+        if reco or tr:
+            from app import log as app_log
+            app_log.log(
+                "pipeline.latency",
+                n_reco=len(reco),
+                reco_p50=round(_pct(reco, 0.50), 2),
+                reco_p95=round(_pct(reco, 0.95), 2),
+                n_tr=len(tr),
+                tr_p50=round(_pct(tr, 0.50), 2),
+                tr_p95=round(_pct(tr, 0.95), 2),
+                tr_max=round(max(tr), 2) if tr else 0)
+        self._lat_reco, self._lat_tr, self._submit_ts = [], [], {}
 
     # ---------- v2.3.13（P14）：字幕卡右键一键纠错（词典可达性） ----------
     # 第八轮实测：误听词典做了八轮仍空——不是没工具，是"看到错→查原文→
@@ -1559,6 +1606,11 @@ class MainWindow(QMainWindow):
         if not self.running:
             return
         self._last_engine_name = engine
+        # v2.3.20（P26）：翻译段延迟——"提交翻译→译文落地"（含攒句等待+引擎耗时）。
+        # 用改写前的 source（合并组的 combined 键）取提交时刻。
+        t_submit = getattr(self, "_submit_ts", {}).pop(source_text, None)
+        if t_submit is not None:
+            self._lat_add("_lat_tr", time.monotonic() - t_submit)
         # v2.3.6（P9）：低延迟攒句结果——合并译文落组内末卡，
         # 前面的碎片卡只留原文（整句译文不再被拆成半截话各翻各的）
         gmap = getattr(self, "_tgroup_by_src", None)

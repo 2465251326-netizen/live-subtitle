@@ -182,7 +182,9 @@ class AsrThread(QThread):
     # v2.3.16（P21）信号契约：text_ready = (识别文本, whisper 语言码,
     # **音频秒数**字符串如 "4.3"——不是毫秒、不是百分数)；消费方
     # _on_asr_text/_asr_timing 按秒 float()。
-    text_ready = Signal(str, str, str)  # text, whisper_lang, duration
+    # v2.3.20（P26）：追加第 4 参 t_flush_mono（浮点 monotonic 秒）——该音频段
+    # 在采集线程"切分完成"的时刻，用于测"话音落→原文上屏"识别段延迟；-1=未知。
+    text_ready = Signal(str, str, str, float)  # text, whisper_lang, duration, t_flush_mono
     status_changed = Signal(str)
     model_ready = Signal()
     error_occurred = Signal(str)
@@ -309,7 +311,15 @@ class AsrThread(QThread):
         （实测 8 段提交 0 条字幕，用户观感=完全没反应）。
         现在：上限放宽到 8 段（约 2 分钟语音），只在真实超限时丢最旧；
         丢段/积压状态只发一次，避免刷屏。
+
+        v2.3.20（P26）：audio 可为 (ndarray, t_flush) 二元组（capture 侧带
+        切分时刻），或裸 ndarray（deep_windows/smoke 直接 submit 的旧格式，
+        t_flush 记 -1）。入队元素统一为二元组。
         """
+        if isinstance(audio, tuple):
+            audio, t_flush = audio
+        else:
+            t_flush = -1.0
         try:
             dropped = False
             while self.queue_in.qsize() >= self.QUEUE_LIMIT:
@@ -318,7 +328,7 @@ class AsrThread(QThread):
                     dropped = True
                 except queue.Empty:
                     break
-            self.queue_in.put_nowait(audio)
+            self.queue_in.put_nowait((audio, t_flush))
             if dropped:
                 self._dropped_ever = True
                 if not self._backlog_reported:
@@ -499,13 +509,18 @@ class AsrThread(QThread):
         self._warmup()
         while not self._stop:
             try:
-                audio = self.queue_in.get(timeout=0.5)
+                item = self.queue_in.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if audio is None:
+            if item is None:
                 break
+            # v2.3.20（P26）：队元素统一 (audio, t_flush)；旧格式裸 ndarray 兜底
+            if isinstance(item, tuple):
+                audio, t_flush = item
+            else:
+                audio, t_flush = item, -1.0
             try:
-                self._transcribe(audio)
+                self._transcribe(audio, t_flush)
             except Exception as e:
                 from app.errors import friendly_error
                 from app import log as app_log
@@ -527,7 +542,7 @@ class AsrThread(QThread):
         except Exception:
             pass
 
-    def _transcribe(self, audio):
+    def _transcribe(self, audio, t_flush=-1.0):
         duration = len(audio) / 16000.0
         kwargs = dict(
             beam_size=1,
@@ -610,7 +625,7 @@ class AsrThread(QThread):
         # 逐片再过一次 has_content（CBS 新闻体验轮抓到的过滤器漏洞）
         for piece in split_long_caption(text):
             if has_content(piece):
-                self.text_ready.emit(piece, detected, f"{duration:.1f}")
+                self.text_ready.emit(piece, detected, f"{duration:.1f}", t_flush)
 
 
 class PrewarmWorker(QThread):

@@ -784,6 +784,59 @@ def t_teardown():
     w._teardown()   # 热键注销/设置保存/悬浮条隐藏不得抛异常
 check("teardown: 退出清理链完整", t_teardown)
 
+# ---------- 9) 内置延迟自测（v2.3.20 P26） ----------
+def t_latency_telemetry():
+    import time as _t
+    # 识别段：t_flush 第 4 参 → _lat_reco；提交时刻入 _submit_ts
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.config.set("low_latency_mode", False)
+
+    class FakeTT:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, text, detected):
+            self.submitted.append(text)
+
+    real_tt = w.translate_thread
+    w.translate_thread = FakeTT()
+    w._on_asr_text("Telemetry probe line.", "en", "2.0", _t.monotonic() - 1.25)
+    assert len(w._lat_reco) == 1 and 1.0 < w._lat_reco[0] < 1.6, w._lat_reco
+    assert w.translate_thread.submitted == ["Telemetry probe line."]
+    assert "Telemetry probe line." in w._submit_ts
+    # 翻译段：落地取提交时刻 → _lat_tr；无提交记录的迟到结果不误记
+    w._on_translated("Telemetry probe line.", "遥测探针行", "test-engine", "en", "")
+    assert len(w._lat_tr) == 1 and w._lat_tr[0] >= 0, w._lat_tr
+    w._on_translated("ghost line", "无提交记录", "test", "en", "")
+    assert len(w._lat_tr) == 1, "无 _submit_ts 的结果不应新增样本"
+    # 摘要：打日志后清零
+    w._log_latency_summary()
+    assert w._lat_reco == [] and w._lat_tr == [] and w._submit_ts == {}
+    # _pct 边界
+    from app.ui.main_window import _pct
+    assert _pct([], 0.5) == 0.0 and _pct([3.0], 0.95) == 3.0
+    w.translate_thread = real_tt
+    w.running = False
+    w._quitting = True
+    w._teardown()
+check("asr: 内置延迟自测遥测链路（P26）", t_latency_telemetry)
+
+def t_asr_submit_queue_contract():
+    # 队元素统一 (ndarray, t_flush)；裸 ndarray 旧格式（smoke/deep_windows）兼容
+    import numpy as _np
+    from app.asr.engine import AsrThread
+    a = AsrThread("tiny", "cpu", "auto")
+    arr = _np.zeros(16000, dtype=_np.float32)
+    a.submit(arr)
+    a.submit((arr, 123.4))
+    i1 = a.queue_in.get_nowait()
+    i2 = a.queue_in.get_nowait()
+    assert isinstance(i1, tuple) and len(i1) == 2 and i1[1] == -1.0, i1
+    assert isinstance(i2, tuple) and i2[1] == 123.4, i2
+check("asr: 提交队列时间戳契约（P26）", t_asr_submit_queue_contract)
+
 # ---------- 汇总 ----------
 check("config: DEFAULTS 全键可读", lambda: [cfg.get(k) for k in DEFAULTS])
 

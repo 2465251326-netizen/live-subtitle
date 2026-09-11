@@ -441,7 +441,10 @@ class CaptureThread(QThread):
                         self.low_input.emit(False)
                 seg = self.segmenter.feed(mono16)
                 if seg is not None:
-                    self.segment_ready.emit(seg)
+                    # v2.3.20（P26）：随段携带"切分完成时刻"（monotonic 秒），
+                    # 下游据此测"话音落→原文上屏"识别段延迟；AsrThread.submit
+                    # 兼容裸 ndarray 旧格式（deep_windows/smoke 直接 submit）。
+                    self.segment_ready.emit((seg, time.monotonic()))
             # v2.0.1：退出前强制 flush——停止前最后一句（尾静音不足判停时长）
             # 此前被静默丢弃，表现为"说完立刻停会丢最后一句"
             # v2.2.1：去掉 not self._stop 条件——stop 是循环唯一正常出口，
@@ -450,7 +453,7 @@ class CaptureThread(QThread):
             try:
                 tail = self.segmenter.flush()
                 if tail is not None:
-                    self.segment_ready.emit(tail)
+                    self.segment_ready.emit((tail, time.monotonic()))  # v2.3.20 P26
             except Exception:
                 pass
         except Exception as e:
