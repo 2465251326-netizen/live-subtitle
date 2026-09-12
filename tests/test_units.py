@@ -553,6 +553,20 @@ def test_segmenter_low_latency():
         assert s2.feed(voiced) is None, "默认模式 6.3s 不应分段"
 
 
+def test_transcribe_accuracy_profiles():
+    """v2.5.4：识别精度三档参数映射（快速/均衡/高精度）+ 未知档回退 fast。"""
+    from app.asr.engine import transcribe_kwargs
+    fast = transcribe_kwargs("fast")
+    assert fast["beam_size"] == 1 and fast["condition_on_previous_text"] is False
+    bal = transcribe_kwargs("balanced")
+    assert bal["beam_size"] == 2 and bal["condition_on_previous_text"] is False
+    qual = transcribe_kwargs("quality")
+    assert qual["beam_size"] == 5 and qual["condition_on_previous_text"] is True
+    assert transcribe_kwargs("unknown")["beam_size"] == 1, "未知档回退 fast"
+    assert transcribe_kwargs("fast", silero_vad=True)["vad_filter"] is True
+    assert transcribe_kwargs("fast")["no_speech_threshold"] == 0.6
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

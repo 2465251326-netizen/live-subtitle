@@ -178,6 +178,30 @@ def has_content(text: str) -> bool:
     return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
+# v2.5.4：识别精度三档（用户反馈"速度慢/准确度差"的取舍显式化）——
+# beam/上下文条件是转写质量与速度的最大杠杆：快速档牺牲精度换实时，
+# 高精度档补回上下文条件与宽束（慢 2~4 倍，适合回看/整理字幕场景）
+ACCURACY_PROFILES = {
+    "fast":     {"beam_size": 1, "best_of": 1, "condition_on_previous_text": False},
+    "balanced": {"beam_size": 2, "best_of": 2, "condition_on_previous_text": False},
+    "quality":  {"beam_size": 5, "best_of": 5, "condition_on_previous_text": True},
+}
+
+
+def transcribe_kwargs(accuracy, silero_vad=False):
+    """识别参数按精度档组装（纯函数，便于回归锁）。未知档位回退 fast。"""
+    profile = ACCURACY_PROFILES.get(str(accuracy or "fast"), ACCURACY_PROFILES["fast"])
+    kwargs = dict(profile)
+    kwargs.update(
+        no_speech_threshold=0.6,
+        log_prob_threshold=-1.0,
+    )
+    if silero_vad:
+        kwargs["vad_filter"] = True
+        kwargs["vad_parameters"] = {"min_silence_duration_ms": 300}
+    return kwargs
+
+
 class AsrThread(QThread):
     # v2.3.16（P21）信号契约：text_ready = (识别文本, whisper 语言码,
     # **音频秒数**字符串如 "4.3"——不是毫秒、不是百分数)；消费方
@@ -190,10 +214,12 @@ class AsrThread(QThread):
     error_occurred = Signal(str)
 
     def __init__(self, model_size: str, device: str, language: str, parent=None,
-                 hallucination_filter=True, silero_vad=False, mishear_map=None):
+                 hallucination_filter=True, silero_vad=False, mishear_map=None,
+                 accuracy="fast"):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
+        self.accuracy = str(accuracy or "fast")
         self.language = language
         self.hallucination_filter = bool(hallucination_filter)
         self.silero_vad = bool(silero_vad)
@@ -575,19 +601,11 @@ class AsrThread(QThread):
 
     def _transcribe(self, audio, t_flush=-1.0):
         duration = len(audio) / 16000.0
-        kwargs = dict(
-            beam_size=1,
-            best_of=1,
-            condition_on_previous_text=False,
-            no_speech_threshold=0.6,
-            log_prob_threshold=-1.0,
-        )
+        kwargs = transcribe_kwargs(getattr(self, "accuracy", "fast") or "fast",
+                                   bool(self.silero_vad and _silero_assets_ok()))
         # Silero VAD（建议5）：faster-whisper 内置，对段内非语音再过滤一道；
         # 与能量 VAD 分工——能量 VAD 管切句，Silero 管段内净化，双保险。
         # 打包环境资产缺失时自动回退能量 VAD，不让 ONNXRuntime 报错冒给用户
-        if self.silero_vad and _silero_assets_ok():
-            kwargs["vad_filter"] = True
-            kwargs["vad_parameters"] = {"min_silence_duration_ms": 300}
         with self._lang_lock:
             lang = self._last_lang
         if self.language != "auto":
@@ -683,7 +701,8 @@ class PrewarmWorker(QThread):
                 return
             app_log.log("asr.prewarm_start", model=self.model_size, device=self.device)
             t0 = time.time()
-            loader = AsrThread(self.model_size, self.device, "auto", None)
+            loader = AsrThread(self.model_size, self.device, "auto", None,
+                               accuracy=getattr(self, "accuracy", "fast"))
             ok = loader._load_model()
             dev = getattr(loader, "_device_used", "?")
             app_log.log("asr.prewarm_done", model=self.model_size, ok=bool(ok),

@@ -279,11 +279,11 @@ class CaptionOverlay(QWidget):
             r["src_text"] = source_text
             r["src"].setText(source_text)
             r["src"].setVisible(bool(source_text) and self._show_source)
-            r["tgt"].setText("⟳ …")
+            r["tgt"].setText("⟳ 识别中…")
             self._relayout()
             self._schedule_relayout()
             return
-        self._pending_row = self._add_row(source_text, "⟳ …", True)
+        self._pending_row = self._add_row(source_text, "⟳ 识别中…", True)
 
     def show_pending_result(self, source_text, target_text, show_source=True):
         """译文就绪：补齐占位行或新建完成行。"""
@@ -526,7 +526,7 @@ class CaptionOverlay(QWidget):
             src = it["src_text"] if self._show_source else ""
             self._mini_src.setText(src)
             self._mini_src.setVisible(bool(src))
-            self._mini_tgt.setText(it["tgt_text"] or "⟳ …")
+            self._mini_tgt.setText(it["tgt_text"] or "⟳ 识别中…")
         else:
             self._mini_src.setVisible(False)
             self._mini_tgt.setText("暂无字幕 · 单击展开")

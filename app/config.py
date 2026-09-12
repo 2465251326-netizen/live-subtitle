@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.5.3"
+APP_VERSION = "2.5.4"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -47,8 +47,11 @@ DEFAULTS = {
     "storage_root": "",                # 自定义数据根目录（空 = 默认 ~\.live_subtitle）
     "wizard_done": False,              # 首次运行向导已完成
     "hallucination_filter": True,      # 幻觉抑制：过滤音乐/噪声段的胡言乱语
+    "asr_accuracy": "fast",            # v2.5.4：识别精度档 fast/balanced/quality（beam与上下文条件取舍；低延迟场景建议 fast）
     "silero_vad": True,                # Silero VAD：faster-whisper 内置，段内非语音再过滤
-    "low_latency_mode": False,         # v2.3.3（P1）：低延迟分段（6s 上限+收紧判停），直播/新闻场景
+    "low_latency_mode": True,          # v2.3.3（P1）：低延迟分段（6s 上限+收紧判停）；
+                                       # v2.5.4 默认开——看视频字幕对延迟敏感（连续语流
+                                       # 普通模式攒到 14s 才切句，实测感知"太慢"的主因）
     "prewarm_model": True,             # v2.3.5（P5）：启动即后台预热已下载模型，消除"开始翻译"后近 1 分钟冷加载
     "mishear_map": {},                 # 误听修正词典 {错: 对}，精确子串替换
     "translate_fix_map": {},           # v2.3.6（P7）：译文修正词典 {错译: 正解}，对翻译结果精确替换

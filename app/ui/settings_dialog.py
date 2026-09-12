@@ -151,6 +151,7 @@ _FIELD_SPECS = {
     "asr_model":            ("pipeline", "combo"),
     "asr_device":           ("pipeline", "combo"),
     "asr_language":         ("pipeline", "combo"),
+    "asr_accuracy":         ("pipeline", "combo"),
     "hallucination_filter": ("pipeline", "check"),
     "silero_vad":           ("pipeline", "check"),
     "low_latency_mode":     ("pipeline", "check"),
@@ -193,6 +194,9 @@ _FIELD_SPECS = {
 # 字段：key=配置键 attr=控件属性名 page/section=落位 title/desc=行文案
 #       kind=check|spin|combo  opts=range/items/on_change
 _STD_ROW_ITEMS = {
+    "asr_accuracy": [("快速（推荐，实时字幕）", "fast"),
+                     ("均衡（更准，略慢）", "balanced"),
+                     ("高精度（最准，明显更慢，适合整理字幕）", "quality")],
     "asr_lang": [("自动检测", "auto")] + [
         (name, code) for code, name in LANGUAGES.items()
         if code not in ("zh-CN", "zh-TW", "auto")],
@@ -221,12 +225,17 @@ _STD_ROWS = [
     {"key": "hallucination_filter", "attr": "hallucination_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "幻觉抑制",
      "desc": "自动丢弃音乐/噪声段的胡言乱语字幕（推荐开启；若发现正常语音被误丢可关闭）。"},
+    {"key": "asr_accuracy", "attr": "accuracy_combo", "page": "asr", "section": "语言与计算",
+     "kind": "combo", "title": "识别精度",
+     "desc": "快速=实时字幕推荐（识别束宽最窄）；均衡/高精度识别更准但明显更慢（高精度还会结合前文语境），适合事后整理字幕。"
+             "实时看视频请保持快速——准确度问题优先用下方「误听修正词典」定点纠正。",
+     "opts": {"items": _STD_ROW_ITEMS["asr_accuracy"]}},
     {"key": "silero_vad", "attr": "silero_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "Silero VAD（段内净化）",
      "desc": "在识别前用 Silero 模型过滤段内非语音（背景音乐/噪声更干净），与切句 VAD 双保险。"},
     {"key": "low_latency_mode", "attr": "low_latency_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "低延迟模式（直播/新闻推荐）",
-     "desc": "字幕更快上屏：分段上限 14 秒→6 秒、静音判停收紧。v2.3.7 起翻译自动攒整句"
+     "desc": "字幕更快上屏（看视频强烈推荐）：分段上限 14 秒→6 秒、静音判停收紧，连续说话时字幕不再攒十几秒才出。v2.3.7 起翻译自动攒整句"
              "（上屏快、译文仍是完整句子，不再半截话各翻各的）；显示上句子可能切短。",
      "opts": {}},
     {"key": "prewarm_model", "attr": "prewarm_check", "page": "asr", "section": "语言与计算",
@@ -873,7 +882,7 @@ class SettingsDialog(QDialog):
         # v2.3.0：语言/计算/幻觉/Silero 四行改 _STD_ROWS 表驱动；
         # GPU 检测按钮为复合控件保持手写，插在两组之间
         self._std_rows(page, "asr", "语言与计算",
-                       keys=("asr_language", "asr_device"))
+                       keys=("asr_language", "asr_accuracy", "asr_device"))
         self.gpu_check_button = QPushButton("检测 GPU 环境")
         self.gpu_check_button.setFixedWidth(140)
         self.gpu_check_button.clicked.connect(self._show_gpu_guidance)

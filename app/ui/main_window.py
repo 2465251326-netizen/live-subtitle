@@ -1066,6 +1066,7 @@ class MainWindow(QMainWindow):
             hallucination_filter=bool(c.get("hallucination_filter")),
             silero_vad=bool(c.get("silero_vad")),
             mishear_map=dict(c.get("mishear_map") or {}),
+            accuracy=str(c.get("asr_accuracy") or "fast"),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(self._on_asr_status)
