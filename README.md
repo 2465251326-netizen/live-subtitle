@@ -1,4 +1,4 @@
-# LiveSubtitle · 实时字幕翻译
+# LiveSubtitle · 实时字幕翻译   本项目全程都是AI Vibe Coding生成,其中有过使用GLM 5.3f,和千问3.8f
 
 <p>
   <a href="https://github.com/2465251326-netizen/live-subtitle/releases/latest"><img src="https://img.shields.io/github/v/release/2465251326-netizen/live-subtitle?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC&color=2ea44f" alt="latest release"></a>
