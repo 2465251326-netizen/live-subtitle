@@ -45,7 +45,7 @@ class CaptionOverlay(QWidget):
                  on_toggle_translation_only=None, on_resized=None,
                  on_correct=None, on_export_srt=None, on_language=None,
                  on_font_size=None, on_pin_changed=None, on_collapsed=None,
-                 on_first_show=None, on_opacity=None):
+                 on_first_show=None, on_opacity=None, on_height_changed=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -84,6 +84,13 @@ class CaptionOverlay(QWidget):
         self._on_collapsed = on_collapsed
         self._on_first_show = on_first_show
         self._on_opacity = on_opacity
+        self._on_height_changed = on_height_changed
+        # v2.5.3：手动高度（用户裁决回归——面板支持上下拉长）。None=自动贴内容；
+        # 拖底缘/主窗配置恢复后锁定手动高度，⋯ 菜单可恢复自动
+        self._user_height = None
+        self._v_resizing = False
+        self._v_resize_start = None
+        self._v_resize_start_h = 0
 
         self._pinned = True
         self._apply_window_flags()   # v2.5.1（P2）：统一窗口标志（清 Tool 隐含的拒绝焦点）
@@ -400,9 +407,14 @@ class CaptionOverlay(QWidget):
             want = self._body.sizeHint().height() + 8
             cap = int((QGuiApplication.primaryScreen().availableGeometry().height()
                        or 800) * 0.55)
-            self._scroll.setFixedHeight(min(max(want, 46), cap))
+            if self._user_height:
+                # v2.5.3：手动高度锁定——用户拖底缘拉长后不再自动贴内容，
+                # 新句在固定高度内滚动（⋯ 菜单可恢复自动）
+                self._scroll.setFixedHeight(max(46, self._user_height - 54))
+            else:
+                self._scroll.setFixedHeight(min(max(want, 46), cap))
             self._scroll.setVerticalScrollBarPolicy(
-                Qt.ScrollBarAlwaysOff if want <= cap else Qt.ScrollBarAsNeeded)
+                Qt.ScrollBarAlwaysOff if want <= self._scroll.height() else Qt.ScrollBarAsNeeded)
         # v2.4.0 实机验收抓到的宽度跳变：adjustSize 会按内容重排宽度（722→432→698）。
         # 契约修正：宽度只认用户（初值/右缘拖拽/持久化恢复），高度才跟内容走。
         w0 = self.width()
@@ -437,6 +449,7 @@ class CaptionOverlay(QWidget):
         lang = dict(self.LANGS).get(self._target_lang, self._target_lang)
         self._lang_btn.setText(f"🌐 {lang}")
         self._collapse_btn.setText("展开" if self._collapsed else "收起")
+        self._sync_font_checks()   # v2.5.3：字号菜单勾选随字号互斥同步
 
     def _toggle_src(self):
         # 与旧"只显示译文"开关同源：回调收到的是 show_source 取反
@@ -477,12 +490,20 @@ class CaptionOverlay(QWidget):
 
     def _build_font_menu(self):
         m = QMenu(self)
+        self._font_actions = []
         for name, px in self.FONTS:
             a = m.addAction(f"{name}（{px}px）")
             a.setCheckable(True)
-            a.setChecked(abs(px - self._font_size) <= 3)
             a.triggered.connect(lambda _c=False, p=px: self._pick_font(p))
+            self._font_actions.append((a, px))
+        self._sync_font_checks()
         return m
+
+    def _sync_font_checks(self):
+        """v2.5.3：勾选态随当前字号同步互斥——此前菜单只在构造时 setChecked
+        一次且非互斥，换档/滚轮调节后旧勾永不消失（用户实测四档全勾）。"""
+        for a, px in getattr(self, "_font_actions", []):
+            a.setChecked(abs(px - self._font_size) <= 3)
 
     def _pick_font(self, px):
         if self._on_font_size:
@@ -509,6 +530,19 @@ class CaptionOverlay(QWidget):
         else:
             self._mini_src.setVisible(False)
             self._mini_tgt.setText("暂无字幕 · 单击展开")
+
+    def set_user_height(self, h):
+        """v2.5.3：手动高度入口（主窗配置恢复/恢复自动传 0）。"""
+        self._user_height = int(h) if h and int(h) >= 80 else None
+        if not self._collapsed:
+            self._relayout()
+
+    def _reset_user_height(self):
+        """v2.5.3：恢复自动高度（贴内容）。"""
+        self._user_height = None
+        if self._on_height_changed:
+            self._on_height_changed(0)
+        self._relayout()
 
     def set_collapsed(self, on):
         self._collapsed = bool(on)
@@ -646,10 +680,19 @@ class CaptionOverlay(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            if event.position().x() >= self.width() - self.RESIZE_EDGE and not self._collapsed:
+            pos = event.position()
+            pos = pos.toPoint() if hasattr(pos, "toPoint") else pos
+            if (event.position().x() >= self.width() - self.RESIZE_EDGE
+                    and not self._collapsed):
                 self._resizing = True
                 self._resize_start = event.globalPosition().toPoint()
                 self._resize_start_w = self.width()
+            elif (not self._collapsed
+                  and pos.y() >= self.height() - self.RESIZE_EDGE):
+                # v2.5.3：底缘拖高——用户裁决"上下也要能拉长"；拖后锁定手动高度
+                self._v_resizing = True
+                self._v_resize_start = event.globalPosition().toPoint()
+                self._v_resize_start_h = self.height()
             else:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 # v2.5.0：精简条上"按住=拖、原地点击=展开"的判定锚点
@@ -667,19 +710,41 @@ class CaptionOverlay(QWidget):
             self._user_resized = True
             event.accept()
             return
+        if self._v_resizing and event.buttons() & Qt.LeftButton:
+            new_h = max(80, self._v_resize_start_h
+                        + (event.globalPosition().y() - self._v_resize_start.y()))
+            self._user_height = new_h
+            self.resize(self.width(), new_h)
+            self._relayout()
+            event.accept()
+            return
         if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
             return
-        self.setCursor(Qt.SizeHorCursor
-                       if (event.position().x() >= self.width() - self.RESIZE_EDGE and not self._collapsed)
-                       else Qt.ArrowCursor)
+        pos = event.position()
+        pos = pos.toPoint() if hasattr(pos, "toPoint") else pos
+        near_right = (pos.x() >= self.width() - self.RESIZE_EDGE
+                      and not self._collapsed)
+        near_bottom = (pos.y() >= self.height() - self.RESIZE_EDGE
+                       and not self._collapsed)
+        if near_right:
+            self.setCursor(Qt.SizeHorCursor)
+        elif near_bottom:
+            self.setCursor(Qt.SizeVerCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
 
     def mouseReleaseEvent(self, event):
         if self._resizing:
             self._resizing = False
             if self._on_resized:
                 self._on_resized(self.width())
+        elif self._v_resizing:
+            # v2.5.3：底缘拖高结束——手动高度落盘
+            self._v_resizing = False
+            if self._on_height_changed:
+                self._on_height_changed(self._user_height)
         elif self._drag_pos is not None:
             pos = event.position()
             pos = pos.toPoint() if hasattr(pos, "toPoint") else pos
@@ -765,9 +830,14 @@ class CaptionOverlay(QWidget):
             self._on_moved(self.x(), self.y())
 
     def mouseDoubleClickEvent(self, event):
+        pos = event.position()
+        pos = pos.toPoint() if hasattr(pos, "toPoint") else pos
         # 双击工具条 = 顶/底贴边循环（肌肉记忆：像所有软件的标题栏）
-        if event.position().y() <= self._bar.geometry().bottom() + 6:
+        if pos.y() <= self._bar.geometry().bottom() + 6:
             self._snap_cycle()
+        elif pos.y() >= self.height() - self.RESIZE_EDGE:
+            # v2.5.3：双击底缘 = 恢复自动高度（与 ⋯ 菜单项同源）
+            self._reset_user_height()
 
     def _snap_cycle(self):
         self._snap_to_edge("bottom" if self.y() - (
@@ -820,6 +890,10 @@ class CaptionOverlay(QWidget):
             a.setCheckable(True)
             a.setChecked(cur_op == val)
             a.triggered.connect(lambda _c=False, v=val: self._apply_opacity(v))
+        # v2.5.3：手动高度恢复入口（拖底缘拉长后可回到自动贴内容）
+        act_auto_h = menu.addAction("恢复自动高度")
+        act_auto_h.setEnabled(bool(self._user_height))
+        act_auto_h.triggered.connect(lambda _c=False: self._reset_user_height())
         menu.addSeparator()
         acts["hide"] = menu.addAction("隐藏字幕面板")
         src, tgt = self._last_result

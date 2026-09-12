@@ -484,7 +484,8 @@ class MainWindow(QMainWindow):
                                        on_pin_changed=self._on_panel_pin,
                                        on_collapsed=self._on_panel_collapsed,
                                        on_first_show=self._on_panel_first_show,
-                                       on_opacity=self._on_panel_opacity)
+                                       on_opacity=self._on_panel_opacity,
+                                       on_height_changed=self._on_panel_height)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -552,6 +553,10 @@ class MainWindow(QMainWindow):
     def _on_panel_font_size(self, px):
         self.config.set("overlay_font_size", int(px))
         self.apply_overlay_from_config()
+
+    def _on_panel_height(self, h):
+        """v2.5.3：面板手动高度落盘（拖底缘/恢复自动均经此）。"""
+        self.config.set("overlay_h", int(h or 0))
 
     def _on_panel_opacity(self, val):
         """v2.5.0：面板滚轮/菜单档调透明度——落盘并本地重放（细调仍走设置页）。"""
@@ -885,6 +890,7 @@ class MainWindow(QMainWindow):
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
         self.overlay.set_pinned(bool(c.get("overlay_pin")))
         self.overlay.set_collapsed(bool(c.get("overlay_collapsed")))
+        self.overlay.set_user_height(int(c.get("overlay_h") or 0))
 
     # ---------- v2.2.12：就绪未出字时的"正在聆听"呼吸反馈 ----------
 

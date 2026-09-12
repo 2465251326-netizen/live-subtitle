@@ -245,10 +245,11 @@ _STD_ROWS = [
              "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
      "opts": {"items": _STD_ROW_ITEMS["target"], "on_change": "_on_engine_changed"}},
     {"key": "overlay_enabled", "attr": "overlay_check", "page": "display", "section": "字幕显示",
-     "kind": "check", "title": "启用字幕面板（置顶）",
+     "kind": "check", "title": "启用字幕面板",
      "desc": "悬浮在所有窗口之上的字幕面板：顶部工具条（目标语言/原文开关/字号/收起），"
              "正文是原文+译文成对的历史滚动区，上滚暂停自动跟随。整板可拖、右缘拖宽、"
-             "双击工具条贴顶/底。托盘「显隐字幕面板」或热键（默认 Ctrl+Alt+O）随时可切。",
+             "底缘拉高、双击工具条贴顶/底。托盘「显隐字幕面板」或热键（默认 Ctrl+Alt+O）随时可切。"
+             "注：是否压过其他窗口，用面板工具条的 📌 控制。",
      "opts": {"on_change": "_on_overlay_toggle"}},
     {"key": "show_source", "attr": "show_source_check", "page": "display", "section": "字幕显示",
      "kind": "check", "title": "同时显示原文",

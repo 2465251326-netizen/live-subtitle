@@ -1063,6 +1063,99 @@ def t_panel_opacity_menu_preset():
         ov.deleteLater()
 check("panel: 菜单透明度档（v2.5.0）", t_panel_opacity_menu_preset)
 
+def t_panel_font_menu_exclusive_checks():
+    # v2.5.3（用户实测四档全勾）：字号菜单勾选必须互斥同步——换档/滚轮后旧勾
+    # 不得残留（菜单非互斥 + 只在构造时 setChecked 的累积效应）
+    ov = CaptionOverlay()
+    try:
+        ov.show(); app.processEvents()
+        menu = ov._font_btn.menu()
+        def checks():
+            return {a.text(): a.isChecked() for a in menu.actions()}
+        ov.apply_style(22, "#ffffff", "#1c1f26", 92)
+        c22 = checks()
+        assert c22["中号（22px）"] and sum(c22.values()) == 1, c22
+        ov.apply_style(40, "#ffffff", "#1c1f26", 92)
+        c40 = checks()
+        assert c40["特大（40px）"] and sum(c40.values()) == 1, c40
+        ov.apply_style(16, "#ffffff", "#1c1f26", 92)
+        c16 = checks()
+        assert c16["小号（16px）"] and sum(c16.values()) == 1, c16
+    finally:
+        ov.deleteLater()
+check("panel: 字号菜单勾选互斥同步", t_panel_font_menu_exclusive_checks)
+
+def t_panel_vertical_resize():
+    # v2.5.3（用户裁决回归）：面板支持底缘拉高——拖后锁定手动高度且
+    # _relayout 不再自动覆盖；恢复自动后回内容高度
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QGuiApplication
+    LB = Qt.MouseButton.LeftButton
+
+    class _Ev:
+        def __init__(s, x, y, gx, gy):
+            s._p, s._g = QPoint(x, y), QPointF(gx, gy)
+        def button(s): return LB
+        def buttons(s): return LB
+        def position(s): return s._p
+        def globalPosition(s): return s._g
+        def accept(s): pass
+
+    heights = []
+    ov = CaptionOverlay(on_height_changed=lambda h: heights.append(int(h or 0)))
+    try:
+        ov.resize(560, 150)
+        ov.show(); app.processEvents()
+        ov.show_caption("s", "一段译文内容", True)
+        h = -1
+        for _ in range(15):
+            app.processEvents()
+            if ov._scroll.height() == h:
+                break
+            h = ov._scroll.height()
+        auto_total = ov.height()
+        # 拖底缘 +120px
+        bottom = ov.height()
+        gx, gy = 300 + 560, 200 + bottom   # 全局（起点在底缘上）
+        ov.mousePressEvent(_Ev(280, bottom - 3, gx, gy))
+        assert ov._v_resizing, "底缘按下应进入拉高模式"
+        ov.mouseMoveEvent(_Ev(280, bottom - 3, gx, gy + 120))
+        ov.mouseReleaseEvent(_Ev(280, bottom - 3, gx, gy + 120))
+        app.processEvents()
+        assert ov.height() >= auto_total + 100, f"拉高未生效：{ov.height()} vs {auto_total}"
+        assert ov._user_height == ov.height(), "手动高度应锁定"
+        assert heights and heights[-1] == ov.height()
+        # 加新句：手动高度不被自动覆盖
+        ov.show_caption("s2", "第二句译文内容", True)
+        h = -1
+        for _ in range(12):
+            app.processEvents()
+            if ov._scroll.height() == h:
+                break
+            h = ov._scroll.height()
+        assert ov._user_height and ov._scroll.height() == max(46, ov._user_height - 54)
+        # 菜单"恢复自动高度"
+        menu = ov._build_menu()
+        acts = [a for a in menu.actions() if a.text() == "恢复自动高度"]
+        assert acts and acts[0].isEnabled()
+        acts[0].trigger()
+        app.processEvents()
+        assert ov._user_height is None, "恢复自动后应清除手动高度"
+        assert heights[-1] == 0
+        menu.deleteLater()
+    finally:
+        ov.deleteLater()
+check("panel: 底缘拉高+手动高度契约（v2.5.3）", t_panel_vertical_resize)
+
+def t_settings_overlay_title_no_pin_word():
+    # v2.5.3（用户指出双"置顶"逻辑冲突）：设置页开关标题不得再含"置顶"——
+    # 置顶语义专属面板 📌 按钮（控制是否压过其他窗口）
+    from app.ui.settings_dialog import _STD_ROWS
+    row = [r for r in _STD_ROWS if r["key"] == "overlay_enabled"][0]
+    assert row["title"] == "启用字幕面板", row["title"]
+    assert "置顶" not in row["title"]
+check("settings: 面板开关无双置顶字样（v2.5.3）", t_settings_overlay_title_no_pin_word)
+
 def t_overlay_menu_correction():
     # v2.3.21（P29）：悬浮条右键菜单的纠错入口——无内容置灰；派发走
     # on_correct 回调（与主窗卡片纠错同源）
