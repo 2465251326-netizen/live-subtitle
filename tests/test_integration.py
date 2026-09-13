@@ -1588,6 +1588,95 @@ def t_asr_submit_queue_contract():
     assert isinstance(i2, tuple) and i2[1] == 123.4, i2
 check("asr: 提交队列时间戳契约（P26）", t_asr_submit_queue_contract)
 
+# ---------- v2.6.0 译文质量优化 ----------
+
+def t_quality_new_config_keys():
+    # R2/R4：新键进 DEFAULTS 且默认值符合用户裁决（全词匹配开、离线高质量）
+    assert cfg.get("fix_whole_word") is True
+    assert cfg.get("offline_quality") == "high"
+    # R6：死配置已移除
+    assert "translate_zh_from_zh" not in DEFAULTS
+check("quality: 新配置键默认值 + 死配置移除（R2/R4/R6）", t_quality_new_config_keys)
+
+def t_quality_settings_registered():
+    # _FIELD_SPECS/_STD_ROWS 为模块级声明表（v2.3.0 单一登记处），从模块取
+    import app.ui.settings_dialog as sd
+    specs = sd._FIELD_SPECS
+    assert specs["fix_whole_word"] == ("pipeline", "check")
+    assert specs["offline_quality"] == ("pipeline", "combo")
+    assert "translate_zh_from_zh" not in specs
+    rows = {r["key"] for r in sd._STD_ROWS}
+    assert {"fix_whole_word", "offline_quality"} <= rows
+    assert sd.SettingsDialog._HOTFIX_KEYS == {"mishear_map", "translate_fix_map",
+                                              "fix_whole_word", "offline_quality"}
+check("quality: 设置页声明表三处登记 + 死配置清除（R2/R4/R6）", t_quality_settings_registered)
+
+def t_quality_thread_hotfix():
+    # R4：构造快照映射（high→beam 5）；R5：热更方法生效
+    from app.translate.translator import TranslateThread, ArgosEngine
+    from app.asr.engine import AsrThread
+    tt = TranslateThread("auto", "zh-CN", translate_fix_map={"a": "b"},
+                         fix_whole_word=True, offline_quality="fast")
+    assert tt._beam_size == 2 and ArgosEngine.beam_size == 2
+    assert tt.fix_map == {"a": "b"} and tt._fix_whole_word is True
+    tt.update_beam_size(5)
+    assert tt._beam_size == 5 and ArgosEngine.beam_size == 5, "beam 热更应同步类级值"
+    tt.update_beam_size(0)   # 未知值回落快速档
+    assert tt._beam_size == 2 and ArgosEngine.beam_size == 2
+    tt.update_fix_map({"x": "y"})
+    tt.update_whole_word(False)
+    assert tt.fix_map == {"x": "y"} and tt._fix_whole_word is False
+    # AsrThread 侧词典热更
+    at = AsrThread("tiny", "cpu", "auto")
+    at.update_mishear_map({"feline": "feel in"}, True)
+    assert at.mishear_map == {"feline": "feel in"} and at._mishear_whole_word is True
+check("quality: 线程词典/质量档热更新（R4/R5）", t_quality_thread_hotfix)
+
+def t_quality_cache_key_strip():
+    # R3：仅空白差异的原文命中同一条缓存
+    from app.translate.translator import TranslateThread
+    tt = TranslateThread("google", "zh-CN")
+    k1 = tt._cache_key("google", "en", "  hello world  ")
+    k2 = tt._cache_key("google", "en", "hello world")
+    assert k1 == k2
+    assert k1 != tt._cache_key("mymemory", "en", "hello world"), "引擎维度保持独立"
+check("quality: 缓存键首尾空白规范化（R3）", t_quality_cache_key_strip)
+
+def t_quality_mishear_via_fixmap():
+    # R2：识别侧误听词典走 fixmap——整词匹配经 _postprocess 生效
+    from app.asr.engine import AsrThread
+    at = AsrThread("tiny", "cpu", "auto", mishear_map={"strikes": "罢工"},
+                   mishear_whole_word=True)
+    assert at._postprocess("U.S. strikes back") == "U.S. 罢工 back"
+    assert at._postprocess("airstrikes reported") == "airstrikes reported"
+    at.update_mishear_map({"strikes": "罢工"}, False)
+    assert at._postprocess("airstrikes reported") == "air罢工 reported", \
+        "关闭开关后应回到子串替换"
+check("quality: 误听词典经 fixmap 整词匹配（R2/R5）", t_quality_mishear_via_fixmap)
+
+def t_quality_beam_reaches_offline_pack():
+    # R4：beam 参数从模块 translate 透传到 PackTranslator.translate
+    import app.translate.offline_pack as op
+    captured = {}
+
+    class FakeTr:
+        def translate(self, text, beam_size=2):
+            captured["beam"] = beam_size
+            return "译文"
+
+    op._translator_cache[("en", "zh")] = FakeTr()
+    op._cache_order.append(("en", "zh"))
+    try:
+        assert op.translate("hello", "en", "zh", beam_size=5) == "译文"
+        assert captured["beam"] == 5
+        assert op.translate("hello", "en", "zh") == "译文", "缺省 beam 兼容旧调用"
+        assert captured["beam"] == 2
+    finally:
+        op._translator_cache.pop(("en", "zh"), None)
+        if ("en", "zh") in op._cache_order:
+            op._cache_order.remove(("en", "zh"))
+check("quality: beam 参数透传离线包（R4）", t_quality_beam_reaches_offline_pack)
+
 # ---------- 汇总 ----------
 check("config: DEFAULTS 全键可读", lambda: [cfg.get(k) for k in DEFAULTS])
 

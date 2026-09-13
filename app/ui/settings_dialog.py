@@ -160,6 +160,8 @@ _FIELD_SPECS = {
     "translate_fix_map":    ("pipeline", "mishear"),
     "engine":               ("pipeline", "combo"),
     "target_lang":          ("pipeline", "combo"),
+    "fix_whole_word":       ("pipeline", "check"),
+    "offline_quality":      ("pipeline", "combo"),
     "proxy_mode":           ("instant", "combo"),
     "proxy_url":            ("instant", "text"),
     "hotkey_enabled":       ("instant", "check"),
@@ -175,7 +177,7 @@ _FIELD_SPECS = {
     "close_action":         ("instant", "combo"),
     "auto_start":           ("instant", "check"),
     "max_history":          ("instant", "spin"),
-    "translate_zh_from_zh": ("instant", "hidden"),
+    # v2.6.0（R6）删除 translate_zh_from_zh 登记行（死配置，DEFAULTS 已同步移除）
     "instant_caption":      ("instant", "check"),
     "overlay_x":            ("internal", "hidden"),
     "overlay_y":            ("internal", "hidden"),
@@ -207,6 +209,9 @@ _STD_ROW_ITEMS = {
     "engine": [("自动探测（推荐）", "auto"), ("Google 免费接口（在线）", "google"),
                ("MyMemory（在线备援）", "mymemory"), ("Argos 离线语言包", "argos")],
     "target": [(LANGUAGES.get(code, code), code) for code in TARGET_LANGS],
+    # v2.6.0（R4）：离线质量档——用户裁决默认高质量
+    "offline_quality": [("高质量（推荐，译文更连贯）", "high"),
+                        ("快速（更低延迟，机翻味更重）", "fast")],
     "close": [("每次询问", "ask"), ("隐藏到托盘（字幕继续）", "tray"),
               ("直接退出程序", "exit")],
 }
@@ -253,6 +258,18 @@ _STD_ROWS = [
      "desc": "在线引擎支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种；"
              "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
      "opts": {"items": _STD_ROW_ITEMS["target"], "on_change": "_on_engine_changed"}},
+    {"key": "offline_quality", "attr": "offline_quality_combo", "page": "translate", "section": "翻译方向",
+     "kind": "combo", "title": "离线翻译质量",
+     "desc": "仅影响 Argos 离线引擎（含自动模式断网回落）。高质量=更宽的翻译束宽，译文更连贯、"
+             "直译痕迹更少，单句离线翻译耗时略增（约 0.1 秒，字幕上屏几乎无感）；快速=保持旧行为。"
+             "在线翻译不受此项影响。",
+     "opts": {"items": _STD_ROW_ITEMS["offline_quality"]}},
+    {"key": "fix_whole_word", "attr": "fix_whole_word_check", "page": "translate", "section": "译文质量",
+     "kind": "check", "title": "词典整词匹配",
+     "desc": "开启后英文词条只在整词出现时替换（strikes 不再误伤专名短语），多义词纠错更安全；"
+             "中文词条始终按原文替换，不受影响。同时作用于「误听修正词典」与「译文修正词典」，"
+             "保存后立即生效（无需重启识别）。",
+     "opts": {}},
     {"key": "overlay_enabled", "attr": "overlay_check", "page": "display", "section": "字幕显示",
      "kind": "check", "title": "启用字幕面板",
      "desc": "悬浮在所有窗口之上的字幕面板：顶部工具条（目标语言/原文开关/字号/收起），"
@@ -918,6 +935,8 @@ class SettingsDialog(QDialog):
         self._std_rows(page, "translate", "翻译方向")
 
         self._section(page, "译文质量")
+        # v2.6.0（R2）：词典整词匹配开关（表驱动行，与下方手写词典控件同节）
+        self._std_rows(page, "translate", "译文质量")
         # v2.3.6（P7）：译文修正词典——误听词典的对偶，识别侧修"听错"，这里修"翻错/翻反"
         self.tfix_edit = QPlainTextEdit()
         self.tfix_edit.setPlaceholderText(
@@ -1741,6 +1760,9 @@ class SettingsDialog(QDialog):
     # v2.0.6：三类清单全部由模块级 _FIELD_SPECS 派生（单一登记处），
     # 不再手写三份彼此漂移的清单
     _PIPELINE_KEYS = {k for k, (g, _k) in _FIELD_SPECS.items() if g == "pipeline"}
+    # v2.6.0（R5）：支持热更新的管线键——保存后经 main.apply_pipeline_hotfix
+    # 直接更新运行中的线程成员，管线保持运行不重启
+    _HOTFIX_KEYS = {"mishear_map", "translate_fix_map", "fix_whole_word", "offline_quality"}
     _OVERLAY_KEYS = {k for k, (g, _k) in _FIELD_SPECS.items() if g == "overlay"}
     _STAGE_ORDER = [k for k, (g, _k) in _FIELD_SPECS.items() if g != "internal"]
 
@@ -1819,13 +1841,27 @@ class SettingsDialog(QDialog):
         if "hotkey_enabled" in applied or "hotkey_sequence" in applied \
                 or "hotkey_overlay" in applied:
             self.main.apply_hotkey_config()
-        if self._PIPELINE_KEYS & set(applied):
+        # v2.6.0（R5）：词典/质量档类改动走热更新，管线保持运行——重启管线
+        # 意味着模型冷加载近 1 分钟，词典纠错不值得付出这个代价。
+        # 若同一批还有真正的重启型键（如换模型），下方照常重启（重启后构造
+        # 注入的快照与热更结果一致，无冲突）。
+        hotfix = self._HOTFIX_KEYS & set(applied)
+        if hotfix and self.main.running:
+            try:
+                self.main.apply_pipeline_hotfix()
+            except Exception:
+                pass
+        # 重启判定排除已被热更覆盖的键：只改词典时不再重启管线
+        restart_keys = (self._PIPELINE_KEYS & set(applied)) - self._HOTFIX_KEYS
+        if restart_keys:
             if self.main.running:
                 self.main.stop_pipeline()
                 self.main.start_pipeline()
                 self.dirty_hint.setText("已保存并应用 · 管线已重启")
             else:
                 self.dirty_hint.setText("已保存并应用 · 下次开始翻译时生效")
+        elif hotfix and self.main.running:
+            self.dirty_hint.setText("已保存并应用 · 词典已即时生效")
         else:
             self.dirty_hint.setText("已保存并应用")
         self.settings_saved.emit()

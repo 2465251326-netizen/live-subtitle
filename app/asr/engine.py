@@ -6,6 +6,8 @@ import time
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from app.fixmap import apply_dict
+
 
 def _silero_assets_ok() -> bool:
     """检测 faster-whisper 自带的 Silero VAD onnx 资产是否存在。
@@ -215,7 +217,7 @@ class AsrThread(QThread):
 
     def __init__(self, model_size: str, device: str, language: str, parent=None,
                  hallucination_filter=True, silero_vad=False, mishear_map=None,
-                 accuracy="fast"):
+                 accuracy="fast", mishear_whole_word=False):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
@@ -224,6 +226,8 @@ class AsrThread(QThread):
         self.hallucination_filter = bool(hallucination_filter)
         self.silero_vad = bool(silero_vad)
         self.mishear_map = dict(mishear_map or {})
+        # v2.6.0（R2）：词典全词匹配开关快照
+        self._mishear_whole_word = bool(mishear_whole_word)
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
         self._model = None
@@ -235,14 +239,19 @@ class AsrThread(QThread):
         self._backlog_reported = False
         self._dropped_ever = False
 
+    def update_mishear_map(self, mapping, whole_word):
+        """v2.6.0（R5）：设置保存后热更新误听词典，无需重启管线。"""
+        self.mishear_map = dict(mapping or {})
+        self._mishear_whole_word = bool(whole_word)
+
     def _postprocess(self, text):
-        """识别后处理（建议5）：可选的常见误听修正词典（精确子串替换）。"""
+        """识别后处理（建议5）：可选的常见误听修正词典。
+
+        v2.6.0（R2）：改走 fixmap 单轮替换器——长键优先、替换产物不再被
+        同轮二次命中；_mishear_whole_word=True 时纯拉丁词条按整词匹配。"""
         if not self.mishear_map:
             return text
-        for wrong, right in self.mishear_map.items():
-            if wrong:
-                text = text.replace(wrong, right)
-        return text
+        return apply_dict(text, self.mishear_map, self._mishear_whole_word)
 
     @staticmethod
     def model_cache_dir(model_size: str):

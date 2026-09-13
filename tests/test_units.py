@@ -567,6 +567,65 @@ def test_transcribe_accuracy_profiles():
     assert transcribe_kwargs("fast")["no_speech_threshold"] == 0.6
 
 
+def test_fixmap_whole_word():
+    """v2.6.0（R2）：拉丁词条整词匹配——多义词不再误伤专名。"""
+    from app.fixmap import apply_dict, is_latin_key
+    m = {"strikes": "罢工"}
+    # 关闭开关 = v2.5.3 子串替换语义（回归基线）
+    assert apply_dict("U.S. strikes back", m) == "U.S. 罢工 back"
+    # 开启后仍替换独立成词的 strikes
+    assert apply_dict("U.S. strikes back", m, whole_word=True) == "U.S. 罢工 back"
+    # 复合词/专名中的子串不再被误伤
+    assert apply_dict("airstrikes reported", m, whole_word=True) == "airstrikes reported"
+    assert apply_dict("the strikezone", m, whole_word=True) == "the strikezone"
+    # CJK 词条始终子串替换，开关不影响中文纠错习惯
+    m2 = {"新兴市场": "发展中市场"}
+    assert apply_dict("新兴市场波动", m2, whole_word=True) == "发展中市场波动"
+    assert is_latin_key("U.S.") is False
+    assert is_latin_key("feel in") is True
+
+
+def test_fixmap_longest_first():
+    """v2.6.0（R2）：长键优先——短键先替换不得拆坏长键。"""
+    from app.fixmap import apply_dict
+    m = {"sub": "X", "subtitle": "Y"}
+    assert apply_dict("subtitle", m) == "Y"
+    assert apply_dict("subtitle sub", m) == "Y X"
+
+
+def test_fixmap_single_pass():
+    """v2.6.0（R2）：单轮语义——词条 A 的替换产物不再被词条 B 二次命中。
+
+    旧实现逐条 replace：{"a": "b", "b": "c"} 会把 "a" 链式替换成 "c"。"""
+    from app.fixmap import apply_dict
+    m = {"a": "b", "b": "c"}
+    assert apply_dict("a", m) == "b"
+    assert apply_dict("b", m) == "c"
+
+
+def test_fixmap_edges():
+    """v2.6.0（R2）：空输入与异常词条边界。"""
+    from app.fixmap import apply_dict
+    assert apply_dict("原文", {}) == "原文"
+    assert apply_dict("", {"a": "b"}) == ""
+    assert apply_dict(None, {"a": "b"}) is None
+    assert apply_dict("A和A", {"A": "B"}) == "B和B"
+    assert apply_dict("甲", {"甲": ""}) == "甲"
+
+
+def test_unescape_html():
+    """v2.6.0（R1）：引擎译文 HTML 实体还原（单层还原 + 幂等）。"""
+    from app.translate.translator import unescape_html
+    assert unescape_html("&quot;hi&quot;") == '"hi"'
+    assert unescape_html("A &amp; B") == "A & B"
+    # 双重转义仅还原一层——用户确在说转义串时保留可读形态
+    assert unescape_html("&amp;quot;") == "&quot;"
+    assert unescape_html("no entity here") == "no entity here"
+    # 幂等：连续两次应用等价于一次
+    x = "&quot;A &amp; B&quot;"
+    assert unescape_html(unescape_html(x)) == unescape_html(x)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

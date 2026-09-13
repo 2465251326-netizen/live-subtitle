@@ -35,8 +35,8 @@ DEFAULTS = {
     "overlay_bg_color": "#1c1f26",      # v2.4.0：面板默认深灰（旧玻璃黑随描边一起退役）
     "overlay_bg_opacity": 92,           # 0-100，面板背景不透明度百分比
     # v2.4.0 删除 overlay_outline/_width/_color：描边是透明玻璃时代的可读性补丁
-    "translate_zh_from_zh": False,
     "instant_caption": True,           # v2.1.5：流式两段式——原文先上屏，译文就绪后补齐
+    # v2.6.0（R6）删除 translate_zh_from_zh：无任何读取点的死配置（zh→zh 回显硬编码于 translator.run）
     "close_action": "ask",             # ask / tray / exit
     "auto_start": False,               # 启动后自动开始翻译
     "proxy_mode": "system",            # system 跟随系统 | manual 手动 | none 直连
@@ -55,6 +55,10 @@ DEFAULTS = {
     "prewarm_model": True,             # v2.3.5（P5）：启动即后台预热已下载模型，消除"开始翻译"后近 1 分钟冷加载
     "mishear_map": {},                 # 误听修正词典 {错: 对}，精确子串替换
     "translate_fix_map": {},           # v2.3.6（P7）：译文修正词典 {错译: 正解}，对翻译结果精确替换
+    "fix_whole_word": True,            # v2.6.0（R2）：词典全词匹配——纯拉丁词条整词替换，
+                                       # 多义词（strikes=罢工）不再误伤专名；CJK 词条始终子串替换
+    "offline_quality": "high",         # v2.6.0（R4）：离线翻译质量档 fast(beam 2)/high(beam 5)，
+                                       # 高质量译文更连贯、单句离线耗时略增
     "overlay_w": 0,                    # v2.1.8：面板手动调整的宽度（0 = 自动）；高度永远贴内容
     "overlay_pin": True,               # v2.4.0：面板置顶显示（⋯ 菜单可切）
     "overlay_collapsed": False,        # v2.4.0：面板收起态（只留工具条）

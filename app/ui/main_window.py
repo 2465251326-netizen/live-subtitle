@@ -1040,8 +1040,11 @@ class MainWindow(QMainWindow):
 
         c = self.config
         engine = c.get("engine")
+        # v2.6.0：注入全词匹配开关与离线质量档快照（运行中可经 apply_pipeline_hotfix 热更）
         self.translate_thread = TranslateThread(engine, c.get("target_lang"), self,
-                                                translate_fix_map=dict(c.get("translate_fix_map") or {}))
+                                                translate_fix_map=dict(c.get("translate_fix_map") or {}),
+                                                fix_whole_word=bool(c.get("fix_whole_word")),
+                                                offline_quality=str(c.get("offline_quality") or "high"))
         self.translate_thread.result_ready.connect(self._on_translated)
         # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
         # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"
@@ -1067,6 +1070,7 @@ class MainWindow(QMainWindow):
             silero_vad=bool(c.get("silero_vad")),
             mishear_map=dict(c.get("mishear_map") or {}),
             accuracy=str(c.get("asr_accuracy") or "fast"),
+            mishear_whole_word=bool(c.get("fix_whole_word")),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(self._on_asr_status)
@@ -1339,6 +1343,25 @@ class MainWindow(QMainWindow):
                     sig.disconnect()
                 except Exception:
                     pass
+
+    def apply_pipeline_hotfix(self):
+        """v2.6.0（R5）：设置保存后把词典/质量档热更新到运行中的线程。
+
+        线程成员为纯 Python 引用替换（GIL 下原子），读侧天然一致——
+        无需锁、无需重启管线。热更失败仅记日志，管线沿用旧值继续。"""
+        from app import log as app_log
+        c = self.config
+        whole_word = bool(c.get("fix_whole_word"))
+        beam = 5 if str(c.get("offline_quality") or "high") == "high" else 2
+        at = self.asr_thread
+        if at is not None and at.isRunning():
+            at.update_mishear_map(dict(c.get("mishear_map") or {}), whole_word)
+        tt = self.translate_thread
+        if tt is not None and tt.isRunning():
+            tt.update_fix_map(dict(c.get("translate_fix_map") or {}))
+            tt.update_whole_word(whole_word)
+            tt.update_beam_size(beam)
+        app_log.log("pipeline.hotfix_applied", whole_word=whole_word, beam=beam)
 
     def stop_pipeline(self):
         if not self.running:

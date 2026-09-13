@@ -371,19 +371,21 @@ class PackTranslator:
         self.sp = spm.SentencePieceProcessor()
         self.sp.load(str(pack_dir / "sentencepiece.model"))
 
-    def translate(self, text):
+    def translate(self, text, beam_size=2):
         text = text.strip()
         if not text:
             return ""
         chunks = _split_long(text)
-        return "".join(self._translate_chunk(c) for c in chunks)
+        return "".join(self._translate_chunk(c, beam_size) for c in chunks)
 
-    def _translate_chunk(self, text):
+    def _translate_chunk(self, text, beam_size=2):
         tokens = self.sp.encode(text, out_type=str)
         if not tokens:
             return text
+        # v2.6.0（R4）：beam 每次调用传入（质量档热切换无需重建模型实例）；
+        # 默认 2 保持 v2.5.3 速度语义
         res = self.translator.translate_batch(
-            [tokens], max_batch_size=8, beam_size=2
+            [tokens], max_batch_size=8, beam_size=beam_size
         )
         out = _detokenize(res[0].hypotheses[0])
         if out.count(",") > max(3, len(out) * 0.3) and len(out) > len(text):
@@ -441,8 +443,8 @@ def _get_translator(source, target):
         return _translator_cache.get(key, tr)
 
 
-def translate(text, source, target):
+def translate(text, source, target, beam_size=2):
     tr = _get_translator(source, target)
     if tr is None:
         raise RuntimeError(f"离线语言包缺失: {source}->{target}，请先在侧栏下载语言包")
-    return tr.translate(text)
+    return tr.translate(text, beam_size=beam_size)

@@ -1,3 +1,4 @@
+import html
 import json
 import queue
 import re
@@ -13,6 +14,7 @@ from app.config import WHISPER_LANG_MAP
 from app import net
 from app.errors import friendly_error
 from app import log as app_log
+from app.fixmap import apply_dict as _apply_dict
 
 # v2.0.0：HTTP 头收敛到 net.py（此前与本包各写一份且 UA 不一致）
 HEADERS = net.BROWSER_HEADERS
@@ -278,6 +280,10 @@ class MyMemory:
 class ArgosEngine:
     name = "argos"
 
+    # v2.6.0（R4）：离线质量档——类级 beam（2=快速 / 5=高质量），设置页切换
+    # 经 TranslateThread.update_beam_size 同步到此处，下一次离线翻译即生效
+    beam_size = 2
+
     @classmethod
     def installed_pairs(cls):
         from .offline_pack import list_installed
@@ -306,7 +312,7 @@ class ArgosEngine:
         if source.startswith("zh"):
             source = "zh"
         target = "zh" if target.startswith("zh") else target
-        return pack_translate(text, source, target), source
+        return pack_translate(text, source, target, beam_size=cls.beam_size), source
 
 
 ENGINES = {"google": GoogleFree, "mymemory": MyMemory, "argos": ArgosEngine}
@@ -314,17 +320,31 @@ ENGINES = {"google": GoogleFree, "mymemory": MyMemory, "argos": ArgosEngine}
 PROBE_ORDER = ("google", "mymemory")
 
 
-def apply_fix_map(text: str, mapping) -> str:
-    """v2.3.6（P7）：译文修正——按 {错译: 正解} 精确子串替换。
+def apply_fix_map(text: str, mapping, whole_word=False) -> str:
+    """v2.3.6（P7）：译文修正——按 {错译: 正解} 替换。
 
+    v2.6.0（R2）：改走 fixmap 单轮替换器——长键优先、替换产物不再被同轮
+    二次命中；whole_word=True 时纯拉丁词条按整词匹配（多义词安全纠错）。
     应用时机在**取到译文之后、上屏之前**（缓存读取/引擎返回/备援结果都走这里），
     所以缓存里的存量错译也会即时被修正；缓存本身仍存引擎原文，不改写。"""
     if not mapping or not text:
         return text
-    for wrong, right in mapping.items():
-        if wrong and right:
-            text = text.replace(wrong, right)
-    return text
+    return _apply_dict(text, mapping, whole_word)
+
+
+def unescape_html(text: str) -> str:
+    """v2.6.0（R1）：还原引擎译文中的 HTML 实体（&quot; → "）。
+
+    Google 免费接口偶发实体转义串原样上屏。html.unescape 单层还原天然
+    幂等（&amp;quot; → &quot; 双重转义保留一层）；失败时保留原译——
+    观感损失远小于丢译文。"""
+    if "&" not in text:
+        return text
+    try:
+        return html.unescape(text)
+    except Exception as e:
+        app_log.exception("translate.unescape_failed", e)
+        return text
 
 
 def probe_engine(name, timeout=2.5):
@@ -386,14 +406,33 @@ class TranslateThread(QThread):
     # v2.3.2（G2）：在线引擎启动即不可达的事前通知（engine_desc, reason）
     engine_fallback = Signal(str, str)
 
-    def __init__(self, engine_name: str, target: str, parent=None, translate_fix_map=None):
+    def __init__(self, engine_name: str, target: str, parent=None, translate_fix_map=None,
+                 fix_whole_word=False, offline_quality="high"):
         super().__init__(parent)
         self.engine_name = engine_name
         self.target = target
         # v2.3.6（P7）：译文修正词典，上屏前应用（含缓存命中的存量错译）
         self.fix_map = dict(translate_fix_map or {})
+        # v2.6.0（R2）：词典全词匹配开关快照
+        self._fix_whole_word = bool(fix_whole_word)
+        # v2.6.0（R4）：离线质量档快照 → 同步到 ArgosEngine 类级 beam
+        self._beam_size = 5 if offline_quality == "high" else 2
+        ArgosEngine.beam_size = self._beam_size
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
+
+    def update_fix_map(self, mapping):
+        """v2.6.0（R5）：设置保存后热更新译文词典，无需重启管线。"""
+        self.fix_map = dict(mapping or {})
+
+    def update_whole_word(self, flag):
+        """v2.6.0（R5）：热更新全词匹配开关。"""
+        self._fix_whole_word = bool(flag)
+
+    def update_beam_size(self, beam):
+        """v2.6.0（R4）：热更新离线质量档，下一次离线翻译生效。"""
+        self._beam_size = 5 if beam == 5 else 2
+        ArgosEngine.beam_size = self._beam_size
 
     def stop(self):
         self._stop = True
@@ -419,9 +458,12 @@ class TranslateThread(QThread):
             pass
 
     def _cache_key(self, engine, detected, text):
-        """缓存 key 统一构造（读写共用；v2.0.1 起含源语言维度）。"""
+        """缓存 key 统一构造（读写共用；v2.0.1 起含源语言维度）。
+
+        v2.6.0（R3）：text 维度统一首尾去空白——攒句/引擎返回仅空白差异
+        的同一句话共用一条缓存，命中率不再被稀释。"""
         norm_src = WHISPER_LANG_MAP.get(detected, detected or "")
-        return f"{engine}:{self.target}:{norm_src}:{text}"
+        return f"{engine}:{self.target}:{norm_src}:{text.strip()}"
 
     def _do_translate(self, text, detected):
         # v2.0.1：key 加入源语言维度——同文本被 whisper 判为不同源语言时，
@@ -435,6 +477,8 @@ class TranslateThread(QThread):
         if self._active_engine != "google" and detected and detected != "auto":
             source = WHISPER_LANG_MAP.get(detected, detected)
         result = engine.translate(text, source, self.target)
+        # v2.6.0（R1）：实体还原后再入缓存——缓存中的译文即上屏所见
+        result = (unescape_html(result[0]), result[1])
         _cache.put(key, result)
         return result
 
@@ -535,13 +579,14 @@ class TranslateThread(QThread):
                         # v2.0.4：key 与 _do_translate 统一（含源语言维度）——
                         # 此前缺 norm_src 段与读取侧永不匹配，备援译文
                         # 只写不读（死缓存白占容量）
+                        # v2.6.0（R1）：备援译文同样还原实体后入缓存
                         _cache.put(self._cache_key(fb, detected, text),
-                                   (translated, used_lang))
+                                   (unescape_html(translated), used_lang))
                         break
                     except Exception as e2:
                         error = friendly_error(e2)
                         app_log.exception("translate.fallback_failed", e2, engine=fb)
-            self.result_ready.emit(text, apply_fix_map(translated, self.fix_map),
+            self.result_ready.emit(text, apply_fix_map(translated, self.fix_map, self._fix_whole_word),
                                    used_engine, detected, error)
         # v2.0.6：退出前 flush 攒批缓存（stop 哨兵/break 落到此处）
         try:
