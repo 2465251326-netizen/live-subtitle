@@ -36,3 +36,10 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: 安装 Qt 系统库时用户中断前台 apt-get 命令后指示
 - Instructions:
   - 以后遇到耗时的后台任务（依赖安装、构建、测试跑批等），一律交给子代理（Task 工具）执行，不要在前台长时间阻塞
+
+[Release 资产精简]
+- Date: 2026-09-14
+- Context: v2.6.5 发版后用户裁定 checksums.txt 多余
+- Instructions:
+  - GitHub Release 资产只保留安装包 EXE + 便携版 zip，不附 checksums.txt（build.yml 已移除生成步骤）
+  - 已发布版本的历史资产不必回删，新版本自然生效
