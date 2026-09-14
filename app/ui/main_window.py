@@ -513,6 +513,33 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _stop_prewarm(self):
+        """v2.6.1（P0-2）：退出前收预热线程——此前 _prewarm 游离在
+        stop_pipeline 的孤儿机制外（其只收三个管线线程），预热中退出时
+        MainWindow 析构会销毁运行中的 QThread → qFatal 崩溃
+        （prewarm_model 默认开，启动后立刻退出是高频路径）。"""
+        pw = getattr(self, "_prewarm", None)
+        if pw is None:
+            return
+        self._prewarm = None
+        try:
+            if not pw.isRunning():
+                return
+            pw.request_stop()
+            pw.wait(500)
+            if pw.isRunning():
+                # 已进入模型构造（不可中断）→ 移交孤儿容器：摘除 parent
+                # 保引用，finished 后 deleteLater 自清理（与 stop_pipeline
+                # 的孤儿模式一致），MainWindow 析构不再触及它
+                pw.setParent(None)
+                _orphan_threads().append(pw)
+                pw.finished.connect(pw.deleteLater)
+                from app import log as app_log
+                app_log.log("asr.prewarm_orphaned")
+        except RuntimeError:
+            # C++ 对象已销毁（预热已结束），无需处理
+            pass
+
     def _clamp_overlay_pos(self, x, y):
         """把悬浮字幕位置限制在其所在屏幕的可用区域内。
 
@@ -933,6 +960,20 @@ class MainWindow(QMainWindow):
         self.session_count = 0
         self.session_label.setText("本次会话：0 条")
         self.stack.setCurrentIndex(0)
+        # v2.6.1（P0-1）：在途状态随卡片一起清——此前运行中清空只删卡片，
+        # 迟到译文经 _pending 配对打到已删 C++ 对象上 → qFatal 崩溃
+        # （PySide6>=6.6 槽内未处理异常直接终止进程）。清理项与 stop_pipeline
+        # 对齐（_tgroup 攒句、_tgroup_by_src/_submit_ts 配对簿记）
+        if getattr(self, "_pending", None):
+            self._pending.clear()
+        self._tgroup = []
+        if getattr(self, "_tgroup_by_src", None):
+            self._tgroup_by_src.clear()
+        self._submit_ts = getattr(self, "_submit_ts", {})
+        self._submit_ts.clear()
+        tg = getattr(self, "_tgroup_timer", None)
+        if tg is not None:
+            tg.stop()
 
     def _has_cards(self):
         """v2.4.4（BUG-9）：列表页是否存在字幕卡（layout 里有 stretch 等非卡项，
@@ -1856,6 +1897,7 @@ class MainWindow(QMainWindow):
         hotkey.unregister()
         self._save_settings()
         self.stop_pipeline()
+        self._stop_prewarm()  # v2.6.1（P0-2）：预热线程随退出收尾
         # v2.0.3：对仍存活的孤儿线程 terminate 兜底——运行中的 QThread 随
         # MainWindow 析构会 qFatal 崩溃，宁可强杀
         for t in _orphan_threads():

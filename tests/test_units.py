@@ -626,6 +626,85 @@ def test_unescape_html():
     assert unescape_html(unescape_html(x)) == unescape_html(x)
 
 
+def test_fallback_emit_unescaped():
+    """v2.6.1（P1-1）：备援译文先还原实体再上屏——emit 与缓存必须一致
+    （v2.6.0 曾只还原缓存副本，同一句"实况"与"缓存命中"显示不一致）。"""
+    import app.translate.translator as tmod
+
+    class FakeEngine:
+        def __init__(self, out=None, exc=None):
+            self._out, self._exc = out, exc
+
+        def translate(self, text, src, tgt):
+            if self._exc is not None:
+                raise self._exc
+            return self._out   # (译文, 检测语言) 元组，与真实引擎签名一致
+
+        def installed_pairs(self):
+            return []
+
+    class FakeCache:
+        def __init__(self):
+            self.d = {}
+
+        def get(self, k):
+            return self.d.get(k)
+
+        def put(self, k, v):
+            self.d[k] = v
+
+        def save(self):
+            pass
+
+    orig_engines, orig_cache = tmod.ENGINES, tmod._cache
+    tmod.ENGINES = {
+        "argos": FakeEngine(exc=RuntimeError("offline boom")),
+        "mymemory": FakeEngine(out=("&quot;hi&quot; &amp; ok", "en")),
+        "google": FakeEngine(exc=RuntimeError("unreachable")),
+    }
+    tmod._cache = FakeCache()
+    tt = tmod.TranslateThread("argos", "zh-CN")
+    got = []
+    tt.result_ready.connect(lambda s, tr, eng, det, err: got.append((tr, err)))
+    tt.queue_in.put(("hello", "en"))
+    tt.queue_in.put(None)
+    try:
+        tt.run()   # 同步执行，哨兵后退出
+        assert got, "应收到一条 result_ready"
+        tr, err = got[0]
+        assert err == "", f"备援成功后 error 应为空，got={err!r}"
+        assert tr == '"hi" & ok', f"上屏译文应还原实体，got={tr!r}"
+        key = tt._cache_key("mymemory", "en", "hello")
+        assert tmod._cache.d.get(key, ("",))[0] == '"hi" & ok', \
+            "缓存值应与上屏译文一致"
+    finally:
+        tmod.ENGINES, tmod._cache = orig_engines, orig_cache
+
+
+def test_prewarm_stop_short_circuits():
+    """v2.6.1（P0-2）：request_stop 后 run() 不进入模型加载路径。"""
+    import app.asr.engine as emod
+
+    calls = []
+
+    def fake_cached(size):
+        calls.append(size)
+        return False
+
+    orig = emod.AsrThread.__dict__["model_cached"]
+    emod.AsrThread.model_cached = staticmethod(fake_cached)
+    try:
+        w = emod.PrewarmWorker("tiny", "cpu")
+        w.run()   # 未请求停止：应走到缓存判定（False → not_cached 提前返回）
+        assert calls == ["tiny"], "未停止时应走到缓存判定"
+        w2 = emod.PrewarmWorker("tiny", "cpu")
+        w2.request_stop()
+        w2.run()   # 已请求停止：短路
+        assert calls == ["tiny"], "请求停止后不应再触碰加载路径"
+    finally:
+        emod.AsrThread.model_cached = orig
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -572,6 +572,10 @@ class TranslateThread(QThread):
                         if fb != "google" and detected and detected != "auto":
                             src = WHISPER_LANG_MAP.get(detected, detected)
                         translated, used_lang = ENGINES[fb].translate(text, src, self.target)
+                        # v2.6.1（P1-1）：先还原实体再上屏——此前只还原缓存
+                        # 副本，emit 仍是原始值，同一句"实况"与"缓存命中"
+                        # 显示不一致（v2.6.0 R1 的路径遗漏）
+                        translated = unescape_html(translated)
                         used_engine = fb
                         self._active_engine = fb
                         self.status_changed.emit(f"本次会话已固定使用备援引擎 {fb}")
@@ -579,9 +583,10 @@ class TranslateThread(QThread):
                         # v2.0.4：key 与 _do_translate 统一（含源语言维度）——
                         # 此前缺 norm_src 段与读取侧永不匹配，备援译文
                         # 只写不读（死缓存白占容量）
-                        # v2.6.0（R1）：备援译文同样还原实体后入缓存
+                        # v2.6.0（R1）：缓存中的译文即上屏所见（v2.6.1 起在
+                        # 赋值处统一还原，此处直接写 translated）
                         _cache.put(self._cache_key(fb, detected, text),
-                                   (unescape_html(translated), used_lang))
+                                   (translated, used_lang))
                         break
                     except Exception as e2:
                         error = friendly_error(e2)

@@ -1677,6 +1677,45 @@ def t_quality_beam_reaches_offline_pack():
             op._cache_order.remove(("en", "zh"))
 check("quality: beam 参数透传离线包（R4）", t_quality_beam_reaches_offline_pack)
 
+def t_clear_captions_purges_inflight():
+    # v2.6.1（P0-1）：运行中清空必须连同在途状态一起清——否则迟到译文
+    # 经 _pending 配对打到已删 C++ 对象上 qFatal。清理项与 stop_pipeline 对齐
+    from app.ui.main_window import _orphan_threads
+    w = MainWindow()
+    card = w._new_card("a")
+    w._pending = [("a", card)]
+    w._tgroup = ["frag"]
+    w._tgroup_by_src = {"b": "grp"}
+    w._submit_ts = {"c": 1.0}
+    w._clear_captions()
+    assert not w._pending, "占位配对应清空"
+    assert not w._tgroup, "攒句缓冲应清空"
+    assert not w._tgroup_by_src, "攒句簿记应清空"
+    assert not w._submit_ts, "延迟簿记应清空"
+    tg = getattr(w, "_tgroup_timer", None)
+    if tg is not None:
+        assert not tg.isActive(), "攒句定时器应停止"
+    card.deleteLater()
+    w._quitting = True
+    w._teardown()
+    _orphan_threads()   # 复核孤儿容器可访问（回归 v2.0.7 RuntimeError 守卫）
+check("ui: 清空字幕同步清理在途状态（P0-1）", t_clear_captions_purges_inflight)
+
+def t_stop_prewarm_releases_ref():
+    # v2.6.1（P0-2）：退出收尾必须接管预热线程——此前游离在孤儿机制外，
+    # 预热中退出 → MainWindow 析构销毁运行中 QThread → qFatal
+    from app.asr.engine import PrewarmWorker
+    from app.ui.main_window import _orphan_threads
+    w = MainWindow()
+    w._prewarm = PrewarmWorker("tiny", "cpu", w)   # 不 start（offscreen 安全）
+    w._stop_prewarm()
+    assert w._prewarm is None, "引用应立即释放"
+    assert not any(isinstance(t, PrewarmWorker) for t in _orphan_threads()), \
+        "未运行的预热线程不应入孤儿容器"
+    w._quitting = True
+    w._teardown()   # 幂等：再次调用 _stop_prewarm 不应报错
+check("ui: 退出收尾释放预热线程引用（P0-2）", t_stop_prewarm_releases_ref)
+
 # ---------- 汇总 ----------
 check("config: DEFAULTS 全键可读", lambda: [cfg.get(k) for k in DEFAULTS])
 

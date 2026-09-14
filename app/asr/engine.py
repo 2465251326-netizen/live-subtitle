@@ -700,10 +700,20 @@ class PrewarmWorker(QThread):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
+        self._stop = False
+
+    def request_stop(self):
+        """协作式停止（v2.6.1 P0-2）：仅在开始加载前生效。已进入
+        WhisperModel 构造（阻塞在 C 扩展，GPU 冷初始化最长约 49s）时无法
+        中断，由主窗口移交孤儿容器收尾（finished 后 deleteLater）。"""
+        self._stop = True
 
     def run(self):
         from app import log as app_log
         try:
+            if self._stop:
+                app_log.log("asr.prewarm_stopped", model=self.model_size)
+                return
             if not AsrThread.model_cached(self.model_size):
                 app_log.log("asr.prewarm_skipped", model=self.model_size,
                             reason="not_cached")
