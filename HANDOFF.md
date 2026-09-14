@@ -164,10 +164,9 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      38 项单元测试
-tests/test_integration.py 69 项集成测试
-ROADMAP.md               开发历程（每版本一节，含根因分析）
-docs/UX-REPORT.md        模拟用户体验报告归档（R6 CBS 新闻配置归因+处置+验收数据）
+tests/test_units.py      56 项单元测试
+tests/test_integration.py 81 项集成测试
+docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
 .github/ISSUE_TEMPLATE/  反馈框架：bug_report.yml（🐞BUG）/ suggestion.yml（💡建议）/ config.yml（禁空白 Issue）
