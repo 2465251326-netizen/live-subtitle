@@ -42,4 +42,4 @@ Entries discovered by the Agent during task execution should follow this format:
 - Context: v2.6.5 发版后用户裁定 checksums.txt 多余
 - Instructions:
   - GitHub Release 资产只保留安装包 EXE + 便携版 zip，不附 checksums.txt（build.yml 已移除生成步骤）
-  - 已发布版本的历史资产不必回删，新版本自然生效
+  - 历史版本 Release 上的校验文件也一并删除（2026-09-14 用户确认，v2.6.4/v2.6.5 已清理）
