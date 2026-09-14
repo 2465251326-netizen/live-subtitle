@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-12 v2.5.3 发布后（用户实拍三修：字号菜单勾选互斥/面板底缘拉高+overlay_h 回归/设置页去双置顶字样）
+> 最后更新：2026-09-14 v2.6.6 发布（瞬窗修复：行标签未收编即 setVisible 弹原生小窗；详见第九节会话快照与两条挂起线索）
 
 ---
 
@@ -11,7 +11,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.5.3**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.6.6**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -194,3 +194,13 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **遗留排期候选**：仅剩 SRT 说话人标签（用户已明确**不做**，除非未来改主意）；声明式框架已于 v2.3.0 完成
 - **设置页开发规约（v2.3.0 起）**：新增"键→单控件"型设置=三处登记（DEFAULTS + _FIELD_SPECS + _STD_ROWS），不要再手写控件/同步行；复合控件才允许手写
 - **工具坑位新增**：Add-Type 里方法名 `Main` 被当入口点报"签名错误"（改名即过）；`gh --jq` 表达式含空格须用单引号（pwsh 双引号会被拆参数）；`FsTest` 类不跨 pwsh 调用存活（每次内联重定义）
+
+## 九、会话快照（2026-09-14 v2.6.6 瞬窗修复）
+
+- **v2.6.6 干了什么**：修"翻译时每句闪一个 0.04s 的无题小窗"（用户实测反馈）。根因=`caption_overlay._add_row` 里原文标签无父构造后**先 `setVisible(True)` 再 `addWidget` 收编**——未收编的 QWidget 被 show 即成原生顶层窗口，收编瞬间又销毁。开"同时显示原文"必现（v2.5.0 行卡片化遗留）。修法=构造即传父+可见性切换后置（双保险）。真实平台整场翻译实测闪窗 **19→0**；集成回归锁+1（"行标签永不成顶层窗口"），套件 单元 56/56、集成 82/82。
+- **瞬窗取证方法（新增方法论）**：① Win32 EnumWindows 30ms 轮询快照差分（CREATE/DESTROY/SHOW/HIDE+存活时长，Python+ctypes 写，避开 PS5.1 here-string/&& 坑）锁定短命窗指纹；② 给 QApplication 装事件过滤器，在所有顶层窗口 Show 瞬间记 `类名/objectName/尺寸/Python 栈`——objectName 直接自报家门（`PanelSrc`×每句一次）。两件套=瞬窗类 bug 的标准探法。
+- **挂起线索（用户裁决：都不急，先放着，2026-09-14）**：
+  1. `pipeline.orphan_thread | cls=TranslateThread`——**每次停止翻译必现**（3s 等待超时进孤儿容器），疑似网络等待无截止导致；对用户暂无感，是"越用越沉/退出未净"类偶发问题的头号嫌疑。
+  2. 集成测试环境脆弱：`tests/itest_home/config.json` 缺 `wizard_done` 标记时，构造 MainWindow 后排的 400ms 向导会在后续 `processEvents()` 处弹**模态阻塞挂死**（瘦身误删该目录时踩过，补 `{"wizard_done": true}` 即愈）；另 `TOTAL` 行只打 stdout 不落 `test_report.txt`。均为工具箱问题，不影响产品。
+- **本轮工具坑（勿重踩）**：本会话 pwsh 是 5.1——`&&` 不可用、`if (git xx --is-ancestor)` 判 stdout 不判退出码（要单独读 `$LASTEXITCODE`）；`time.strftime` 无 `%f` 秒毫秒指令（Windows 直接 ValueError）；控制台 GBK 打 `✕` 崩 print——跑测试套件带 `PYTHONIOENCODING=utf-8`；PowerShell 管道下 git 进度走 stderr 显示为红字异常，非失败。
+- **代理坑（重要）**：本机代理(127.0.0.1:10808)会**随机掐断大流量 git fetch 尾部**（curl 56），且"还差 N bytes"只指当前分片——曾据此误判"快成了"连打 30 次重试，白灌 ~4GB（`tmp_pack_*` 残骸堆进 .git，删残骸即愈）。大传输失败别再硬刷重试，先想包体多大。
