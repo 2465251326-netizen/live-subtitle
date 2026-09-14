@@ -254,15 +254,20 @@ class CaptionOverlay(QWidget):
         v = QVBoxLayout(row)
         v.setContentsMargins(8, 6, 8, 6)
         v.setSpacing(1)
-        s = QLabel(src)
+        # v2.6.6：修"每句闪一个无题小窗"瞬窗——v2.5.0 行卡片化时 s/t 无父构造，
+        # 紧随的 s.setVisible(True)（开了"同时显示原文"时每句必执行）让 Qt 把
+        # 尚未收编的标签当顶层窗口建出原生窗口，下一行 addWidget 收编为子控件
+        # 又立刻销毁该窗口——用户看到字幕面板同款小窗闪现 ~40ms 消失。
+        # 修：构造即传父 + 可见性切换挪到收编之后（双保险，杜绝裸顶层窗口）。
+        s = QLabel(src, row)
         s.setObjectName("PanelSrc")
         s.setWordWrap(True)
-        t = QLabel(tgt)
+        t = QLabel(tgt, row)
         t.setObjectName("PanelTgt")
         t.setWordWrap(True)
-        s.setVisible(bool(src) and self._show_source)
         v.addWidget(s)
         v.addWidget(t)
+        s.setVisible(bool(src) and self._show_source)
         self._rows_lay.insertWidget(self._rows_lay.count() - 1, row)
         item = {"row": row, "src": s, "tgt": t,
                 "src_text": src, "tgt_text": tgt, "pending": pending}

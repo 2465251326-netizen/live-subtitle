@@ -148,6 +148,25 @@ def t_overlay_pairing():
     ov.deleteLater()
 check("panel: 成对行与占位补齐", t_overlay_pairing)
 
+def t_overlay_row_never_flash_window():
+    # v2.6.6 瞬窗回归锁：行标签"构造即父挂载"——曾因 QLabel() 无父构造后先
+    # setVisible(True) 再 addWidget，使未收编标签以顶层窗口身份建出原生窗口，
+    # 用户看到"每来一句字幕闪一个 40ms 的无题小窗"（开"同时显示原文"必现）。
+    # isWindow()==True 的控件一旦被 show 就是独立窗口；锁定该不变式即锁死病根。
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_show_source(True)
+    ov.show_pending("hello")
+    it = ov._rows[0]
+    assert it["src"].parentWidget() is it["row"], "PanelSrc 必须挂在 PanelRow 下"
+    assert it["tgt"].parentWidget() is it["row"], "PanelTgt 必须挂在 PanelRow 下"
+    assert not it["src"].isWindow(), "行标签不得是顶层窗口（瞬窗回归）"
+    assert not it["tgt"].isWindow(), "行标签不得是顶层窗口（瞬窗回归）"
+    ov.show_pending_result("hello", "你好", True)
+    assert not it["src"].isWindow()          # 补齐路径同样不得逃逸成顶层窗口
+    ov.deleteLater()
+check("panel: 行标签永不成顶层窗口（v2.6.6 瞬窗回归）", t_overlay_row_never_flash_window)
+
 def t_overlay_trim():
     ov = CaptionOverlay()
     for i in range(60):
