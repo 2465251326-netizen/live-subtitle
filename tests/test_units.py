@@ -814,6 +814,104 @@ def test_capture_pop_tail_seg():
     assert cap.pop_tail_seg() is None, "第二次取应为空（一次性）"
 
 
+def test_cache_load_non_dict_treated_empty():
+    """v2.6.3（P1-3）：缓存文件为合法 JSON 但顶层非 dict 时按空处理，
+    get/put 照常工作——此前 list 赋给 _data 后每条字幕都 AttributeError。"""
+    import json
+    import tempfile
+    import pathlib
+    import app.translate.translator as tr
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    orig_path_fn = tr.TranslationCache._path
+    try:
+        tr.TranslationCache._path = lambda self: tmp / "cache.json"
+        (tmp / "cache.json").write_text(json.dumps(["not", "a", "dict"]),
+                                        encoding="utf-8")
+        c = tr.TranslationCache()
+        assert c.get("any") is None, "corrupt 缓存应读为空而非抛异常"
+        c.put("k", ("v", "en"))
+        assert c.get("k") == ("v", "en"), "corrupt 后 put/get 应恢复正常"
+        c.save()
+        data = json.loads((tmp / "cache.json").read_text(encoding="utf-8"))
+        assert isinstance(data, dict), "落盘文件应恢复为 dict"
+    finally:
+        tr.TranslationCache._path = orig_path_fn
+
+
+def test_cache_lru_eviction():
+    """v2.6.3（LRU）：命中/覆盖刷新时序，淘汰始终发生在最久未用条目——
+    此前按插入序 FIFO 淘汰，近期仍在用的旧条目先被挤掉。"""
+    import app.translate.translator as tr
+    c = tr.TranslationCache(max_items=3)
+    c._loaded = True
+    c.put("a", ("va", "en"))
+    c.put("b", ("vb", "en"))
+    c.put("c", ("vc", "en"))
+    c.get("a")            # touch a → a 移到队尾
+    c.put("b", ("vb2", "en"))  # 覆盖 b → b 刷新到队尾
+    c.put("d", ("vd", "en"))   # 满员淘汰队头 c（FIFO 会淘汰 a）
+    assert c.get("a") == ("va", "en"), "最近使用的 a 不应被淘汰"
+    assert c.get("b") == ("vb2", "en"), "覆盖刷新的 b 不应被淘汰"
+    assert c.get("c") is None, "最久未用的 c 应被淘汰"
+
+
+def test_migrate_refused_leaves_source_intact():
+    """v2.6.3（P1-8）：目标占用预检提前——拒绝时旧根数据原封不动，
+    此前拒绝发生在 move 循环中途且不回滚，先搬走的项留在新根造成分裂。"""
+    import tempfile
+    import pathlib
+    import app.storage as storage
+    import app.config as cfg
+    old_hf = pathlib.Path(tempfile.mkdtemp())
+    old_cache = old_hf / "trans_cache.json"
+    old_cache.write_text("{}", encoding="utf-8")
+    new_root = pathlib.Path(tempfile.mkdtemp()) / "dest"
+    new_root.mkdir()
+    (new_root / "hf").mkdir()   # 目标已有 hf/ ——必须整体拒绝
+    saved = (cfg.HF_HOME, cfg.CACHE_FILE)
+    try:
+        cfg.HF_HOME = old_hf / "hf"
+        (cfg.HF_HOME / "hub").mkdir(parents=True)
+        (cfg.HF_HOME / "hub" / "model.bin").write_bytes(b"x" * 1024)
+        cfg.CACHE_FILE = old_cache
+        try:
+            storage.migrate_root(str(new_root))
+            raised = False
+        except storage._MigrationRefused:
+            raised = True
+        assert raised, "目标已有 hf/ 应整体拒绝迁移"
+        assert (old_hf / "hf" / "hub" / "model.bin").exists(), "旧根模型不得被移动"
+        assert old_cache.exists(), "旧根缓存不得被移动"
+        assert not (new_root / "trans_cache.json").exists(), "新根不得出现半迁移内容"
+    finally:
+        cfg.HF_HOME, cfg.CACHE_FILE = saved
+
+
+def test_hub_root_env_follow():
+    """v2.6.3（P1-9）：_hub_root 跟随 HF_HOME 环境变量（未设时用 config
+    路径）——下载/加载/判定三处由此同源。"""
+    import os
+    import tempfile
+    from pathlib import Path
+    from app.asr.engine import _hub_root
+    from app import config as cfg
+    d = Path(tempfile.mkdtemp())
+    old = os.environ.get("HF_HOME")
+    try:
+        os.environ["HF_HOME"] = str(d)
+        assert _hub_root() == d / "hub", "预设环境变量时应跟随环境变量"
+        if old is None:
+            os.environ.pop("HF_HOME", None)
+        else:
+            os.environ["HF_HOME"] = old
+        assert _hub_root() == Path(str(cfg.HF_HOME)) / "hub", "未预设时应回落 config 路径"
+    finally:
+        if old is None:
+            os.environ.pop("HF_HOME", None)
+        else:
+            os.environ["HF_HOME"] = old
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

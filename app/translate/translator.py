@@ -50,7 +50,11 @@ class TranslationCache:
             f = self._path()
             if f.exists():
                 with open(f, "r", encoding="utf-8") as fp:
-                    self._data = json.load(fp)
+                    data = json.load(fp)
+                # v2.6.3（P1-3）：合法 JSON 但顶层非 dict（如 [] / "x" / null）
+                # 按 corrupt 处理为空——此前 list 直接赋给 _data，后续每条
+                # get/put 都 AttributeError，翻译全挂且落盘持续写坏文件
+                self._data = data if isinstance(data, dict) else {}
         except Exception:
             self._data = {}
 
@@ -74,6 +78,10 @@ class TranslationCache:
         with self._lock:
             self._ensure_loaded()
             v = self._data.get(key)
+            if v is not None:
+                # v2.6.3（LRU）：命中即移到队尾，淘汰始终发生在队头——
+                # 此前按插入序 FIFO 淘汰，近期仍在用的旧条目先被挤掉
+                self._data[key] = self._data.pop(key)
             if isinstance(v, list):
                 v = tuple(v)
             return v
@@ -81,6 +89,8 @@ class TranslationCache:
     def put(self, key, value):
         with self._lock:
             self._ensure_loaded()
+            # v2.6.3（LRU）：覆盖已有键也刷新时序（dict 原地赋值不动位置）
+            self._data.pop(key, None)
             self._data[key] = value
             while len(self._data) > self._max:
                 self._data.pop(next(iter(self._data)))

@@ -96,7 +96,6 @@ def download_model_files(model_size, should_stop=None, progress=None):
     文件列表获取/下载异常向上抛出，由调用方负责友好化与兜底。
     """
     from huggingface_hub import list_repo_files, hf_hub_download
-    from app.config import HF_HOME
     repo = model_repo_id(model_size)
     # v2.1.0：经 _hf_call 包装——默认带本机凭据（有效令牌享更高速率、
     # 消除"未认证请求"警告），401/403 自动退回匿名（v2.0.9 场景）
@@ -106,13 +105,28 @@ def download_model_files(model_size, should_stop=None, progress=None):
         if should_stop is not None and should_stop():
             return "stopped"
         _hf_call(hf_hub_download, repo, filename=name,
-                 cache_dir=str(HF_HOME / "hub"))
+                 cache_dir=str(_hub_root()))
         if progress is not None:
             try:
                 progress(i, total, name)
             except Exception:
                 pass
     return "done"
+
+
+def _hub_root():
+    """HF 缓存根唯一出口（v2.6.3，P1-9）。
+
+    用户预设 HF_HOME 环境变量时，下载/加载/判定三处必须同走环境变量
+    路径——此前判定（model_cache_dir）读环境变量、下载与 WhisperModel
+    构造写 config.HF_HOME 常量（CONFIG_DIR/hf），两侧分裂：预设用户的
+    模型可能下到一处、判定却查另一处，1.6GB 双份下载/反复重下。
+    Config relocate 会同步改写环境变量（config.py），自定义根用户不变。
+    """
+    import os
+    from pathlib import Path
+    from app.config import HF_HOME
+    return Path(os.environ.get("HF_HOME") or str(HF_HOME)) / "hub"
 
 
 # v2.0.6：进程内模型实例缓存（容量 1）——切输入来源/改识别设置重启管线
@@ -255,18 +269,14 @@ class AsrThread(QThread):
 
     @staticmethod
     def model_cache_dir(model_size: str):
-        from app.config import HF_HOME
         from app.asr.engine import model_repo_id
         # v2.0.9：缓存目录名跟随真实仓库 ID（large-v3-turbo 的权重在
         # mobiuslabsgmbh 仓库，目录名不再硬编码 Systran 前缀）
         # v2.3.10（P11）：根目录跟随 huggingface_hub 的实际解析——用户预设
         # HF_HOME 环境变量时 hub 下载/加载走环境变量而非 CONFIG_DIR/hf，
         # 判定不同步曾让预热误报 not_cached 跳过（第六轮隔离环境实锤）。
-        # 正常用户两侧同值（Config 用 setdefault），行为不变。
-        import os
-        from pathlib import Path
-        root = Path(os.environ.get("HF_HOME") or str(HF_HOME))
-        return root / "hub" / ("models--" + model_repo_id(model_size).replace("/", "--"))
+        # v2.6.3（P1-9）：根目录逻辑收敛到 _hub_root()，与下载/加载同源
+        return _hub_root() / ("models--" + model_repo_id(model_size).replace("/", "--"))
 
     @staticmethod
     def model_cached(model_size: str) -> bool:
@@ -384,7 +394,6 @@ class AsrThread(QThread):
     def _load_model(self):
         if self._model is not None:
             return True
-        from app.config import HF_HOME
         from app import log as app_log
         cached = self.model_cached(self.model_size)
         if not cached:
@@ -507,12 +516,11 @@ class AsrThread(QThread):
     def _construct_model(self, model_ref, device, compute_type, local_only):
         # v2.4.4：WhisperModel 构造参数唯一出口（原三处手写易漂移）
         from faster_whisper import WhisperModel
-        from app.config import HF_HOME
         return WhisperModel(
             model_ref,
             device=device,
             compute_type=compute_type,
-            download_root=str(HF_HOME / "hub"),
+            download_root=str(_hub_root()),
             local_files_only=local_only,
         )
 

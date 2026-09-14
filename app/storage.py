@@ -64,33 +64,44 @@ def migrate_root(new_root, progress_cb=None) -> str:
     if free and need > free:
         raise RuntimeError(
             f"目标盘剩余空间不足：需要约 {need / 1024:.1f} GB，剩余 {free / 1024:.1f} GB")
+    # v2.6.3（P1-8）：目标占用预检提前到任何移动之前——此前拒绝发生在
+    # move 循环中途且 _MigrationRefused 透传时未回滚，前几项已搬去新根
+    # 而配置指针仍在旧根，数据分裂（模型/缓存两处各一半）
+    refused_msg = ("目标位置已存在同名内容：{dst}\n"
+                   "为避免覆盖删除你的数据，请换一个空目录，或先手动清理该目录再迁移。")
+    for src, dst in moves:
+        if dst.exists():
+            raise _MigrationRefused(refused_msg.format(dst=dst))
     done = []
+
+    def _rollback_done():
+        # 尽力回滚：把已完成项搬回原位，保持"数据在旧根、指针在旧根"的一致状态
+        for rsrc, rdst in reversed(done):
+            try:
+                if rdst.exists():
+                    shutil.move(str(rdst), str(rsrc))
+            except Exception:
+                pass
+
     try:
         total = len(moves)
         for i, (src, dst) in enumerate(moves, 1):
             # v2.0.6：目标已存在时不再直接删除——用户误选了一个已有 hf/
             # 数据的目录，旧逻辑会先把目标数据 rmtree 掉（静默数据丢失）。
-            # 改为拒绝迁移，让用户换空目录或手动清理
+            # 预检后被外部动过的极小概率场景在此兜底，同样回滚后拒绝
             # v2.2.1：拒绝类异常单独定义并在 except 中先行透传——此前专属
             # 文案被通用 except 吞掉，用户看到的是错误的"空间不足"指引
             if dst.exists():
-                raise _MigrationRefused(
-                    f"目标位置已存在同名内容：{dst}\n"
-                    "为避免覆盖删除你的数据，请换一个空目录，或先手动清理该目录再迁移。")
+                raise _MigrationRefused(refused_msg.format(dst=dst))
             shutil.move(str(src), str(dst))
             done.append((src, dst))
             if progress_cb:
                 progress_cb(f"已迁移 {src.name}（{i}/{total}）")
     except _MigrationRefused:
+        _rollback_done()
         raise
     except Exception:
-        # 尽力回滚：把已完成项搬回原位，保持"数据在旧根、指针在旧根"的一致状态
-        for src, dst in reversed(done):
-            try:
-                if dst.exists():
-                    shutil.move(str(dst), str(src))
-            except Exception:
-                pass
+        _rollback_done()
         raise RuntimeError(
             "迁移失败，已完成部分已尝试搬回原位置。"
             "常见原因：目标盘空间不足、杀毒软件占用文件、程序仍在使用模型。"
