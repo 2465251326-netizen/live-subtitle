@@ -699,12 +699,19 @@ class MainWindow(QMainWindow):
         if dlg is not None:
             dlg.sync_source_type(new)
         if self.running:
+            # v2.6.2（P1-5）：stop_pipeline 返回前已把线程引用置 None，旧的
+            # `for t in (self.capture_thread, ...)` 循环拿到全 None——"等旧
+            # 线程退出"承诺从未兑现，切源时新旧 CaptureThread 并存抢音频
+            # 设备、新旧 AsrThread 并发加载双份模型。改为停止前快照引用再等
+            old = [t for t in (self.capture_thread, self.asr_thread,
+                               self.translate_thread) if t is not None]
             self.stop_pipeline()
-            # v2.0.3：等旧线程真正退出再重启——此前立即 start 会造成新旧
-            # CaptureThread 并存抢音频设备、新旧 AsrThread 并发加载双份模型
-            for t in (self.capture_thread, self.asr_thread, self.translate_thread):
-                if t and t.isRunning():
-                    t.wait(5000)
+            for t in old:
+                try:
+                    if t.isRunning():
+                        t.wait(1500)
+                except RuntimeError:
+                    pass   # C++ 对象已销毁（线程早已终结）
             self.start_pipeline()
         name = "麦克风" if new == "microphone" else "系统声音"
         self._set_engine_status(f"已切换输入来源：{name}")
@@ -1093,6 +1100,7 @@ class MainWindow(QMainWindow):
         # v2.3.2（G2）：在线引擎启动即不可达的事前横幅
         self.translate_thread.engine_fallback.connect(self._on_engine_fallback)
         self.translate_thread.start()
+        self._sid_tr = self.translate_thread   # v2.6.2（P1-6）：会话身份引用
 
         self._asr_ready = False  # v2.0.4：模型加载期停止时缩短等待（见 stop_pipeline）
         self._session_t0 = time.time()  # v2.2.11：SRT 时间轴零点（本次会话起算）
@@ -1118,6 +1126,7 @@ class MainWindow(QMainWindow):
         self.asr_thread.error_occurred.connect(self._on_pipeline_error)
         self.asr_thread.model_ready.connect(self._on_model_ready)
         self.asr_thread.start()
+        self._sid_asr = self.asr_thread   # v2.6.2（P1-6）：会话身份引用
 
         # 首次使用的模型需要下载（可能上百 MB）：轮询缓存目录增量，
         # 在状态栏给出进度，避免用户在一句静态文案里无限等待
@@ -1141,6 +1150,7 @@ class MainWindow(QMainWindow):
         self.capture_thread.low_input.connect(self._on_low_input)
         self.capture_thread.muted.connect(self._on_muted)
         self.capture_thread.start()
+        self._sid_cap = self.capture_thread   # v2.6.2（P1-6）：会话身份引用
 
         # v2.2.11：无产出指引改「模型就绪后」起算（见 _on_model_ready 重挂计时），
         # 此处仅为"模型秒就绪"快路径兜底。
@@ -1268,6 +1278,21 @@ class MainWindow(QMainWindow):
             "color: #ff8a5c;" if error else "color: #fbbf24;")
         banner.setVisible(True)
 
+    def _session_ok(self, session_thread):
+        """v2.6.2（P1-6）：槽的会话身份守卫——sender 与当前会话线程匹配才
+        放行。sender() 为 None（代码直接调用）放行；停止后 _sid_* 仍指向
+        旧线程（尾句排水链放行上屏），下次 start_pipeline 覆盖——旧线程
+        迟到信号从此被拦（修复旧会话"音频错误"误停新会话）。"""
+        s = self.sender()
+        return s is None or s is session_thread
+
+    def _active_translate(self):
+        """v2.6.2（P1-4）：翻译线程解析——运行中用当前线程；排水期
+        （stop_pipeline 已置 None）用会话身份引用，asr 尾句仍能转发翻译。"""
+        if self.translate_thread is not None:
+            return self.translate_thread
+        return getattr(self, "_sid_tr", None)
+
     def _on_asr_status(self, text):
         # v2.0.4：幽灵回调守卫 + 过期线程守卫——停止后已入队的迟到状态、
         # 或重启管线后旧 AsrThread 的残余状态，都不得覆盖当前 UI。
@@ -1294,6 +1319,9 @@ class MainWindow(QMainWindow):
     def _on_engine_fallback(self, engine_desc, reason):
         """v2.3.2（G2）：在线引擎不可达的事前横幅——此前只有事后日志，
         代理=直连的用户整场翻译频繁失败也不知道为什么（模拟用户报告缺口）。"""
+        # v2.6.2（P1-6）：停止后/新会话中旧翻译线程的迟到预警不再写入
+        if not self.running or not self._session_ok(getattr(self, "_sid_tr", None)):
+            return
         self._engine_fallback_warn = (
             f"⚠ 在线翻译引擎不可达（{engine_desc}）：{reason}。"
             "译文频繁出错请到「设置-通用」配置代理，或改用「自动」引擎")
@@ -1302,6 +1330,9 @@ class MainWindow(QMainWindow):
 
     def _on_model_ready(self):
         # v2.0.4：模型就绪标记 + 停止下载进度反馈（原直连拆槽）
+        # v2.6.2（P1-6）：新会话中旧线程迟到的"就绪"不得误置 _asr_ready
+        if not self.running or not self._session_ok(getattr(self, "_sid_asr", None)):
+            return
         self._asr_ready = True
         # v2.4.4（BUG-2）：就绪即刷新速览卡——加载后才知道实际设备
         # （GPU 回落 CPU 时"识别模型 xxx（GPU）"的谎报由本行纠正）
@@ -1328,7 +1359,7 @@ class MainWindow(QMainWindow):
         # 旧条件 value>=3 恒假——"最近有声"时间戳永不更新（P8 电平守卫与 P16
         # 静默巡查双双形同虚设，实测尾句 1s 抢送/跨片不合并）、音量条 setValue
         # 收小数恒 0（界面让用户"看音量条波动"是空话）。统一换算成百分比。
-        if not self.running:
+        if not self.running or not self._session_ok(getattr(self, "_sid_cap", None)):
             return
         if value >= 0.03:
             # v2.3.6（P8）：记录"最近有声"时刻（3% 噪声地板之上算有声）
@@ -1339,8 +1370,9 @@ class MainWindow(QMainWindow):
         """采集线程报告输入信号持续过弱/恢复正常。"""
         from app import log as app_log
         app_log.log("capture.low_input", quiet=bool(quiet))
-        if not self.running:
+        if not self.running or not self._session_ok(getattr(self, "_sid_cap", None)):
             # v2.0.1：幽灵回调守卫——停止后仍可能收到已入队的 Queued 信号
+            # v2.6.2（P1-6）：新会话中旧采集线程的迟到告警不再污染状态行
             return
         self._low_input_warn = quiet
         if quiet and self.running:
@@ -1359,7 +1391,7 @@ class MainWindow(QMainWindow):
 
     def _on_muted(self, m):
         """系统静音盲区提示（补充5）：静音且抓系统声音时给出确定性指引。"""
-        if not self.running:
+        if not self.running or not self._session_ok(getattr(self, "_sid_cap", None)):
             return  # v2.0.1：幽灵回调守卫（迟到的 muted 曾覆盖"已停止"状态）
         if m and self.running:
             self._muted_warn = True
@@ -1447,14 +1479,22 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(0)
 
         threads = (self.capture_thread, self.asr_thread, self.translate_thread)
-        # 先断开全部信号再停止：否则停止过程中/停止后仍会收到迟到的状态信号，
-        # 把"已停止"覆盖成"就绪，正在聆听..."之类的僵尸状态
+        # v2.6.2（P1-4）：排水式停止——旧顺序"先断全部信号再 stop"使
+        # capture 的 flush 尾段无人接收，asr/translate 清空队列又丢掉已入队
+        # 内容，数据槽的 running 守卫再拦一层——三层必死，"说完立刻停丢最后
+        # 一句"（v2.2.1 修复实际无效）。改为：stop（各线程排水语义）→
+        # capture 尾段同步直塞 asr → wait → 孤儿化 → 只对已退出线程摘信号。
+        # 迟到状态信号由各槽 running+会话身份守卫拦截，尾句经身份守卫放行
         for t in threads:
             if t:
-                self._detach_thread(t)
                 t.stop()
+        # capture 先收尾（循环粒度 10ms）：同步取 flush 尾段直塞 asr——
+        # 跨线程信号要经主线程事件循环中转，停止流程阻塞期间无人消费
         if threads[0]:
-            threads[0].wait(2000)
+            threads[0].wait(1500)
+            tail = threads[0].pop_tail_seg()
+            if tail is not None and threads[1]:
+                threads[1].submit(tail)
         # v2.0.4：模型加载期的 AsrThread 阻塞在 WhisperModel() 构造里，
         # 响应不了 _stop 标志也到不了队列哨兵，等满 3 秒只会白白冻结 GUI
         # （阻塞期间按下的热键全部排队，恢复后被逐条当作新 toggle，
@@ -1462,11 +1502,12 @@ class MainWindow(QMainWindow):
         # 加载未完成（_asr_ready 为假）时缩短等待，线程交孤儿容器收尾
         for i, t in enumerate(threads[1:], start=1):
             if t:
-                timeout = 3000
+                timeout = 2500
                 if i == 1 and not getattr(self, "_asr_ready", False):
                     timeout = 500
                 # 不在 GUI 线程长等（模型加载中停止曾最长冻界面 15s）：
-                # 信号已断开，线程收尾放后台自行完成（v1.9.4）
+                # 超时线程交孤儿容器后台排水（translate 的排水宽限期让它
+                # 等 asr 尾句转发进来，v1.9.4 的"后台自行完成"语义保留）
                 t.wait(timeout)
         # v2.0.3：超时仍未退出的线程不再裸丢引用（只剩 parent 关系，MainWindow
         # 析构时会销毁运行中的 QThread → qFatal 崩溃）。改为摘除 parent、
@@ -1482,6 +1523,16 @@ class MainWindow(QMainWindow):
                     # v2.0.4：加载期停止的专项记录——加载线程随后台完成即静默退出
                     app_log.log("pipeline.stop_during_model_load",
                                 model=self.config.get("asr_model"))
+        # v2.6.2（P1-4）：只对已退出线程摘信号——排水中的孤儿线程保持连接，
+        # 尾句链（text_ready→submit→result_ready）要走完上屏；迟到状态与
+        # 新会话串台由各槽会话身份守卫拦截
+        for t in threads:
+            if t:
+                try:
+                    if not t.isRunning():
+                        self._detach_thread(t)
+                except RuntimeError:
+                    pass   # C++ 对象已销毁（线程早已终结），无需摘信号
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
@@ -1493,9 +1544,14 @@ class MainWindow(QMainWindow):
         from app.errors import friendly_message
         from app import log as app_log
         app_log.log("pipeline.error", detail=str(msg)[:200])
-        if not self.running:
+        s = self.sender()
+        if not self.running or (
+                s is not None and s is not getattr(self, "_sid_asr", None)
+                and s is not getattr(self, "_sid_cap", None)):
             # v2.0.4：停止后迟到的管线错误不再覆盖"已停止"（幽灵回调守卫，
             # 与 _on_asr_status/_on_translate_status 同一策略）
+            # v2.6.2（P1-6）：会话身份守卫——新会话中旧线程（capture/asr）
+            # 迟到的"音频错误"不得误停新会话（sender 为 None=直接调用，放行）
             return
         msg = friendly_message(str(msg))
         if self.running and ("采集" in msg or "回环" in msg or "音频" in msg or "设备" in msg):
@@ -1507,7 +1563,10 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(msg)
 
     def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
-        if not self.running:
+        # v2.6.2（P1-4/P1-6）：会话身份守卫替代 running 守卫——停止后旧
+        # 会话的尾句仍要放行上屏（排水链最后一步，"说完立刻停"不再丢句），
+        # 新会话开始后旧线程迟到信号按身份拦截
+        if not self._session_ok(getattr(self, "_sid_asr", None)):
             return
         # v2.4.4（BUG-3）：字幕成功上屏即证明输入信号可识别——撤"输入信号过弱"
         # 告警。此前该告警挂到会话结束，一边出字幕一边说"字幕可能无法识别"，
@@ -1533,7 +1592,7 @@ class MainWindow(QMainWindow):
         # 译文占位、就绪后原地补齐）；关 = 旧行为（识别+翻译都完成后一次性上屏）
         if not bool(self.config.get("instant_caption")):
             self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
-            if self.translate_thread:
+            if self._active_translate() is not None:   # v2.6.2（P1-4）：排水期解析
                 self._submit_for_translation(text, detected)
             return
         show_source = bool(self.config.get("show_source"))
@@ -1567,7 +1626,7 @@ class MainWindow(QMainWindow):
             self.overlay.show_pending(text)   # v2.4.0：面板恒历史滚动，占位直入
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
-        if self.translate_thread:
+        if self._active_translate() is not None:   # v2.6.2（P1-4）：排水期解析
             self._submit_for_translation(text, detected)
 
     # ---------- v2.3.6（P9）：低延迟"上屏碎、翻译整句"两轨制 ----------
@@ -1583,9 +1642,15 @@ class MainWindow(QMainWindow):
         周期——2.5s 实测会在前后片之间先行冲出，攒句永不发生）。
         默认模式行为不变。"""
         if not bool(self.config.get("low_latency_mode")):
+            tr = self._active_translate()
+            if tr is None:
+                return
             self._submit_ts = getattr(self, "_submit_ts", {})
             self._submit_ts[text] = time.monotonic()  # v2.3.20（P26）
-            self.translate_thread.submit(text, detected)
+            # v2.6.2（P1-7）：被队列挤掉的句子占位卡立即终态化，不再悬挂
+            # （or []：submit 契约新加了 dropped 返回值，兼容旧测试 stub）
+            for d_text, _d_lang in (tr.submit(text, detected) or []):
+                self._drop_translation(d_text)
             return
         grp = getattr(self, "_tgroup", None)
         if grp is None:
@@ -1667,7 +1732,8 @@ class MainWindow(QMainWindow):
         t = getattr(self, "_tgroup_timer", None)
         if t is not None:
             t.stop()
-        if not grp or not self.translate_thread:
+        tr = self._active_translate()   # v2.6.2（P1-4）：排水期解析到会话身份线程
+        if not grp or tr is None:
             return
         joined = " ".join(grp)
         combined = "".join(grp) if any("\u4e00" <= c <= "\u9fff" for c in joined) else joined
@@ -1675,7 +1741,36 @@ class MainWindow(QMainWindow):
         self._tgroup_by_src[combined] = grp
         self._submit_ts = getattr(self, "_submit_ts", {})
         self._submit_ts[combined] = time.monotonic()  # v2.3.20（P26）
-        self.translate_thread.submit(combined, getattr(self, "_tgroup_lang", ""))
+        # v2.6.2（P1-7）：合并句被队列挤掉时整组碎片卡立即终态化
+        for d_text, _d_lang in (tr.submit(combined, getattr(self, "_tgroup_lang", "")) or []):
+            self._drop_translation(d_text)
+
+    def _drop_translation(self, src_text):
+        """v2.6.2（P1-7）：翻译队列满被挤掉的句子——占位卡/攒句簿记立即
+        终态化，不再永久悬挂 "⟳ …"、不再累积悬挂引用。攒句合并句整组处理：
+        末片卡显示终态文案、前片卡保持并入态。"""
+        if not src_text:
+            return
+        gmap = getattr(self, "_tgroup_by_src", None)
+        pieces = None
+        if gmap and src_text in gmap:
+            pieces = gmap.pop(src_text)
+        ts = getattr(self, "_submit_ts", {})
+        ts.pop(src_text, None)
+        if pieces:
+            for c in pieces:
+                ts.pop(c, None)   # 片级延迟簿记一并清
+            card = self._take_pending(pieces[-1])
+            if card is not None:
+                card.set_failed("翻译队列繁忙，本句已跳过")
+            for c in pieces[:-1]:
+                pc = self._take_pending(c)
+                if pc is not None:
+                    pc.set_merged_away()
+        else:
+            card = self._take_pending(src_text)
+            if card is not None:
+                card.set_failed("翻译队列繁忙，本句已跳过")
 
     # ---------- v2.3.20（P26）：内置延迟自测 ----------
 
@@ -1793,7 +1888,9 @@ class MainWindow(QMainWindow):
     def _on_translated(self, source_text, translated, engine, detected, error):
         # v2.0.1：幽灵回调守卫——停止后仍会收到已入队的翻译结果，
         # 此前会新增字幕卡片、把界面翻回列表页、悬浮条显示"运行中"
-        if not self.running:
+        # v2.6.2（P1-4/P1-6）：running 守卫改为会话身份守卫——停止后排水
+        # 链的尾句译文仍上屏；新会话中旧线程迟到结果按身份拦截
+        if not self._session_ok(getattr(self, "_sid_tr", None)):
             return
         self._last_engine_name = engine
         # v2.3.20（P26）：翻译段延迟——"提交翻译→译文落地"（含攒句等待+引擎耗时）。

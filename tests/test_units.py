@@ -705,6 +705,115 @@ def test_prewarm_stop_short_circuits():
         emod.AsrThread.model_cached = orig
 
 
+def test_translate_stop_drain_keeps_latest():
+    """v2.6.2（P1-4）：translate.stop 清到剩 1（保留最新）、无 None 哨兵——
+    尾句在排水语义下仍会被消费。"""
+    from app.translate.translator import TranslateThread
+    tt = TranslateThread("argos", "zh-CN")
+    for i in range(4):
+        tt.submit(f"line{i}", "en")
+    tt.stop()
+    assert tt._stop is True
+    assert tt.queue_in.qsize() == 1, "应保留队尾最新一条"
+    item = tt.queue_in.get_nowait()
+    assert item == ("line3", "en"), "保留的应是最新的待译句"
+    assert item is not None
+
+
+def test_asr_stop_keeps_latest_segment():
+    """v2.6.2（P1-4）：asr.stop 清到剩 1（保留队尾段）、无 None 哨兵。"""
+    import numpy as np
+    from app.asr.engine import AsrThread
+    at = AsrThread("tiny", "cpu", "auto")
+    for _ in range(4):
+        at.submit(np.zeros(16, dtype=np.float32))
+    at.stop()
+    assert at._stop is True
+    assert at.queue_in.qsize() == 1, "应保留队尾最新一段"
+    item = at.queue_in.get_nowait()
+    assert item is not None and item[0] is not None
+
+
+def test_translate_drain_grace_consumes_late_submit():
+    """v2.6.2（P1-4）：停止后迟到的尾句在宽限期内仍被翻译并 emit。"""
+    import time
+    from PySide6.QtCore import Qt
+    import app.translate.translator as tmod
+
+    class FakeEngine:
+        def translate(self, text, src, tgt):
+            return f"[{text}]", "en"
+
+        def installed_pairs(self):
+            return []
+
+    orig_engines, orig_cache = tmod.ENGINES, tmod._cache
+    tmod.ENGINES = {"argos": FakeEngine(), "mymemory": FakeEngine(),
+                    "google": FakeEngine()}
+    tmod._cache = _FakeMemCache()
+    tt = tmod.TranslateThread("argos", "zh-CN")
+    tt.DRAIN_GRACE = 1.5   # 测试加速：宽限缩短
+    got = []
+    tt.result_ready.connect(
+        lambda s, tr, eng, det, err: got.append((s, tr, err)),
+        Qt.DirectConnection)   # 无事件循环环境下同步接收
+    tt.queue_in.put(("early", "en"))
+    tt.start()
+    tt.stop()
+    tt.submit("tail sentence", "en")   # 停止后的迟到尾句
+    try:
+        deadline = time.monotonic() + 10.0
+        while not got and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert got, "停止后迟到的尾句应被宽限期消费并 emit"
+        assert got[-1] == ("tail sentence", "[tail sentence]", ""), got[-1]
+        tt.wait(10000)
+        assert not tt.isRunning(), "宽限期结束后线程应退出"
+    finally:
+        tmod.ENGINES, tmod._cache = orig_engines, orig_cache
+        if tt.isRunning():
+            tt.terminate()
+
+
+class _FakeMemCache:
+    """test 专用内存缓存（替代模块级 _cache 单例，避免污染磁盘缓存）。"""
+
+    def __init__(self):
+        self.d = {}
+
+    def get(self, k):
+        return self.d.get(k)
+
+    def put(self, k, v):
+        self.d[k] = v
+
+    def save(self):
+        pass
+
+
+def test_submit_returns_dropped():
+    """v2.6.2（P1-7）：队列满时 submit 返回被挤掉的旧句，供占位卡终态化。"""
+    from app.translate.translator import TranslateThread
+    tt = TranslateThread("argos", "zh-CN")
+    for i in range(5):
+        dropped = tt.submit(f"t{i}", "en")
+        assert dropped == []
+    dropped = tt.submit("t5", "en")
+    assert dropped == [("t0", "en")], "第 6 句应挤出最旧的 t0 并返回"
+    assert tt.queue_in.qsize() == 5
+
+
+def test_capture_pop_tail_seg():
+    """v2.6.2（P1-4）：pop_tail_seg 一次性取走暂存尾段。"""
+    from app.audio.capture import CaptureThread
+    cap = CaptureThread("system", -1)
+    assert cap.pop_tail_seg() is None, "无尾段应返回 None"
+    seg = (object(), 1.0)
+    cap._tail_seg = seg
+    assert cap.pop_tail_seg() is seg
+    assert cap.pop_tail_seg() is None, "第二次取应为空（一次性）"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

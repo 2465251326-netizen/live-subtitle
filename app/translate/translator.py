@@ -405,6 +405,9 @@ class TranslateThread(QThread):
     status_changed = Signal(str)
     # v2.3.2（G2）：在线引擎启动即不可达的事前通知（engine_desc, reason）
     engine_fallback = Signal(str, str)
+    # v2.6.2（P1-4）：停止后排水宽限——等 asr 尾句转写（GPU <1s，CPU 最长
+    # 约 10s）经主窗口转发进来，收到即翻；超时退出
+    DRAIN_GRACE = 15.0
 
     def __init__(self, engine_name: str, target: str, parent=None, translate_fix_map=None,
                  fix_whole_word=False, offline_quality="high"):
@@ -435,27 +438,32 @@ class TranslateThread(QThread):
         ArgosEngine.beam_size = self._beam_size
 
     def stop(self):
+        # v2.6.2（P1-4）：排水式停止——清到剩 1（保留最新待译句）、不投
+        # 哨兵；线程消费完余段后进入宽限期（DRAIN_GRACE），等待停止瞬间
+        # 仍在转写的 asr 尾句经主窗口转发进来，收到即翻，超时退出。
+        # 旧实现清空队列+哨兵：尾句译文必丢，占位卡永久 "⟳ …"
         self._stop = True
+        self._stop_at = time.monotonic()
         try:
-            while True:
+            while self.queue_in.qsize() > 1:
                 self.queue_in.get_nowait()
-        except queue.Empty:
-            pass
-        try:
-            self.queue_in.put_nowait(None)
         except Exception:
             pass
 
     def submit(self, text, detected_lang):
+        """入队待译句。v2.6.2（P1-7）：返回因队列满（≥5）被挤掉的旧句列表
+        [(text, lang), ...]——调用方据此把对应占位卡置终态，不再悬挂 "⟳ …"。"""
+        dropped = []
         try:
             while self.queue_in.qsize() >= 5:
                 try:
-                    self.queue_in.get_nowait()
+                    dropped.append(self.queue_in.get_nowait())
                 except queue.Empty:
                     break
             self.queue_in.put_nowait((text, detected_lang))
         except Exception:
             pass
+        return dropped
 
     def _cache_key(self, engine, detected, text):
         """缓存 key 统一构造（读写共用；v2.0.1 起含源语言维度）。
@@ -521,14 +529,22 @@ class TranslateThread(QThread):
         self._primary_engine = self._active_engine
         self._last_probe_at = time.monotonic()
         app_log.log("translate.engine_selected", engine=self._active_engine, target=self.target)
-        while not self._stop:
+        # v2.6.2（P1-4）：排水式退出——_stop 置位后继续消费余段；队列空且
+        # 在宽限期内继续等待（asr 尾句转写 0.5~10s 后才经主窗口转发进来），
+        # 收到即翻，宽限超时才退出。旧 while not self._stop 会在尾句到达前
+        # 就退出，译文必丢
+        while True:
             try:
                 item = self.queue_in.get(timeout=0.5)
             except queue.Empty:
+                if self._stop:
+                    if time.monotonic() - getattr(self, "_stop_at", 0.0) < self.DRAIN_GRACE:
+                        continue
+                    break
                 self._maybe_reprobe_primary()
                 continue
             if item is None:
-                break
+                break   # 兼容历史哨兵语义
             text, detected = item
             if not text.strip():
                 continue

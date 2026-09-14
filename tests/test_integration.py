@@ -1716,6 +1716,139 @@ def t_stop_prewarm_releases_ref():
     w._teardown()   # 幂等：再次调用 _stop_prewarm 不应报错
 check("ui: 退出收尾释放预热线程引用（P0-2）", t_stop_prewarm_releases_ref)
 
+def t_session_guard_rejects_stale_thread():
+    # v2.6.2（P1-6）：新会话中旧线程迟到信号按会话身份拦截——状态/数据/错误
+    # 三类槽都要挡住，最重的是旧"音频错误"误停新会话
+    from app.asr.engine import AsrThread
+    from app.audio.capture import CaptureThread
+    from app.translate.translator import TranslateThread
+    w = MainWindow()
+    old_asr = AsrThread("tiny", "cpu", "auto")
+    new_asr = AsrThread("tiny", "cpu", "auto")
+    old_cap = CaptureThread("system", -1)
+    old_tr = TranslateThread("argos", "zh-CN")
+    new_tr = TranslateThread("argos", "zh-CN")
+    w.running = True
+    w._sid_asr = new_asr
+    w._sid_cap = CaptureThread("system", -1)   # 新会话身份（≠ old_cap）
+    w._sid_tr = new_tr
+    old_asr.text_ready.connect(w._on_asr_text)
+    new_asr.text_ready.connect(w._on_asr_text)
+    old_tr.result_ready.connect(w._on_translated)
+    new_tr.result_ready.connect(w._on_translated)
+    old_cap.error_occurred.connect(w._on_pipeline_error)
+    new_asr.error_occurred.connect(w._on_pipeline_error)
+    old_asr.status_changed.connect(w._on_asr_status)
+    # 旧线程迟到原文/译文/状态：全部拦截
+    w._caption_seen = False
+    old_asr.text_ready.emit("stale text", "en", 1.0, -1.0)
+    assert w._caption_seen is False, "旧线程迟到的原文不得上屏"
+    before = w.scroll_layout.count()
+    old_tr.result_ready.emit("stale text", "旧译文", "argos", "en", "")
+    assert w.scroll_layout.count() == before, "旧线程迟到的译文不得建卡"
+    old_asr.status_changed.emit("正在加载模型")
+    assert "正在加载" not in w.engine_status_label.text(), "旧线程状态不得覆盖状态栏"
+    # P1-6 核心：旧采集线程"音频错误"不得误停新会话
+    old_cap.error_occurred.emit("音频读取中断: 设备失效")
+    assert w.running is True, "旧线程的音频错误不得误停新会话"
+    new_asr.error_occurred.emit("普通错误信息")   # 新会话自身错误：放行（非音频类不停止）
+    old_tr.result_ready.emit("stale 2", "x", "argos", "en", "")
+    assert w.scroll_layout.count() == before, "旧线程第二次迟到译文仍不得建卡"
+    # 新线程信号放行（身份匹配）
+    new_asr.text_ready.emit("fresh text", "en", 1.0, -1.0)
+    assert w._caption_seen is True, "当前会话线程的原文应正常上屏"
+    w._quitting = True
+    w._teardown()
+check("pipeline: 会话身份守卫拦截旧线程迟到信号（P1-6）", t_session_guard_rejects_stale_thread)
+
+def t_stop_pipeline_drain_contract():
+    # v2.6.2（P1-4）：排水式停止契约——stop 保留最新段/句、无哨兵、身份
+    # 引用存活、引用置 None、capture 尾段被同步取走
+    import numpy as np
+    from app.asr.engine import AsrThread
+    from app.audio.capture import CaptureThread
+    from app.translate.translator import TranslateThread
+    w = MainWindow()
+    cap = CaptureThread("system", -1)
+    asr = AsrThread("tiny", "cpu", "auto")
+    tr = TranslateThread("argos", "zh-CN")
+    w.running = True
+    w.capture_thread = cap
+    w.asr_thread = asr
+    w.translate_thread = tr
+    w._sid_cap = cap
+    w._sid_asr = asr
+    w._sid_tr = tr
+    cap._tail_seg = (np.zeros(16, dtype=np.float32), 1.0)
+    for _ in range(3):
+        asr.submit(np.zeros(16, dtype=np.float32))
+    tr.submit("old sentence", "en")
+    w.stop_pipeline()
+    assert w.running is False
+    assert w.capture_thread is None and w.asr_thread is None and w.translate_thread is None
+    # 会话身份引用保留——排水链（尾句上屏/转发翻译）依赖它们放行
+    assert w._sid_asr is asr and w._sid_tr is tr and w._sid_cap is cap
+    assert asr._stop is True
+    # 队列 = 保留的最新段 + stop_pipeline 同步直塞的 capture 尾段
+    assert asr.queue_in.qsize() == 2, "asr 应保留最新段并接收直塞尾段"
+    assert tr._stop is True and tr.queue_in.qsize() == 1, "translate 应保留最新一句"
+    assert tr.queue_in.get_nowait() == ("old sentence", "en")
+    assert cap.pop_tail_seg() is None, "capture 尾段应已被 stop_pipeline 同步取走"
+    head = asr.queue_in.get_nowait()
+    tail = asr.queue_in.get_nowait()
+    assert head[0] is not None, "保留段应非哨兵"
+    assert len(tail[0]) == 16 and tail[1] == 1.0, "第二条应是直塞的 capture 尾段"
+    w._quitting = True
+    w._teardown()
+check("pipeline: 排水式停止契约（P1-4）", t_stop_pipeline_drain_contract)
+
+def t_drop_translation_finalizes_cards():
+    # v2.6.2（P1-7）：被队列挤掉的句子占位卡/簿记立即终态化，不再悬挂
+    w = MainWindow()
+    w.running = True
+    card = w._new_card("dropped line")
+    card.target_label.setText("⟳ …")
+    w.scroll_layout.insertWidget(w.scroll_layout.count() - 1, card)
+    w._pending = [("dropped line", card)]
+    w._tgroup_by_src = {"combined": ["frag1", "dropped line"]}
+    w._submit_ts = {"dropped line": 1.0, "combined": 2.0}
+    frag = w._new_card("frag1")
+    w._drop_translation("combined")   # 攒句合并句被挤掉 → 整组终态化
+    assert "combined" not in w._tgroup_by_src and "combined" not in w._submit_ts
+    assert "dropped line" not in w._submit_ts
+    pc = w._take_pending("dropped line")
+    assert pc is None, "占位配对应已被摘除"
+    assert card.target_label.text() != "⟳ …", "占位文案应被终态替换"
+    w._quitting = True
+    w._teardown()
+check("pipeline: 队列丢句占位卡终态化（P1-7）", t_drop_translation_finalizes_cards)
+
+def t_toggle_source_snapshots_threads():
+    # v2.6.2（P1-5）：切源在 stop 前快照线程引用（旧代码 stop 后再取引用
+    # 恒为 None，"等旧线程退出"从未兑现）
+    from app.audio.capture import CaptureThread
+    w = MainWindow()
+    calls = []
+    cap = CaptureThread("system", -1)
+    w.capture_thread = cap
+    w.asr_thread = None
+    w.translate_thread = None
+    w.running = True
+    orig_stop, orig_start = w.stop_pipeline, w.start_pipeline
+    w.stop_pipeline = lambda: calls.append("stop")
+    w.start_pipeline = lambda: calls.append("start")
+    try:
+        w._toggle_source()
+        assert calls == ["stop", "start"], "应先停后启"
+        new_src = w.config.get("source_type")
+        assert new_src in ("microphone", "system")
+    finally:
+        w.stop_pipeline = orig_stop
+        w.start_pipeline = orig_start
+    w._quitting = True
+    w._teardown()
+check("pipeline: 切源前快照线程引用（P1-5）", t_toggle_source_snapshots_threads)
+
 # ---------- 汇总 ----------
 check("config: DEFAULTS 全键可读", lambda: [cfg.get(k) for k in DEFAULTS])
 

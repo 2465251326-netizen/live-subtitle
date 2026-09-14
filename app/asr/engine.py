@@ -327,14 +327,14 @@ class AsrThread(QThread):
         return not d.exists()
 
     def stop(self):
+        # v2.6.2（P1-4）：排水式停止——清队列到剩 1（保留队尾最新段，即
+        # capture 停止 flush 的尾段）后靠 _stop 标志排空退出。旧实现清空
+        # 队列再投哨兵，尾段在三层丢弃链（断信号/清队列/running 守卫）中
+        # 必死，"说完立刻停丢最后一句"（v2.2.1 修复实际无效）
         self._stop = True
         try:
-            while True:
+            while self.queue_in.qsize() > 1:
                 self.queue_in.get_nowait()
-        except queue.Empty:
-            pass
-        try:
-            self.queue_in.put_nowait(None)
         except Exception:
             pass
 
@@ -573,13 +573,18 @@ class AsrThread(QThread):
         if self._stop:
             return
         self._warmup()
-        while not self._stop:
+        # v2.6.2（P1-4）：排水式退出——_stop 置位后继续消费队列余段（停止
+        # 时保留的最新段/尾段）再退；旧 while not self._stop 会让已入队的
+        # 尾段滞留队列无人消费
+        while True:
             try:
                 item = self.queue_in.get(timeout=0.5)
             except queue.Empty:
+                if self._stop:
+                    break
                 continue
             if item is None:
-                break
+                break   # 兼容历史哨兵语义
             # v2.3.20（P26）：队元素统一 (audio, t_flush)；旧格式裸 ndarray 兜底
             if isinstance(item, tuple):
                 audio, t_flush = item

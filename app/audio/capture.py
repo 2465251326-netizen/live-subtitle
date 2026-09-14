@@ -257,6 +257,7 @@ class CaptureThread(QThread):
         self._stop = False
         self.segmenter = Segmenter(low_latency=low_latency)
         self._warned_quiet = False
+        self._tail_seg = None   # v2.6.2（P1-4）：停止 flush 尾段暂存
 
     def _maybe_warn_quiet(self):
         """持续无声达阈值时发一次低输入/静音告警（补充5）。电平过弱与"完全
@@ -276,6 +277,13 @@ class CaptureThread(QThread):
 
     def stop(self):
         self._stop = True
+
+    def pop_tail_seg(self):
+        """v2.6.2（P1-4）：取走停止 flush 的尾段（一次性）。线程退出后由
+        stop_pipeline 在主线程同步调用，直塞 asr 队列排水；无尾段返回 None。"""
+        tail = getattr(self, "_tail_seg", None)
+        self._tail_seg = None
+        return tail
 
     @staticmethod
     def resolve_device_index(p, wanted_index, wanted_name, source_type):
@@ -450,10 +458,14 @@ class CaptureThread(QThread):
             # v2.2.1：去掉 not self._stop 条件——stop 是循环唯一正常出口，
             # 旧条件使 flush 在其设计的唯一场景（用户停止）永远不发射；
             # ASR 侧 stop 先清空队列再投哨兵，此段经信号仍能入队并被消费
+            # v2.6.2（P1-4）：尾段同步暂存——stop_pipeline 在 capture.wait
+            # 后直塞 asr 队列（跨线程信号要经主线程事件循环中转，停止流程
+            # 阻塞主线程期间 emit 无人消费，尾句仍会丢）
             try:
                 tail = self.segmenter.flush()
                 if tail is not None:
-                    self.segment_ready.emit((tail, time.monotonic()))  # v2.3.20 P26
+                    self._tail_seg = (tail, time.monotonic())  # v2.3.20 P26
+                    self.segment_ready.emit(self._tail_seg)
             except Exception:
                 pass
         except Exception as e:
