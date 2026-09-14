@@ -781,7 +781,9 @@ class SettingsDialog(QDialog):
         inner = QWidget()
         inner.setObjectName("SettingInner")
         v = QVBoxLayout(inner)
-        v.setContentsMargins(32, 26, 32, 26)
+        # v2.6.5（R7-M3）：底部留白加大——滚动内容此前贴着 ActionBar 分隔线
+        # 被生硬截断（版本页"离线语言包"说明尤甚）
+        v.setContentsMargins(32, 26, 32, 48)
         v.setSpacing(18)
         scroll.setWidget(inner)
         outer.addWidget(scroll)
@@ -807,16 +809,27 @@ class SettingsDialog(QDialog):
         t = QLabel(title)
         t.setObjectName("SettingTitle")
         h.addWidget(t)
-        h.addStretch()
+        # v2.6.5（R7-M2）：勾选框紧贴标题——原先被 stretch 推到行最右，
+        # 悬在下方说明文字的右上角，与标题的从属关系看不出（下拉/数值框
+        # 自身够宽无此问题，维持右对齐）
+        from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox, QPushButton
+        is_check = isinstance(widget, QCheckBox)
+        if widget is not None and not is_check:
+            h.addStretch()
         if widget is not None:
-            widget.setMinimumWidth(230)
             # v2.2.4：紧凑控件统一 26px 高并垂直居中——勾选框/数值框/下拉/
             # 按钮与标题行对齐（此前参差，勾选框尤其违和）
-            from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox, QPushButton
-            if isinstance(widget, (QComboBox, QSpinBox, QCheckBox, QPushButton)):
+            if isinstance(widget, (QComboBox, QSpinBox, QPushButton)):
+                widget.setMinimumWidth(230)
                 widget.setFixedHeight(26)
                 h.addWidget(widget, 0, Qt.AlignVCenter)
+            elif is_check:
+                widget.setFixedHeight(26)
+                h.addWidget(widget, 0, Qt.AlignVCenter)
+                h.addSpacing(6)
+                h.addStretch()
             else:
+                widget.setMinimumWidth(230)
                 h.addWidget(widget)
         box.addLayout(h)
         if desc:

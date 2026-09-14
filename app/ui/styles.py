@@ -309,6 +309,27 @@ QListWidget#NavList::item:hover:!selected {
 QWidget#SettingInner, QScrollArea#SettingScroll {
     background-color: #0f1115;
 }
+/* v2.6.5（R7-M5）：设置对话框单独 setStyleSheet 会覆盖应用级滚动条
+   规则——此处缺 QScrollBar 定义时回退原生亮色滚动条，压在内容右缘 */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #2c3345;
+    border-radius: 4px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #3a4360;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: transparent;
+}
 QLabel#SettingTitle {
     font-size: 15px;
     font-weight: 700;

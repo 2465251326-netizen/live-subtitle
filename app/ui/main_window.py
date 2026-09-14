@@ -307,6 +307,7 @@ class MainWindow(QMainWindow):
         self.status_dot.setObjectName("StatusDot")
         self.status_dot.setFixedSize(14, 14)
         self.status_dot.setAlignment(Qt.AlignCenter)
+        self.status_dot.setToolTip("未启动：点击「开始翻译」开始")
         self.status_text = QLabel("未启动")
         self.status_text.setObjectName("HeaderSub")
         header.addWidget(self.status_dot)
@@ -459,6 +460,7 @@ class MainWindow(QMainWindow):
         self.clear_button.setCursor(Qt.PointingHandCursor)
         self.clear_button.setToolTip("清空当前会话的字幕记录")
         self.clear_button.clicked.connect(self._clear_captions)
+        self.clear_button.setEnabled(False)  # v2.6.5（R7-L3）：无字幕时禁用，有卡再启用
         status.addPermanentWidget(self.clear_button)
 
         self.export_button = QPushButton("导出")
@@ -466,6 +468,7 @@ class MainWindow(QMainWindow):
         self.export_button.setCursor(Qt.PointingHandCursor)
         self.export_button.setToolTip("把当前会话的双语字幕导出为文本文件")
         self.export_button.clicked.connect(self._export_captions)
+        self.export_button.setEnabled(False)  # v2.6.5（R7-L3）：同上
         status.addPermanentWidget(self.export_button)
 
         self.session_label = QLabel("本次会话：0 条")
@@ -981,6 +984,7 @@ class MainWindow(QMainWindow):
         tg = getattr(self, "_tgroup_timer", None)
         if tg is not None:
             tg.stop()
+        self._sync_export_actions()  # v2.6.5（R7-L3）：清空后回禁用态
 
     def _has_cards(self):
         """v2.4.4（BUG-9）：列表页是否存在字幕卡（layout 里有 stretch 等非卡项，
@@ -1082,6 +1086,7 @@ class MainWindow(QMainWindow):
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
         self.status_dot.setStyleSheet("background-color: #2ecc71; border-radius: 7px;")
+        self.status_dot.setToolTip("运行中：正在识别并翻译")
         self.status_text.setText("运行中")
         self.stack.setCurrentIndex(1)
         self.session_count = 0
@@ -1450,6 +1455,7 @@ class MainWindow(QMainWindow):
         self._heavy_cpu_warn = False   # v2.3.1：撤重模型CPU预警
         self._engine_fallback_warn = None  # v2.3.2（G2）：撤引擎不可达预警
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
+        self.status_dot.setToolTip("未启动：点击「开始翻译」开始")
         self.status_text.setText("未启动")
         self.level_bar.setValue(0)
         self._low_input_warn = False
@@ -1606,7 +1612,7 @@ class MainWindow(QMainWindow):
             card.source_label.setStyleSheet("color: #6b7488; font-style: italic;")
         card.target_label.setText("⟳ …")
         card.t_start, card.dur_s = self._last_asr_timing  # v2.2.11：SRT 时间轴
-        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+        self._insert_card(card)
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)
         if not hasattr(self, "_pending") or self._pending is None:
@@ -1809,6 +1815,16 @@ class MainWindow(QMainWindow):
         """字幕卡工厂：统一挂右键纠错菜单（三处创建点共用）。"""
         return CaptionCard(text, on_menu=self._card_menu)
 
+    def _insert_card(self, card):
+        """卡片插入唯一入口 + 导出/清空按钮联动（v2.6.5 R7-L3）。"""
+        self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+        self._sync_export_actions()
+
+    def _sync_export_actions(self):
+        has = self._has_cards()
+        self.clear_button.setEnabled(has)
+        self.export_button.setEnabled(has)
+
     def _card_menu(self, card):
         menu = QMenu(self)
         act = menu.addAction("复制原文")
@@ -1920,7 +1936,7 @@ class MainWindow(QMainWindow):
         # （管线重启/被裁剪等）才新建，兜底兼容旧行为
         if not bool(self.config.get("instant_caption")):
             card = self._new_card(source_text)
-            self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+            self._insert_card(card)
             card.t_start, card.dur_s = getattr(self, "_last_asr_timing", (None, None))
             # v2.1.5：切回一次性上屏时清掉流式占位队列（防陈旧配对）
             if getattr(self, "_pending", None):
@@ -1929,7 +1945,7 @@ class MainWindow(QMainWindow):
             card = self._take_pending(source_text)
             if card is None:
                 card = self._new_card(source_text)
-                self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+                self._insert_card(card)
                 card.t_start, card.dur_s = getattr(self, "_last_asr_timing", (None, None))
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)

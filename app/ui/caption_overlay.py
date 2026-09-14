@@ -118,15 +118,18 @@ class CaptionOverlay(QWidget):
 
         self._lang_btn = QToolButton()
         self._lang_btn.setPopupMode(QToolButton.InstantPopup)
+        self._lang_btn.setToolTip("翻译目标语言")
         self._lang_btn.setMenu(self._build_lang_menu())
         bl.addWidget(self._lang_btn)
 
         self._src_btn = QToolButton()
         self._src_btn.clicked.connect(self._toggle_src)
+        self._src_btn.setToolTip("切换：只看译文 / 译文+原文")
         bl.addWidget(self._src_btn)
 
         self._font_btn = QToolButton()
         self._font_btn.setPopupMode(QToolButton.InstantPopup)
+        self._font_btn.setToolTip("面板字号")
         self._font_btn.setMenu(self._build_font_menu())
         bl.addWidget(self._font_btn)
 
@@ -139,6 +142,7 @@ class CaptionOverlay(QWidget):
 
         self._jump_btn = QToolButton()
         self._jump_btn.setText("↓ 最新")
+        self._jump_btn.setToolTip("滚动到最新一条字幕")
         self._jump_btn.clicked.connect(self._scroll_bottom)
         self._jump_btn.hide()
         bl.addWidget(self._jump_btn)
@@ -153,6 +157,7 @@ class CaptionOverlay(QWidget):
 
         self._more_btn = QToolButton()
         self._more_btn.setText("⋯")
+        self._more_btn.setToolTip("更多操作（导出、置顶、贴边、透明度等）")
         self._more_btn.clicked.connect(self._show_more_menu)
         bl.addWidget(self._more_btn)
 
@@ -167,12 +172,13 @@ class CaptionOverlay(QWidget):
 
         self._collapse_btn = QToolButton()
         self._collapse_btn.setText("收起")
+        self._collapse_btn.setToolTip("收起为迷你条（只显示最新一句）")
         self._collapse_btn.clicked.connect(self._toggle_collapse)
-        bl.addWidget(self._collapse_btn)
 
         self._close_btn = QToolButton()
         self._close_btn.setText("✕")
         self._close_btn.setObjectName("PanelClose")
+        self._close_btn.setToolTip("关闭面板（可从主窗重新打开）")
         self._close_btn.clicked.connect(self._request_close)
         bl.addWidget(self._close_btn)
         outer.addWidget(self._bar)
