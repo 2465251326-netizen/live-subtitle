@@ -424,9 +424,19 @@ class CaptureThread(QThread):
                         continue
                     self._starved_s = 0.0
                     self._starve_zeroed = False
+                    self._read_fails = 0   # v2.6.4（P2）：读成功即清零重试计数
                     raw = stream.read(frames_per_buffer, exception_on_overflow=False)
                 except OSError as e:
-                    self.error_occurred.emit(f"音频读取中断: {friendly_audio_error(e)}")
+                    # v2.6.4（P2）：短暂抖动自愈——蓝牙休眠唤醒/USB 瞬断/热插拔
+                    # 瞬间 stream.read 会抛 OSError，此前一次即退场（error_occurred
+                    # → 主窗停整场管线），用户必须手动重开。现抖动期静默重试
+                    # （0.3s×5≈1.5s），连续失败才报错退场
+                    self._read_fails = getattr(self, "_read_fails", 0) + 1
+                    if self._read_fails < 5:
+                        time.sleep(0.3)
+                        continue
+                    self.error_occurred.emit(
+                        f"音频设备连续读取失败: {friendly_audio_error(e)}")
                     break
                 data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
                 data = data.reshape(-1, channels) if channels > 1 else data.reshape(-1, 1)

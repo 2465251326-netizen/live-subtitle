@@ -1634,12 +1634,14 @@ check("quality: 线程词典/质量档热更新（R4/R5）", t_quality_thread_ho
 
 def t_quality_cache_key_strip():
     # R3：仅空白差异的原文命中同一条缓存
+    # v2.6.4（P2）：键去引擎名——备援切换后旧引擎键不再稀释缓存，
+    # 同句译文跨引擎共享（引擎维度独立是旧行为，已废弃）
     from app.translate.translator import TranslateThread
     tt = TranslateThread("google", "zh-CN")
-    k1 = tt._cache_key("google", "en", "  hello world  ")
-    k2 = tt._cache_key("google", "en", "hello world")
+    k1 = tt._cache_key("en", "  hello world  ")
+    k2 = tt._cache_key("en", "hello world")
     assert k1 == k2
-    assert k1 != tt._cache_key("mymemory", "en", "hello world"), "引擎维度保持独立"
+    assert k1 == "zh-CN:en:hello world", "键应为 目标:源:文本 三段（无引擎前缀）"
 check("quality: 缓存键首尾空白规范化（R3）", t_quality_cache_key_strip)
 
 def t_quality_mishear_via_fixmap():

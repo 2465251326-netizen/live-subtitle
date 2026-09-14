@@ -134,6 +134,9 @@ def _hub_root():
 # compute_type)；换模型/设备时旧实例被替换、由 GC 释放显存/内存。
 _MODEL_CACHE = {}
 _MODEL_CACHE_LOCK = threading.Lock()
+# v2.6.4（P2）：构造互斥——预热与真实管线并发时此前会双份构造 WhisperModel
+# （GPU 冷初始化 49s×2、显存/内存峰值翻倍，先完成者入池另一个等 GC）
+_MODEL_LOAD_LOCK = threading.Lock()
 
 
 def _torch_cuda_ready() -> bool:
@@ -391,7 +394,7 @@ class AsrThread(QThread):
         except Exception:
             pass
 
-    def _load_model(self):
+    def _load_model(self, blocking=True):
         if self._model is not None:
             return True
         from app import log as app_log
@@ -440,6 +443,21 @@ class AsrThread(QThread):
         # 切输入来源/改识别设置重启管线不再全量重载（CPU 上数秒到数十秒）。
         # 池容量 1，换模型/换设备时旧实例被替换由 GC 释放
         cache_key = (self.model_size, device, compute_type)
+        # v2.6.4（P2）：加载互斥——真实加载持锁等待（预热完成后直接命中池，
+        # 不再重复构造）；预热线程以 non-blocking 参与，真实加载已持锁时
+        # 立即让位（其完成即达成预热目的）。下载/设备解析留在锁外，互斥
+        # 只覆盖"池检查→构造→入池"
+        if not _MODEL_LOAD_LOCK.acquire(blocking=blocking):
+            app_log.log("asr.model_load_skipped_busy", model=self.model_size)
+            return False
+        try:
+            return self._construct_and_pool(cache_key, device, compute_type, cached)
+        finally:
+            _MODEL_LOAD_LOCK.release()
+
+    def _construct_and_pool(self, cache_key, device, compute_type, cached):
+        """构造 WhisperModel 并入池（v2.6.4 提取，加载互斥锁内执行）。"""
+        from app import log as app_log
         with _MODEL_CACHE_LOCK:
             pooled = _MODEL_CACHE.get(cache_key)
         if pooled is not None:
@@ -448,7 +466,6 @@ class AsrThread(QThread):
             app_log.log("asr.model_reused", model=self.model_size,
                         device=self._device_used)
             return True
-        from faster_whisper import WhisperModel
         import time as _time
         # v2.0.9：large-v3-turbo 传完整 HF 仓库 ID（faster-whisper 支持任意
         # CT2 模型 ID），否则它硬编码拼 Systran 仓库必 404
@@ -735,7 +752,9 @@ class PrewarmWorker(QThread):
             t0 = time.time()
             loader = AsrThread(self.model_size, self.device, "auto", None,
                                accuracy=getattr(self, "accuracy", "fast"))
-            ok = loader._load_model()
+            # v2.6.4（P2）：non-blocking 让位——真实管线正在加载时预热立即
+            # 放弃（真实加载完成即入池，预热目的已达成），避免双份构造
+            ok = loader._load_model(blocking=False)
             dev = getattr(loader, "_device_used", "?")
             app_log.log("asr.prewarm_done", model=self.model_size, ok=bool(ok),
                         device=dev, seconds=round(time.time() - t0, 1))

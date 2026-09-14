@@ -19,6 +19,11 @@ from app.fixmap import apply_dict as _apply_dict
 # v2.0.0：HTTP 头收敛到 net.py（此前与本包各写一份且 UA 不一致）
 HEADERS = net.BROWSER_HEADERS
 
+# v2.6.4（P2）：进程级 Session 复用——此前每条字幕 requests.get 都新建
+# TCP+TLS 连接（每次多 1~3 个 RTT），实时字幕高频请求下延迟明显。翻译
+# 消费为单线程 + 探测偶发并发，urllib3 连接池线程安全
+_SESSION = requests.Session()
+
 
 class TranslationCache:
     # v2.0.6：攒批落盘参数（10 条或 5 秒合并写一次）
@@ -201,7 +206,7 @@ class GoogleFree:
             if url.endswith("/single"):
                 params["dt"] = "t"
             try:
-                r = requests.get(url, params=params, headers=HEADERS, timeout=8,
+                r = _SESSION.get(url, params=params, headers=HEADERS, timeout=8,
                                  proxies=net.proxies())
                 if r.status_code == 429:
                     last_err = RuntimeError("Google 接口限流(429)")
@@ -220,7 +225,7 @@ class GoogleFree:
         try:
             url = "https://translate.googleapis.com/translate_a/single"
             params = {"client": "dict-chrome-ex", "sl": "auto", "tl": "en", "dt": "t", "q": text[:80]}
-            r = requests.get(url, params=params, headers=HEADERS, timeout=6, proxies=net.proxies())
+            r = _SESSION.get(url, params=params, headers=HEADERS, timeout=6, proxies=net.proxies())
             data = r.json()
             return data[2] if len(data) > 2 else "en"
         except Exception as e:
@@ -272,7 +277,7 @@ class MyMemory:
         for c in MyMemory._split_sentences(text):
             url = "https://api.mymemory.translated.net/get"
             params = {"q": c, "langpair": f"{source}|{target}"}
-            r = requests.get(url, params=params, headers=HEADERS, timeout=8,
+            r = _SESSION.get(url, params=params, headers=HEADERS, timeout=8,
                              proxies=net.proxies())
             r.raise_for_status()
             data = r.json()
@@ -366,7 +371,7 @@ def probe_engine(name, timeout=2.5):
     try:
         if name == "google":
             t0 = time.time()
-            r = requests.get(
+            r = _SESSION.get(
                 "https://translate.googleapis.com/translate_a/single",
                 params={"client": "dict-chrome-ex", "sl": "auto", "tl": "zh-CN", "dt": "t", "q": "hi"},
                 headers=HEADERS, timeout=timeout, proxies=net.proxies(),
@@ -378,7 +383,7 @@ def probe_engine(name, timeout=2.5):
                 return True, f"HTTP 200（{ms}ms）"
             return False, f"HTTP {r.status_code}"
         if name == "mymemory":
-            r = requests.get(
+            r = _SESSION.get(
                 "https://api.mymemory.translated.net/get",
                 params={"q": "hi", "langpair": "en|zh-CN"},
                 headers=HEADERS, timeout=timeout, proxies=net.proxies(),
@@ -475,18 +480,21 @@ class TranslateThread(QThread):
             pass
         return dropped
 
-    def _cache_key(self, engine, detected, text):
+    def _cache_key(self, detected, text):
         """缓存 key 统一构造（读写共用；v2.0.1 起含源语言维度）。
 
         v2.6.0（R3）：text 维度统一首尾去空白——攒句/引擎返回仅空白差异
-        的同一句话共用一条缓存，命中率不再被稀释。"""
+        的同一句话共用一条缓存，命中率不再被稀释。
+        v2.6.4（P2）：键去掉引擎名——备援切换/主引擎恢复后旧引擎键永不
+        命中，缓存被稀释白占；同句译文语义与引擎无关，跨引擎共享。
+        旧格式条目（三段前缀）不再命中，由 LRU 自然淘汰。"""
         norm_src = WHISPER_LANG_MAP.get(detected, detected or "")
-        return f"{engine}:{self.target}:{norm_src}:{text.strip()}"
+        return f"{self.target}:{norm_src}:{text.strip()}"
 
     def _do_translate(self, text, detected):
         # v2.0.1：key 加入源语言维度——同文本被 whisper 判为不同源语言时，
         # 旧 key 会让 MyMemory/Argos 命中错误语言方向的缓存译文
-        key = self._cache_key(self._active_engine, detected, text)
+        key = self._cache_key(detected, text)
         cached = _cache.get(key)
         if cached:
             return cached[0], cached[1]
@@ -611,7 +619,7 @@ class TranslateThread(QThread):
                         # 只写不读（死缓存白占容量）
                         # v2.6.0（R1）：缓存中的译文即上屏所见（v2.6.1 起在
                         # 赋值处统一还原，此处直接写 translated）
-                        _cache.put(self._cache_key(fb, detected, text),
+                        _cache.put(self._cache_key(detected, text),
                                    (translated, used_lang))
                         break
                     except Exception as e2:

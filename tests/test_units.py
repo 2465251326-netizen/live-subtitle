@@ -323,8 +323,8 @@ def test_mymemory_rejects_warning_response(monkeypatch=None):
         def raise_for_status(self):
             pass
 
-    orig = tmod.requests.get
-    tmod.requests.get = lambda *a, **k: FakeResp(
+    orig = tmod._SESSION.get   # v2.6.4（P2）：引擎走共享 Session，mock 其 get
+    tmod._SESSION.get = lambda *a, **k: FakeResp(
         {"responseData": {"translatedText": "MYMEMORY WARNING: USED ALL"},
          "responseStatus": 200})
     try:
@@ -333,7 +333,7 @@ def test_mymemory_rejects_warning_response(monkeypatch=None):
     except RuntimeError:
         pass
     finally:
-        tmod.requests.get = orig
+        tmod._SESSION.get = orig
 
 
 def test_remove_pack_no_crash():
@@ -674,7 +674,7 @@ def test_fallback_emit_unescaped():
         tr, err = got[0]
         assert err == "", f"备援成功后 error 应为空，got={err!r}"
         assert tr == '"hi" & ok', f"上屏译文应还原实体，got={tr!r}"
-        key = tt._cache_key("mymemory", "en", "hello")
+        key = tt._cache_key("en", "hello")
         assert tmod._cache.d.get(key, ("",))[0] == '"hi" & ok', \
             "缓存值应与上屏译文一致"
     finally:
@@ -910,6 +910,49 @@ def test_hub_root_env_follow():
             os.environ.pop("HF_HOME", None)
         else:
             os.environ["HF_HOME"] = old
+
+
+def test_model_load_mutex():
+    """v2.6.4（P2）：加载互斥——真实加载持锁时预热线程（blocking=False）
+    立即让位返回 False；持锁方完成后入池，后续加载命中池不重复构造。"""
+    import threading as th
+    import time as _t
+    from app.asr import engine as eng
+    eng._MODEL_CACHE.clear()
+    orig_cached = eng.AsrThread.model_cached
+    orig_construct = eng.AsrThread._construct_model
+    try:
+        eng.AsrThread.model_cached = staticmethod(lambda s: True)
+
+        def slow_construct(self, *a, **k):
+            import types
+            _t.sleep(0.4)
+            return types.SimpleNamespace()   # 需可设属性（入池时写 _ls_device）
+
+        eng.AsrThread._construct_model = slow_construct
+        real = eng.AsrThread("tiny", "cpu", "auto", None)
+        prewarm = eng.AsrThread("tiny", "cpu", "auto", None)
+        res = {}
+
+        def run_real():
+            res["real"] = real._load_model()
+
+        t = th.Thread(target=run_real)
+        t.start()
+        _t.sleep(0.1)   # 确保 real 先持锁进入构造
+        res["prewarm"] = prewarm._load_model(blocking=False)
+        t.join()
+        assert res["prewarm"] is False, "真实加载持锁时预热应立即让位"
+        assert res["real"] is True
+        assert eng._MODEL_CACHE.get(("tiny", "cpu", "int8")) is real._model, \
+            "构造完成应入池"
+        late = eng.AsrThread("tiny", "cpu", "auto", None)
+        assert late._load_model() is True
+        assert late._model is real._model, "后续加载应命中池（不重复构造）"
+    finally:
+        eng._MODEL_CACHE.clear()
+        eng.AsrThread.model_cached = staticmethod(orig_cached)
+        eng.AsrThread._construct_model = orig_construct
 
 
 if __name__ == "__main__":
