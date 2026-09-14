@@ -165,13 +165,6 @@ jobs:
           cd artifacts/portable
           zip -qr "../../LiveSubtitle-${GITHUB_REF_NAME#v}-portable.zip" .
 
-      - name: Generate checksums
-        run: |
-          cd artifacts/installer
-          sha256sum LiveSubtitle-Setup-*.exe > ../../checksums.txt
-          cd ../..
-          sha256sum LiveSubtitle-*-portable.zip >> checksums.txt
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -179,4 +172,3 @@ jobs:
           files: |
             artifacts/installer/LiveSubtitle-Setup-*.exe
             LiveSubtitle-*-portable.zip
-            checksums.txt
