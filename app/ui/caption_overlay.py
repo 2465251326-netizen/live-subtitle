@@ -19,10 +19,10 @@ clear_caption / set_status / apply_style(去描边参数)。
 """
 
 from PySide6.QtCore import Qt, QPoint, QTimer, QSize
-from PySide6.QtGui import QColor, QGuiApplication, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QFont
 from PySide6.QtWidgets import (
     QWidget, QLabel, QMenu, QToolButton, QScrollArea, QApplication,
-    QVBoxLayout, QHBoxLayout, QSizePolicy,
+    QVBoxLayout, QHBoxLayout, QSizePolicy, QFrame,
 )
 
 
@@ -45,7 +45,8 @@ class CaptionOverlay(QWidget):
                  on_toggle_translation_only=None, on_resized=None,
                  on_correct=None, on_export_srt=None, on_language=None,
                  on_font_size=None, on_pin_changed=None, on_collapsed=None,
-                 on_first_show=None, on_opacity=None, on_height_changed=None):
+                 on_first_show=None, on_opacity=None, on_height_changed=None,
+                 on_layout_changed=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -59,6 +60,11 @@ class CaptionOverlay(QWidget):
         self._follow = True
         self._rows = []
         self._last_result = ("", "")
+        # v2.11.0：面板布局模式——"list"=历史滚动列表（v2.4.0 起的形态），
+        # "dual"=上下双语（用户要求新增，对标豆包 PC 实时翻译：上半原文随识别
+        # 流式生长、下半译文随推测式翻译就地更新，无历史行）。主窗调用接口
+        # （show_pending/show_pending_result/update_spec_result/…）零改动。
+        self._layout_mode = "list"
         self._drag_pos = None
         self._resizing = False
         self._resize_start = None
@@ -84,6 +90,7 @@ class CaptionOverlay(QWidget):
         self._on_first_show = on_first_show
         self._on_opacity = on_opacity
         self._on_height_changed = on_height_changed
+        self._on_layout_changed = on_layout_changed
         # v2.5.3：手动高度（用户裁决回归——面板支持上下拉长）。None=自动贴内容；
         # 拖底缘/主窗配置恢复后锁定手动高度，⋯ 菜单可恢复自动
         self._user_height = None
@@ -228,6 +235,34 @@ class CaptionOverlay(QWidget):
         outer.addWidget(self._mini)
         self._mini.hide()
 
+        # ---------- v2.11.0：上下双语正文（dual 布局模式） ----------
+        # 对标豆包 PC 实时翻译：上半=原文（识别片段流式生长，淡色小字），
+        # 下半=译文（推测式翻译就地更新、终版收口，主字号加粗）。
+        # 与列表模式互斥显示；工具条/拖动/置顶/透明度/收起全部复用。
+        self._dual_body = QWidget(self)
+        self._dual_body.setObjectName("PanelDual")
+        self._dual_body.setAutoFillBackground(False)
+        self._dual_body.setAttribute(Qt.WA_TranslucentBackground, True)
+        dl = QVBoxLayout(self._dual_body)
+        dl.setContentsMargins(10, 6, 14, 8)
+        dl.setSpacing(5)
+        self._dual_src = QLabel("", self._dual_body)
+        self._dual_src.setObjectName("DualSrc")
+        self._dual_src.setWordWrap(True)
+        self._dual_src.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._dual_sep = QFrame(self._dual_body)
+        self._dual_sep.setObjectName("DualSep")
+        self._dual_sep.setFrameShape(QFrame.HLine)
+        self._dual_tgt = QLabel("", self._dual_body)
+        self._dual_tgt.setObjectName("DualTgt")
+        self._dual_tgt.setWordWrap(True)
+        self._dual_tgt.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        dl.addWidget(self._dual_src)
+        dl.addWidget(self._dual_sep)
+        dl.addWidget(self._dual_tgt, 1)
+        outer.addWidget(self._dual_body, 1)
+        self._dual_body.hide()
+
         self._pin_btn.setChecked(self._pinned)
         self._sync_unread_btn()
         self._update_empty_hint()
@@ -328,7 +363,14 @@ class CaptionOverlay(QWidget):
                 it["row"].deleteLater()
 
     def show_pending(self, source_text):
-        """识别文本先上屏，译文占位（两段式）。同句重复调用幂等（主窗每段双发）。"""
+        """识别文本先上屏，译文占位（两段式）。同句重复调用幂等（主窗每段双发）。
+
+        v2.11.0：dual（上下双语）模式下原文区**流式生长**——新句起始（首字符
+        大写/CJK/数字）即重置原文区为该片段；延续片段按 CJK 邻接规则拼进当前
+        句，用户看到的是"整句在打字机式生长"，与推测式翻译的译文区同步演进。"""
+        if self._layout_mode == "dual":
+            self._dual_show_pending(source_text)
+            return
         r = self._find_pending(source_text)
         if r is not None:
             return
@@ -352,7 +394,12 @@ class CaptionOverlay(QWidget):
     def show_pending_result(self, source_text, target_text, show_source=True,
                             merged_from=None):
         """译文就绪：补齐**原文匹配**的占位行；无匹配则新建完成行（迟到旧句
-        排到队尾，好过配错行）。merged_from=攒句合并的前片名单（主窗传入）。"""
+        排到队尾，好过配错行）。merged_from=攒句合并的前片名单（主窗传入）。
+        v2.11.0：dual 模式下"收口"=译文区从推测态转正式样式，原文区校准为
+        整句；无行概念，merged_from 直接忽略。"""
+        if self._layout_mode == "dual":
+            self._dual_show_result(source_text, target_text, show_source)
+            return
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
         self._merge_pending(merged_from)
@@ -383,6 +430,9 @@ class CaptionOverlay(QWidget):
            译文"，正是 v2.7.4（B-8）在主窗侧修过的同款分叉。
         配对复用 _find_pending（精确 + 后缀匹配）：combined 键以末片结尾，
         所以能命中末片占位行；找不到行说明已收编/已终态，静默丢弃。"""
+        if self._layout_mode == "dual":
+            self._dual_spec(source_text, target_text, show_source)
+            return
         r = self._find_pending(source_text)
         if r is None:
             return
@@ -400,7 +450,10 @@ class CaptionOverlay(QWidget):
         self._schedule_relayout()
 
     def show_caption(self, source_text, target_text, show_source=True):
-        """一次性上屏（无占位）。"""
+        """一次性上屏（无占位）。v2.11.0：dual 模式同终态收口路径。"""
+        if self._layout_mode == "dual":
+            self._dual_show_result(source_text, target_text, show_source)
+            return
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
         self._add_row(source_text or "", target_text or "", False)
@@ -408,6 +461,17 @@ class CaptionOverlay(QWidget):
         self._sync_bar_texts()
 
     def clear_caption(self):
+        if self._layout_mode == "dual":
+            self._dual_src.setText("")
+            self._dual_tgt.setProperty("spec", False)
+            self._dual_tgt.setProperty("empty", True)
+            self._dual_tgt.setText(
+                self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
+            self._restyle_dual_tgt()
+            self._sync_dual_visibility()
+            self._clear_btn.setEnabled(False)
+            self._relayout()
+            return
         for it in self._rows:
             it["row"].setParent(None)
             it["row"].deleteLater()
@@ -422,8 +486,126 @@ class CaptionOverlay(QWidget):
 
     # ---------- v2.4.3：空状态占位 / 未读计数 ----------
 
+    # ---------- v2.11.0：dual（上下双语）布局模式 ----------
+
+    def is_dual(self):
+        """当前是否处于上下双语布局（主窗/测试用）。"""
+        return self._layout_mode == "dual"
+
+    def _dual_want_height(self):
+        """dual 正文的内容需求高度。
+
+        QLabel 带 wordWrap 时 sizeHint 是**单行**值，直接用会在长句下裁切
+        （真机截图实证）；heightForWidth(可用宽度) 才是换行后的真实高度。
+        常数 25 = dl 上下 margins(6+8) + spacing×2(10) + 分隔线(1)。"""
+        avail = max(80, self._dual_body.width() - 24)   # dl margins 左10+右14
+        src_h = (self._dual_src.heightForWidth(avail)
+                 if self._dual_src.isVisible() else 0)
+        tgt_h = self._dual_tgt.heightForWidth(avail)
+        return src_h + tgt_h + 25
+
+    def set_layout_mode(self, mode):
+        """切换面板布局："list"=历史滚动列表，"dual"=上下双语（豆包风）。
+        幂等；可见性与高度收放统一交给 _relayout。dual→list 切回时列表
+        保留既有历史行（dual 的当前句不回填——历史真相在主窗与导出里）。"""
+        m = "dual" if str(mode or "").strip().lower() == "dual" else "list"
+        if m == self._layout_mode:
+            return
+        self._layout_mode = m
+        # v2.11.0：__init__ 的空态占位写在列表区 _hint 里，构造后经配置切到
+        # dual 的实例会错过它（真机截图实证：dual 空面板一片空白）——
+        # 切换即补一次空态刷新（dual 分支只在原文区为空时写占位，幂等）
+        self._update_empty_hint()
+        self._relayout()
+
+    def _restyle_dual_tgt(self):
+        """property 变更（spec/empty）后重刷 QSS——Qt 不会自动感知属性态样式。"""
+        w = self._dual_tgt
+        w.style().unpolish(w)
+        w.style().polish(w)
+
+    def _sync_dual_visibility(self):
+        """原文行与分隔线随「同时显示原文」开关与内容有无显隐。
+        关掉原文 = 纯译文大字模式（分隔线一并隐藏）。"""
+        has_tgt = bool(self._dual_tgt.text().strip()) and not self._dual_tgt.property("empty")
+        show = self._show_source and bool(self._dual_src.text().strip())
+        self._dual_src.setVisible(show)
+        self._dual_sep.setVisible(show and has_tgt)
+
+    @staticmethod
+    def _dual_join(cur, piece):
+        """延续片段拼接：CJK 邻接直连、否则补空格（与主窗 _combine_pieces 同规）。"""
+        if not cur:
+            return piece
+        if ("\u4e00" <= cur[-1] <= "\u9fff"
+                or (piece and "\u4e00" <= piece[0] <= "\u9fff")):
+            return cur + piece
+        return cur + " " + piece
+
+    def _dual_new_sentence(self, src_text):
+        """新句起点：原文区重置为该片段，译文区进入占位态（推测版淡样式）。"""
+        self._dual_src.setText(src_text)
+        self._dual_tgt.setProperty("spec", True)
+        self._dual_tgt.setProperty("empty", False)
+        self._dual_tgt.setText("…")
+        self._restyle_dual_tgt()
+        self._sync_dual_visibility()
+        self._update_empty_hint()
+        self._schedule_relayout()
+
+    def _dual_show_pending(self, source_text):
+        t = (source_text or "").strip()
+        if not t:
+            return
+        cur = self._dual_src.text().strip()
+        if not cur or self._starts_new_sentence(t):
+            self._dual_new_sentence(t)
+        else:
+            self._dual_src.setText(self._dual_join(cur, t))
+            self._sync_dual_visibility()
+            self._schedule_relayout()
+
+    def _dual_spec(self, source_text, target_text, show_source):
+        """推测中间版：原文校准为整句、译文淡色就地更新（失败静默等终版）。"""
+        if not target_text:
+            return
+        self._show_source = bool(show_source)
+        if source_text:
+            self._dual_src.setText(source_text)
+        self._dual_tgt.setProperty("spec", True)
+        self._dual_tgt.setProperty("empty", False)
+        self._dual_tgt.setText(target_text)
+        self._restyle_dual_tgt()
+        self._sync_dual_visibility()
+        self._schedule_relayout()
+
+    def _dual_show_result(self, source_text, target_text, show_source):
+        """终版收口：译文转正式样式（主字号加粗纯色），原文校准为整句。"""
+        self._show_source = bool(show_source)
+        self._last_result = (source_text or "", target_text or "")
+        if source_text:
+            self._dual_src.setText(source_text)
+        self._dual_tgt.setProperty("spec", False)
+        self._dual_tgt.setProperty("empty", not bool(target_text))
+        self._dual_tgt.setText(target_text or "…")
+        self._restyle_dual_tgt()
+        self._sync_dual_visibility()
+        self._update_empty_hint()
+        self._schedule_relayout()
+
     def _update_empty_hint(self):
-        """B/D：无行时显示占位（或首次手势引导），来字即隐；顺带门控清空按钮。"""
+        """B/D：无行时显示占位（或首次手势引导），来字即隐；顺带门控清空按钮。
+        v2.11.0：dual 模式空态时译文区**常驻占位文案**（真机截图实证：不写的话
+        空面板是一片空白，用户不知道这里是干嘛的）；有内容则不动。"""
+        if self._layout_mode == "dual":
+            if not self._dual_src.text().strip():
+                self._dual_tgt.setProperty("empty", True)
+                self._dual_tgt.setProperty("spec", False)
+                self._dual_tgt.setText(
+                    self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
+                self._restyle_dual_tgt()
+            self._clear_btn.setEnabled(bool(self._dual_src.text().strip()))
+            return
         self._hint.setText(self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
         self._hint.setVisible(not self._rows)
         self._clear_btn.setEnabled(bool(self._rows))
@@ -471,6 +653,25 @@ class CaptionOverlay(QWidget):
         # v2.5.0（F2）：收敛判定改看"内容需求高度"——此前只比较 scroll 固定高，
         # 而 scroll 被 min(46) 钳住期间 body.sizeHint 仍在多拍变化，链提前断，
         # 只译文模式实测 5 行塌成 2.5 行
+        # v2.11.0：dual 模式收敛判定看 _dual_want_height（sizeHint 对 wordWrap
+        # label 是单行值，不可靠）
+        # v2.11.0（关键修复）：链结束必须把 _relayout_pending 置回 False——
+        # 原版（v2.4.3 起）收敛后 pending 永久残留 True，之后所有 _schedule_
+        # relayout 被守卫吞掉：列表模式有滚动条兜底视觉无感（历史未暴露），
+        # dual 模式无滚动 → 第二句起高度永远停在首句值、长终版底部裁切
+        # （真机截图+探针轨迹实证：pending=True 恒真、want=124 而 body=74）。
+        if self._layout_mode == "dual" and not self._collapsed:
+            want0 = self._dual_want_height()
+            h0 = self._dual_body.height()
+            self._relayout()
+            if ((self._dual_want_height() != want0
+                 or self._dual_body.height() != h0) and self._relayout_passes < 12):
+                self._relayout_passes += 1
+                self._relayout_pending = True
+                QTimer.singleShot(0, self._consume_relayout)
+            else:
+                self._relayout_pending = False
+            return
         want0 = self._body.sizeHint().height()
         h0 = self._scroll.height()
         self._relayout()
@@ -479,6 +680,8 @@ class CaptionOverlay(QWidget):
             self._relayout_passes += 1
             self._relayout_pending = True
             QTimer.singleShot(0, self._consume_relayout)
+        else:
+            self._relayout_pending = False
 
     def minimumSizeHint(self):
         # v2.4.0 实机验收：布局最小宽度（按钮 sizeHint 总和）会把 resize 钳到
@@ -491,10 +694,30 @@ class CaptionOverlay(QWidget):
         if self._collapsed:
             # v2.5.0：精简条模式——正文区换成最新句速览，高度贴两行内容
             self._scroll.setVisible(False)
+            self._dual_body.setVisible(False)
             self._mini.setVisible(True)
             self._mini.setFixedHeight(min(self._mini.sizeHint().height(), 120))
+        elif self._layout_mode == "dual":
+            # v2.11.0：上下双语——正文贴内容高度、无滚动条（当前句聚焦）；
+            # 手动高度锁定语义与列表一致（⋯ 菜单可恢复自动）
+            self._mini.setVisible(False)
+            self._scroll.setVisible(False)
+            self._dual_body.setVisible(True)
+            self._jump_btn.hide()
+            # 先解除上一轮 setFixedHeight 的钳制——否则 wordWrap 文本变长时
+            # label 被压在旧高度里，终版长译文底部裁切（真机截图实证）
+            self._dual_body.setMinimumHeight(0)
+            self._dual_body.setMaximumHeight(16777215)
+            want = self._dual_want_height()
+            cap = int((QGuiApplication.primaryScreen().availableGeometry().height()
+                       or 800) * 0.55)
+            if self._user_height:
+                self._dual_body.setFixedHeight(max(46, self._user_height - 54))
+            else:
+                self._dual_body.setFixedHeight(min(max(want, 46), cap))
         else:
             self._mini.setVisible(False)
+            self._dual_body.setVisible(False)
             self._scroll.setVisible(True)
             want = self._body.sizeHint().height() + 8
             cap = int((QGuiApplication.primaryScreen().availableGeometry().height()
@@ -612,7 +835,20 @@ class CaptionOverlay(QWidget):
             self._on_collapsed(self._collapsed)
 
     def _update_mini(self):
-        """v2.5.0：精简条内容 = 最新一句（尊重原文开关）；无字幕给引导占位。"""
+        """v2.5.0：精简条内容 = 最新一句（尊重原文开关）；无字幕给引导占位。
+        v2.11.0：dual 模式无行区，从双语区的当前句取值。"""
+        if self._layout_mode == "dual":
+            if self._dual_src.text().strip():
+                src = self._dual_src.text() if self._show_source else ""
+                self._mini_src.setText(src)
+                self._mini_src.setVisible(bool(src))
+                self._mini_tgt.setText(
+                    self._dual_tgt.text()
+                    if not self._dual_tgt.property("empty") else "⟳ 识别中…")
+            else:
+                self._mini_src.setVisible(False)
+                self._mini_tgt.setText("暂无字幕 · 单击展开")
+            return
         if self._rows:
             it = self._rows[-1]
             src = it["src_text"] if self._show_source else ""
@@ -639,8 +875,10 @@ class CaptionOverlay(QWidget):
     def set_collapsed(self, on):
         self._collapsed = bool(on)
         self._sync_bar_texts()
-        self._jump_btn.setVisible(not self._follow and not self._collapsed)
-        self._scroll.setVisible(not self._collapsed)
+        dual = self._layout_mode == "dual"
+        self._jump_btn.setVisible(not self._follow and not self._collapsed and not dual)
+        self._scroll.setVisible(not self._collapsed and not dual)
+        self._dual_body.setVisible(not self._collapsed and dual)
         self._mini.setVisible(self._collapsed)
         if self._collapsed:
             self._update_mini()
@@ -735,6 +973,12 @@ class CaptionOverlay(QWidget):
             QLabel#PanelTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
             QLabel#PanelMiniSrc {{ font-size: {max(11, int(fs * 0.62))}px; color: #98a2b3; }}
             QLabel#PanelMiniTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
+            QWidget#PanelDual {{ background: transparent; }}
+            QLabel#DualSrc {{ color: #98a2b3; }}
+            QLabel#DualTgt {{ color: {self._text_color.name()}; }}
+            QLabel#DualTgt[spec="true"] {{ color: rgba(255,255,255,205); }}
+            QLabel#DualTgt[empty="true"] {{ color: rgba(255,255,255,72); }}
+            QFrame#DualSep {{ border: none; max-height: 1px; background: rgba(255,255,255,26); }}
             QWidget#PanelRow {{ background: rgba(255,255,255,8); border-radius: 8px;
                                 border-left: 3px solid transparent; }}
             QWidget#PanelRowNewest {{ background: rgba(79,140,255,26); border-radius: 8px;
@@ -747,6 +991,36 @@ class CaptionOverlay(QWidget):
             QScrollBar::handle:vertical {{ background: rgba(255,255,255,70); border-radius: 4px; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         """)
+        # v2.11.0：dual 区字号用 setFont 落地（原因见 _apply_dual_fonts）
+        self._apply_dual_fonts()
+
+    def _apply_dual_fonts(self):
+        """dual 区字号/字重必须走 setFont——QSS 的 font-size **不会写回
+        widget.font()**，QLabel 的 heightForWidth/sizeForWidth 按默认 12px
+        字体度量，长句需求高度被严重算小 → 终版译文底部裁切（真机 grab
+        实证两次）。颜色等外观仍走 QSS（_apply_qss），度量归 setFont。"""
+        fs = max(10, int(self._font_size))
+        f_src = QFont()
+        f_src.setPixelSize(max(11, int(fs * 0.78)))
+        f_src.setWeight(QFont.DemiBold)
+        self._dual_src.setFont(f_src)
+        self._restyle_dual_tgt()
+
+    def _restyle_dual_tgt(self):
+        """按 spec/empty 属性态落地译文字号/字重（setFont，原因见
+        _apply_dual_fonts），并重刷 QSS 颜色（Qt 不自动感知属性态样式）。"""
+        w = self._dual_tgt
+        empty = bool(w.property("empty"))
+        f = QFont()
+        if empty:
+            f.setPixelSize(12)
+            f.setWeight(QFont.Normal)
+        else:
+            f.setPixelSize(max(10, int(self._font_size)))
+            f.setWeight(QFont.Bold if not w.property("spec") else QFont.DemiBold)
+        w.setFont(f)
+        w.style().unpolish(w)
+        w.style().polish(w)
 
     def paintEvent(self, event):
         if not hasattr(self, "_bg_color"):
@@ -960,6 +1234,10 @@ class CaptionOverlay(QWidget):
         acts = {}
         acts["settings"] = menu.addAction("打开设置…")
         acts["source"] = menu.addAction("切换输入来源")
+        # v2.11.0：面板布局快捷切换（与设置页「面板布局」同源落盘，主窗回调）
+        acts["layout"] = menu.addAction(
+            "切换为列表历史布局" if self._layout_mode == "dual"
+            else "切换为上下双语布局（豆包风）")
         menu.addSeparator()
         acts["copy"] = menu.addAction("复制最近一句")
         acts["fix_asr"] = menu.addAction("纠正最近识别…")
@@ -1008,6 +1286,12 @@ class CaptionOverlay(QWidget):
         elif chosen == acts.get("source"):
             if self._on_toggle_source:
                 self._on_toggle_source()
+        elif chosen == acts.get("layout"):
+            # v2.11.0：即时切换 + 经主窗回调落盘 overlay_layout（下次启动保持）
+            new_mode = "list" if self._layout_mode == "dual" else "dual"
+            self.set_layout_mode(new_mode)
+            if self._on_layout_changed:
+                self._on_layout_changed(new_mode)
         elif chosen == acts.get("copy"):
             QApplication.clipboard().setText(f"{src}\n{tgt}".strip())
         elif chosen == acts.get("fix_asr"):

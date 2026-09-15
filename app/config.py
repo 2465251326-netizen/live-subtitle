@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.10.0"
+APP_VERSION = "2.11.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -29,6 +29,10 @@ DEFAULTS = {
                                       # 关=固定用当前引擎，失败只报错不换（离线包用户/想稳定复现者用）
     "target_lang": "zh-CN",
     "show_source": True,
+    "overlay_layout": "list",          # v2.11.0：字幕面板布局——"list"=历史滚动列表
+                                        # （v2.4.0 起的形态）；"dual"=上下双语（豆包风：
+                                        # 上半原文随识别流式生长、下半译文随推测式翻译就地更新）。
+                                        # 面板 ⋯ 菜单随时切换，设置页保存即时生效。
     "max_history": 200,
     "overlay_enabled": True,
     "overlay_x": 200,

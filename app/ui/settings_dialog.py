@@ -181,6 +181,7 @@ _FIELD_SPECS = {
     "hotkey_overlay":       ("instant", "keyseq"),
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
+    "overlay_layout":       ("overlay", "combo"),
     "overlay_font_size":    ("overlay", "spin"),
     "overlay_text_color":   ("overlay", "color"),
     "overlay_bg_color":     ("overlay", "color"),
@@ -233,6 +234,9 @@ _STD_ROW_ITEMS = {
                         ("快速（更低延迟，机翻味更重）", "fast")],
     "close": [("每次询问", "ask"), ("隐藏到托盘（字幕继续）", "tray"),
               ("直接退出程序", "exit")],
+    # v2.11.0：面板布局两形态（dual=上下双语豆包风）
+    "overlay_layout": [("列表历史（原文+译文成对滚动）", "list"),
+                       ("上下双语（豆包风：上原文 / 下译文）", "dual")],
     # v2.7.6（C）：分段上限档位——实测 hold_p50 恒等于该值（turbo 关=6.04s、
     # turbo 开=4.03~4.43s）。开了推测式增量翻译后译文随碎片立即上屏，本项
     # 主要影响"刷新粒度与腰斩程度"，不再是译文迟到的决定因素
@@ -362,6 +366,14 @@ _STD_ROWS = [
     {"key": "show_source", "attr": "show_source_check", "page": "display", "section": "字幕显示",
      "kind": "check", "title": "同时显示原文",
      "desc": "开启后字幕与字幕面板同时保留原语言文本（面板上也可一键开关）。"},
+    {"key": "overlay_layout", "attr": "layout_combo", "page": "display", "section": "字幕显示",
+     "kind": "combo", "title": "面板布局",
+     "desc": "「列表历史」= 现在的面板：原文+译文成对的历史滚动区，可回看整场。\n"
+             "「上下双语」= 豆包式实时翻译：上半是随识别**流式生长的原文**（淡色小字），"
+             "下半是**加粗大字译文**——原文一出就上屏，译文随即就地更新（配合推测式增量翻译几乎"
+             "无等待），说完即换下一句，不保留历史（历史仍在主窗口与导出里）。\n"
+             "面板 ⋯ 菜单可随时互切，保存后立即生效。",
+     "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
      "desc": "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"

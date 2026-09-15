@@ -536,7 +536,9 @@ class MainWindow(QMainWindow):
                                        on_collapsed=self._on_panel_collapsed,
                                        on_first_show=self._on_panel_first_show,
                                        on_opacity=self._on_panel_opacity,
-                                       on_height_changed=self._on_panel_height)
+                                        on_height_changed=self._on_panel_height,
+                                        # v2.11.0：面板 ⋯ 菜单切换布局 → 回调落盘
+                                        on_layout_changed=self._on_panel_layout_changed)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -985,6 +987,13 @@ class MainWindow(QMainWindow):
         self.config.set("overlay_enabled", bool(checked))
         self._refresh_quick_panel()  # v2.3.2（G1）
 
+    def _on_panel_layout_changed(self, mode):
+        """v2.11.0：面板布局变更 → 同步 overlay（幂等）+ 落盘 overlay_layout
+        （overlay 组键，即时生效；运行中切换即切即用，无需重启管线）。"""
+        m = "dual" if str(mode) == "dual" else "list"
+        self.overlay.set_layout_mode(m)      # 幂等：面板内部切换后此为 no-op
+        self.config.set("overlay_layout", m)
+
     def apply_overlay_from_config(self):
         c = self.config
         # v2.4.0 面板形态：三形态/穿透/描边全部退役，只剩内容相关的外观项
@@ -996,6 +1005,8 @@ class MainWindow(QMainWindow):
         )
         self.overlay.set_show_source(bool(c.get("show_source")))
         self.overlay.set_target_lang(str(c.get("target_lang") or "zh-CN"))
+        # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复
+        self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
         self.overlay.set_pinned(bool(c.get("overlay_pin")))
         self.overlay.set_collapsed(bool(c.get("overlay_collapsed")))

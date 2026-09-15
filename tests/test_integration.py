@@ -838,6 +838,107 @@ def t_overlay_resident_on_launch():
         cfg.set("overlay_enabled", orig)
 check("panel: 悬浮条启动常驻、热键隐藏当次有效", t_overlay_resident_on_launch)
 
+def t_overlay_dual_layout():
+    """v2.11.0：上下双语布局——原文区流式生长（新句重置/延续拼接）、推测版
+    就地更新、终版收口校准、clear 占位恢复、纯译文显隐、收起态取值。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    assert ov.is_dual()
+    assert ov._dual_body.isVisible() and not ov._scroll.isVisible()
+    # 新句起点：原文上屏 + 译文占位（淡色推测态）
+    ov.show_pending("The quick brown")
+    assert ov._dual_src.text() == "The quick brown"
+    assert ov._dual_tgt.text() == "…"
+    assert ov._dual_tgt.property("spec") is True
+    # 延续片段：整句打字机式生长（拉丁补空格）
+    ov.show_pending("fox jumps")
+    assert ov._dual_src.text() == "The quick brown fox jumps"
+    # 推测版：原文校准整句、译文就地更新且保持推测态
+    ov.update_spec_result("The quick brown fox jumps", "敏捷的棕色狐狸跳", True)
+    assert ov._dual_tgt.text() == "敏捷的棕色狐狸跳"
+    assert ov._dual_tgt.property("spec") is True
+    # 终版收口：正式样式 + _last_result 落账
+    ov.show_pending_result("The quick brown fox jumps", "敏捷的棕色狐狸跳了起来", True)
+    assert ov._dual_tgt.text() == "敏捷的棕色狐狸跳了起来"
+    assert ov._dual_tgt.property("spec") is False
+    assert ov._last_result == ("The quick brown fox jumps", "敏捷的棕色狐狸跳了起来")
+    # 下一句（大写开头）重置原文区；CJK 起始字符按既有 _starts_new_sentence
+    # 语义同样判"新句"（中文源逐段重置是既有约定）；CJK 邻接直连由
+    # _dual_join 兜底（小写起始片段被判延续时，与 CJK 尾字相邻不加空格）
+    ov.show_pending("Over the lazy dog")
+    assert ov._dual_src.text() == "Over the lazy dog"
+    ov.show_pending("今天天气")
+    assert ov._dual_src.text() == "今天天气"
+    ov.show_pending("is fine")
+    assert ov._dual_src.text() == "今天天气is fine"
+    # 关原文开关 = 纯译文大字：原文行与分隔线隐藏
+    ov._dual_show_result("Hello world", "你好世界", False)
+    assert not ov._dual_src.isVisible() and not ov._dual_sep.isVisible()
+    assert ov._dual_tgt.text() == "你好世界"
+    # 收起态：迷你条从双语区取当前句
+    ov._dual_show_result("Stay focused", "保持专注", True)
+    ov.set_collapsed(True)
+    assert ov._mini_tgt.text() == "保持专注"
+    assert ov._mini_src.text() == "Stay focused"
+    ov.set_collapsed(False)
+    # 清空 → 占位恢复
+    ov.clear_caption()
+    assert ov._dual_src.text() == ""
+    assert ov._dual_tgt.property("empty") is True
+    # 切回列表模式：滚动区回归、双语区隐藏
+    ov.set_layout_mode("list")
+    assert not ov.is_dual()
+    assert ov._scroll.isVisible() and not ov._dual_body.isVisible()
+    ov.deleteLater()
+check("panel: 上下双语布局（dual）全链路", t_overlay_dual_layout)
+
+def t_overlay_relayout_pending_release():
+    """v2.11.0 关键修复锁：_consume_relayout 收敛后必须释放 _relayout_pending。
+
+    原版（v2.4.3 起）pending 收敛后永久残留 True，后续所有 _schedule_relayout
+    被守卫吞掉——列表模式有滚动条兜底、视觉无感（历史未暴露），dual 模式无
+    滚动，第二句起高度永远停在首句值、长终版底部裁切（真机截图+探针轨迹
+    实证：want=124 而 body=74）。本锁钉住"连续多句高度必须持续跟随"。"""
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    texts = [("The quick brown fox", "敏捷的棕色狐狸"),
+             ("Our team shipped the new subtitle engine last week and the latency dropped a lot",
+              "我们的团队上周发布了新的字幕引擎，延迟大幅下降"),
+             ("Neural voice activity detection can tell human speech apart from background music",
+              "神经语音活动检测能够把人声与背景音乐区分开来")]
+    heights = []
+    for src, tgt in texts:
+        ov._dual_show_pending(src)
+        for _ in range(5):
+            app.processEvents()
+        ov._dual_show_result(src, tgt, True)
+        for _ in range(8):
+            app.processEvents()
+        heights.append(ov._dual_body.height())
+        assert ov._relayout_pending is False, "收敛后 pending 必须释放，否则后续排期被吞"
+    assert heights[-1] > heights[0], f"高度未跟随内容演进（停在首句值）：{heights}"
+    assert len(set(heights)) >= 2, f"高度应随句长变化：{heights}"
+    ov.deleteLater()
+check("panel: relayout pending 释放（多句高度跟随）", t_overlay_relayout_pending_release)
+
+def t_overlay_layout_config_roundtrip():
+    """overlay_layout 配置经 apply_overlay_from_config 恢复布局；
+    面板 ⋯ 菜单切换经主窗回调落盘。"""
+    w = MainWindow()
+    w.show()
+    w.config.set("overlay_layout", "dual")
+    w.apply_overlay_from_config()
+    assert w.overlay.is_dual(), "配置 dual 应在启动恢复时生效"
+    w._on_panel_layout_changed("list")
+    assert w.config.get("overlay_layout") == "list"
+    assert not w.overlay.is_dual(), "菜单切换应即时生效并落盘"
+    w._quitting = True
+    w._teardown()
+check("panel: 布局配置恢复与菜单切换落盘", t_overlay_layout_config_roundtrip)
+
 def t_panel_unread_badge():
     # v2.4.3（E）：非跟随时新句计数 +1、按钮变红显示"N"；回底两种路径（点按钮/
     # 滚到底）都归零复原。offscreen 字体度量退化（30 行仅 ~2px 溢出、maximum<4

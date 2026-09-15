@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 深夜 v2.10.0（悬浮面板启动即常驻，见第十五节；v2.8.0 译文速度专项见第十三节；v2.9.0 神经 VAD 恢复为默认关实验开关，见第十四节）
+> 最后更新：2026-09-15 深夜 v2.11.0（悬浮面板新增「上下双语」布局 + 修复 v2.4.3 起的 relayout pending 状态机缺陷，见第十六节；v2.8.0 译文速度专项见第十三节；v2.9.0 神经 VAD 实验开关见第十四节；v2.10.0 面板启动常驻见第十五节）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.10.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.11.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -167,7 +167,7 @@ app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      75 项单元测试
-tests/test_integration.py 93 项集成测试
+tests/test_integration.py 96 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -330,4 +330,16 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **文案同步**：设置页 `overlay_enabled` 行 desc、README 亮点 bullet、三分钟上手第 5 步、README「显示/悬浮字幕面板/托盘菜单」三节（顺带清了 v2.4.0 退役的描边/右键关闭/0-95% 透明度遗留描述与特性亮点里的"三种形态"过期文案——README 后半是 v2.3 时代残留，此前多轮改版都没扫到）。
 - **锁**：`t_overlay_resident_on_launch`（集成 93）——构造前落盘 False→构造后必可见且回写 True；热键隐藏→False；再按→True。注意热键有 **250ms 防抖**（既有机制），连测两次 toggle 前要 `w._overlay_hk_last = 0.0`，否则第二次被防抖吞掉误判失败。
 - **版本**：v2.10.0（行为变更走 minor，项目惯例）。改动面很小（main_window 两处 + settings_dialog 文案），全套 75+93 绿后才发布。
+
+## 十六、会话快照（2026-09-15 深夜 v2.11.0：上下双语布局 + relayout 状态机历史缺陷修复）
+
+- **用户需求原话**："保留这个样式，再添加一个样式……不是那种一个框一个框里有原文和翻译，而是上半部分是原文，下半部分是译文，UI 要好看一点"——对标豆包 PC 实时翻译。
+- **实现形态**：`overlay_layout`（list/dual）配置键；`CaptionOverlay` 内置 `_dual_body`（`_dual_src` 淡色原文 + `_dual_sep` 分隔线 + `_dual_tgt` 加粗译文），与列表模式互斥显示；主窗调用接口（show_pending/show_pending_result/update_spec_result/show_caption/clear_caption）**零改动**，内部按模式分派。dual 特有行为：原文区**流式生长**（`_starts_new_sentence` 判新句重置、延续片段 `_dual_join` CJK 邻接直连/拉丁补空格拼接）；推测版走 spec 态淡色；终版收口校准整句。⋯ 菜单加互切项（`on_layout_changed` 回调落盘，主窗 `_on_panel_layout_changed` 幂等同步 overlay+config 双保险）。设置页「显示-字幕显示」combo 登记（overlay_ 前缀键保存自动走 apply_overlay_from_config）。
+- **dual 字号必须 setFont**：QSS 的 font-size **不会写回 widget.font()**，QLabel.heightForWidth/sizeForWidth 按默认 12px 字体度量 → 长句需求高被算小 → 裁切。`_apply_dual_fonts`/`_restyle_dual_tgt`（spec=主字号 DemiBold、empty=12px Normal）统一管理，QSS 只管颜色。
+- **dual 高度**：`_dual_want_height()` 用 heightForWidth(可用宽) 求和（+25 常数= margins14+spacing10+sep1）；`_relayout` dual 分支**先解除 setFixedHeight 钳制**再取值（否则 label 被压在旧高度里、度量停在旧值）；无滚动、cap=0.55 屏、user_height 语义与列表一致。
+- **历史缺陷修复（本节最重要）**：`_consume_relayout` 收敛后 `_relayout_pending` **永久残留 True**（v2.4.3 引入排期机制起就这样，原版无 pending=False 处置）——之后所有 `_schedule_relayout` 被守卫吞掉。列表模式有滚动条兜底视觉无感（历史全绿测试也没暴露），dual 无滚动 → **第二句起高度停在首句值、长终版底部裁切**。实证链：真机截图 shot6 裁切 → `QWidget.grab()` 面板本体渲染定位"非截图问题" → 打印 hfw/want/height 发现 want=124 而 body=74 → 轨迹复盘抓到 `pending=True` 恒真。修复=链结束置 False（两个分支都补）。**列表模式的高度贴内容也随之更及时**（顺带收益）。
+- **dual 空态占位**：__init__ 的占位写在列表区 _hint；构造后经配置切 dual 的实例会错过 → `set_layout_mode` 切换即补 `_update_empty_hint()`（dual 分支只在原文区空时写占位，幂等；首次显示升级手势引导语义保留）。
+- **验证方法论**：`QWidget.grab()` 把控件本体渲染成 PNG——不受桌面重叠/分辨率干扰，比全屏截图更适合 UI 排查；配合逐步 processEvents 打印 pending/height/want 轨迹，两轮就锁死根因。真机验证走隔离实例 + SAPI 连续语音 + PowerShell CopyFromScreen 全屏截图（弹窗前征得用户同意）。
+- **锁**：`t_overlay_dual_layout`（全链路）、`t_overlay_layout_config_roundtrip`（配置恢复+菜单落盘）、`t_overlay_relayout_pending_release`（多句高度跟随——钉死本次历史缺陷）。集成 96 / 单元 75 全绿。
+- **版本**：v2.11.0（新功能 minor）。
 
