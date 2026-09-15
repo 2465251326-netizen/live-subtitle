@@ -991,6 +991,54 @@ def t_dual_split_hit_global():
     ov.deleteLater()
 check("panel: 分割命中用全局坐标（传播坐标不重映射）", t_dual_split_hit_global)
 
+def t_overlay_dual_split_real_drag():
+    """v2.15.2：**真实事件流**拖拽——QMouseEvent + sendEvent 按真实路径
+    （分割点处实际接收的子控件 → 事件过滤器），验证事件路由而非仅分配
+    逻辑：press 启动拖拽、move 跟手、release 收口落盘。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual")
+    ov.resize(620, 300)
+    ov.move(80, 60)
+    ov.show()
+    app.processEvents()
+    ov._dual_show_result("Hello world", "你好世界", True)
+    ov.dual_push_history("Hello world", "你好世界")
+    ov._dual_show_pending("Current growing")
+    for _ in range(6):
+        app.processEvents()
+    ov.set_user_height(520)
+    for _ in range(6):
+        app.processEvents()
+    assert ov._dual_hist.isVisible()
+    h0 = ov._dual_hist.height()
+    g = ov._dual_hist.mapToGlobal(
+        QPoint(ov._dual_hist.width() // 2, ov._dual_hist.height() + 5))
+    target = QApplication.widgetAt(g)
+
+    def send_mouse(gtype, gpos, button=None):
+        t = QApplication.widgetAt(gpos) or target
+        local = t.mapFromGlobal(gpos)
+        ev = QMouseEvent(QEvent.Type(gtype), QPointF(local), QPointF(gpos),
+                         button or Qt.NoButton, button or Qt.NoButton,
+                         Qt.NoModifier)
+        QApplication.sendEvent(t, ev)
+
+    send_mouse(QEvent.Type.MouseButtonPress, g, Qt.LeftButton)
+    assert ov._dual_split_drag, "press 应经事件过滤器启动分割拖拽"
+    for dy in (30, 60, 90):
+        send_mouse(QEvent.Type.MouseMove, QPoint(g.x(), g.y() + dy), Qt.LeftButton)
+    h_mid = ov._dual_hist.height()
+    assert h_mid > h0 + 40, f"拖动中历史区应跟手：{h0} -> {h_mid}"
+    send_mouse(QEvent.Type.MouseButtonRelease, QPoint(g.x(), g.y() + 90), Qt.LeftButton)
+    assert ov._dual_split_drag is False, "release 应收口"
+    h1 = ov._dual_hist.height()
+    assert abs(h1 - (h0 + 90)) <= 16, f"拖 90px 历史区应变化约 90：{h0} -> {h1}"
+    ov.deleteLater()
+check("panel: 分割线真实事件流拖拽（事件过滤器）", t_overlay_dual_split_real_drag)
+
 def t_overlay_relayout_pending_release():
     """v2.11.0 关键修复锁：_consume_relayout 收敛后必须释放 _relayout_pending。
 

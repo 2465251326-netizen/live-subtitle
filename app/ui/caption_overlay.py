@@ -18,7 +18,7 @@
 clear_caption / set_status / apply_style(去描边参数)。
 """
 
-from PySide6.QtCore import Qt, QPoint, QTimer, QSize
+from PySide6.QtCore import Qt, QPoint, QTimer, QSize, QEvent
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QFont
 from PySide6.QtWidgets import (
     QWidget, QLabel, QMenu, QToolButton, QScrollArea, QApplication,
@@ -295,6 +295,20 @@ class CaptionOverlay(QWidget):
         dl.addWidget(self._dual_tgt, 1)
         outer.addWidget(self._dual_body, 1)
         self._dual_body.hide()
+        # v2.15.2：分割线交互改走**事件过滤器**。为什么必须用它：
+        # ① mouse move/hover 在子控件忽略后**不会传播给父控件**（只有 press
+        #    会重新投递）→ 悬停光标反馈永远失效，用户无从发现可拖；
+        # ② 命中带上半落在 QScrollArea 内，press 会被它直接消费；
+        # ③ 传播到面板的事件 position 不重映射（相对原接收者），相对坐标
+        #    判定必然错位（v2.15.1 已实证）。
+        # 过滤器在子控件层面拦截全部相关事件，坐标全用 globalPosition。
+        # 注意：必须放在全部控件创建之后（否则引用未创建属性）。
+        self._dual_split_watch = [
+            self._dual_hist, self._dual_hist.viewport(), self._dual_hist_body,
+            self._dual_body, self._dual_src, self._dual_sep, self._dual_tgt,
+        ]
+        for _w in self._dual_split_watch:
+            _w.installEventFilter(self)
 
         self._pin_btn.setChecked(self._pinned)
         self._sync_unread_btn()
@@ -1366,6 +1380,55 @@ class CaptionOverlay(QWidget):
             self.setCursor(Qt.SizeVerCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
+
+    def _dual_split_apply_drag(self, g):
+        """v2.15.2：按当前全局鼠标位置应用分割拖拽（历史区高度=起始值+dy）。"""
+        dy = g.y() - self._dual_split_start_y.y()
+        new_h = max(40, min(self._dual_split_start_h + dy,
+                            max(40, self.height() - 54 - 46)))
+        self._dual_hist_h_user = new_h
+        self._relayout()
+
+    def eventFilter(self, obj, ev):
+        """v2.15.2：dual 分割线交互的事件过滤器（挂在历史区/当前句区全部
+        子控件上，见 __init__ 的 _dual_split_watch）。
+
+        为什么必须用过滤器而不是 overlay 自身的 mouseEvent：
+        ① mouse move/hover 在子控件忽略后**不会传播给父控件**（只有 press
+           会重新投递）→ 悬停光标反馈在旧实现下永远失效，用户无从发现可拖；
+        ② 命中带上半落在 QScrollArea 内，press 会被它直接消费；
+        ③ 传播/过滤的事件 position 相对**原接收者**（不重映射），一律取
+           globalPosition 比对。"""
+        if (getattr(self, "_dual_split_watch", None) and obj in self._dual_split_watch
+                and self._layout_mode == "dual" and not self._collapsed):
+            t = ev.type()
+            if t in (QEvent.Type.MouseMove, QEvent.Type.HoverMove):
+                g = ev.globalPosition().toPoint()
+                if self._dual_split_drag:
+                    self._dual_split_apply_drag(g)
+                    return True
+                if hasattr(obj, "setCursor"):
+                    if self._dual_split_hit(g.y()):
+                        obj.setCursor(Qt.SizeVerCursor)
+                    else:
+                        obj.setCursor(Qt.ArrowCursor)
+            elif t == QEvent.Type.MouseButtonPress and ev.button() == Qt.LeftButton:
+                g = ev.globalPosition().toPoint()
+                if self._dual_split_hit(g.y()):
+                    self._dual_split_drag = True
+                    self._dual_split_start_y = g
+                    self._dual_split_start_h = self._dual_hist.height()
+                    return True           # 拦下：防止 QScrollArea 抢走拖拽
+            elif t == QEvent.Type.MouseMove and self._dual_split_drag:
+                self._dual_split_apply_drag(ev.globalPosition().toPoint())
+                return True
+            elif t == QEvent.Type.MouseButtonRelease and self._dual_split_drag:
+                self._dual_split_drag = False
+                self._dual_split_apply_drag(ev.globalPosition().toPoint())
+                if getattr(self, "_on_dual_split", None):
+                    self._on_dual_split(self._dual_hist_h_user or 0)
+                return True
+        return super().eventFilter(obj, ev)
 
     def mouseReleaseEvent(self, event):
         if self._resizing:
