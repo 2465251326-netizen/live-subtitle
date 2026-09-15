@@ -58,7 +58,6 @@ class CaptionOverlay(QWidget):
         self._pinned = True
         self._follow = True
         self._rows = []
-        self._pending_row = None
         self._last_result = ("", "")
         self._drag_pos = None
         self._resizing = False
@@ -346,7 +345,9 @@ class CaptionOverlay(QWidget):
             self._relayout()
             self._schedule_relayout()
             return
-        self._pending_row = self._add_row(source_text, "⟳ 识别中…", True)
+        # v2.7.5（R-4）：_pending_row 死变量移除——T1 多待决并存后匹配走
+        # _find_pending（按原文精确/后缀），单槽指针已无读方
+        self._add_row(source_text, "⟳ 识别中…", True)
 
     def show_pending_result(self, source_text, target_text, show_source=True,
                             merged_from=None):
@@ -384,7 +385,6 @@ class CaptionOverlay(QWidget):
             it["row"].setParent(None)
             it["row"].deleteLater()
         self._rows = []
-        self._pending_row = None
         self._last_result = ("", "")
         self._unread = 0
         self._sync_unread_btn()

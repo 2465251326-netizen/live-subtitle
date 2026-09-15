@@ -235,10 +235,13 @@ class AsrThread(QThread):
     # _on_asr_text/_asr_timing 按秒 float()。
     # v2.3.20（P26）：追加第 4 参 t_flush_mono（浮点 monotonic 秒）——该音频段
     # 在采集线程"切分完成"的时刻，用于测"话音落→原文上屏"识别段延迟；-1=未知。
-    # v2.7.0（T2）：追加第 5/6 参 tail_quiet_s（该段音频内**最后一片结束到段尾**
-    # 的静音秒数，=说话人已停多久）、last_logprob（末片置信度，越高越可信）——
-    # 攒句"提前冲"判据用；仅组内最后一条携带真值，其余 0.0。
-    text_ready = Signal(str, str, str, float, float, float)
+    # v2.7.5（R-4）：回退 4 参——T2 曾加 tail_quiet/last_logprob 两参作"提前冲"
+    # 判据，后被真机审计证伪（whisper 把末片结束时间拉伸补齐到音频尾，tail_q
+    # 恒≈0，判据只保留时间地板），死数据管道整体拆除。
+    text_ready = Signal(str, str, str, float)  # text, whisper_lang, duration, t_flush_mono
+    # v2.7.5（R-2）：复检丢弃通知——语言复检低置信不一致的段此前静默 return，
+    # 用户视角"字幕无预警跳过一大段内容"。主窗以此建弱化卡留痕，可排查。
+    recheck_dropped = Signal(str, float)
     status_changed = Signal(str)
     model_ready = Signal()
     error_occurred = Signal(str)
@@ -696,7 +699,6 @@ class AsrThread(QThread):
 
         segments, info = self._model.transcribe(audio, **kwargs)
         segs = []
-        seg_end = 0.0
         for seg in segments:
             # v2.0.1：协作取消点——segments 是惰性生成器，此前一旦开始消费
             # 就无法中断（14s 音频 CPU 大模型可达数十秒），停止超时后成僵尸线程
@@ -705,10 +707,6 @@ class AsrThread(QThread):
             t = (seg.text or "").strip()
             if not t or not has_content(t):
                 continue
-            try:    # v2.7.0（T2）：末片结束时刻——"说话人在段内已停了多久"
-                seg_end = max(seg_end, float(getattr(seg, "end", 0.0) or 0.0))
-            except Exception:
-                pass
             segs.append((t, float(getattr(seg, "avg_logprob", 0.0) or 0.0),
                          float(getattr(seg, "no_speech_prob", 0.0) or 0.0)))
         if self.hallucination_filter:
@@ -748,6 +746,7 @@ class AsrThread(QThread):
                 self.status_changed.emit("语言复检：检测到说话语言变化，已切换")
             elif detected and detected != lang:
                 self.status_changed.emit("语言复检结果不一致，本段保守丢弃，下段按原语言继续")
+                self.recheck_dropped.emit(text, duration)
                 return
         if self.language == "auto" and conf < 0.6:
             with self._lang_lock:
@@ -768,16 +767,9 @@ class AsrThread(QThread):
         # v2.2.3：切分时把短句合并到下一句（尾句不再单独成段），字幕节奏更自然
         # v2.3.4：切分发生在内容过滤之后——切出的纯标点尾巴（实测 ".."）会漏网，
         # 逐片再过一次 has_content（CBS 新闻体验轮抓到的过滤器漏洞）
-        # v2.7.0（T2）：tail_quiet=段内"人声结束→音频段尾"静音秒数（说话人已停了多久），
-        # 仅末片携带真值——攒句侧作为"已说完"的提前冲句证据
-        tail_q = max(0.0, duration - seg_end) if seg_end > 0 else 0.0
-        last_lp = segs[-1][1] if segs else 0.0
         pieces = [p for p in split_long_caption(text) if has_content(p)]
-        for i, piece in enumerate(pieces):
-            is_last = i == len(pieces) - 1
-            self.text_ready.emit(piece, detected, f"{duration:.1f}", t_flush,
-                                 tail_q if is_last else 0.0,
-                                 last_lp if is_last else 0.0)
+        for piece in pieces:
+            self.text_ready.emit(piece, detected, f"{duration:.1f}", t_flush)
 
 
 class PrewarmWorker(QThread):

@@ -415,12 +415,15 @@ class TranslateThread(QThread):
     DRAIN_GRACE = 15.0
 
     def __init__(self, engine_name: str, target: str, parent=None, translate_fix_map=None,
-                 fix_whole_word=False, offline_quality="high", auto_fallback=True):
+                 fix_whole_word=False, offline_quality="high", auto_fallback=True,
+                 expected_src=None):
         super().__init__(parent)
         self.engine_name = engine_name
         self.target = target
         # v2.7.1：引擎自动切换开关——关=失败时不降级换引擎，只报错（默认开=旧行为）
         self._auto_fallback = bool(auto_fallback)
+        # v2.7.5（R-3）：预载定向——识别侧配置语言（auto=未知）
+        self.expected_src = str(expected_src or "").strip().lower()
         # v2.3.6（P7）：译文修正词典，上屏前应用（含缓存命中的存量错译）
         self.fix_map = dict(translate_fix_map or {})
         # v2.6.0（R2）：词典全词匹配开关快照
@@ -534,15 +537,19 @@ class TranslateThread(QThread):
     def _preload_argos(self):
         """后台预载目标语言方向的离线包（v2.7.0 T7）。失败静默——
         真实翻译调用仍会走原有加载路径；_get_translator 自带缓存+双检锁，
-        与首次真实调用天然幂等合流。"""
+        与首次真实调用天然幂等合流。
+        v2.7.5（R-3）：预载定向——识别侧锁定了语言时只预载该方向；
+        auto（源未知）预载 en 最常见方向，其余方向首次翻译仍走原加载路径。"""
         try:
             from .offline_pack import _get_translator, list_installed
             tgt = "zh" if self.target.startswith("zh") else self.target
+            es = str(getattr(self, "expected_src", "") or "").split("-")[0]
+            wanted = {es} if es and es != "auto" else {"en"}
             for pair in list_installed():
                 if self._stop:
                     return
                 src, t = pair[0], pair[1]
-                if t == tgt:
+                if t == tgt and src in wanted:
                     _get_translator(src, tgt)
         except Exception:
             pass

@@ -1088,7 +1088,8 @@ def test_do_translate_google_lang_passthrough():
 
 
 def test_preload_argos_direction():
-    """v2.7.0（T7）：离线包预载只载目标语言方向，非目标方向不碰。"""
+    """v2.7.5（R-3）：预载定向——auto（源未知）只预载 en 最常见方向；
+    锁定源语言时只预载该方向；非目标/非预期方向不碰。"""
     from app.translate import translator as tr
     from app.translate import offline_pack as op
     calls = []
@@ -1099,8 +1100,17 @@ def test_preload_argos_direction():
         tt = tr.TranslateThread("auto", "zh-CN")
         tt._stop = False
         tt._preload_argos()
-        assert ("en", "zh") in calls and ("ja", "zh") in calls
-        assert ("fr", "en") not in calls, "非目标方向不该预载"
+        assert calls == [("en", "zh")], "auto 只预载 en 方向"
+        calls.clear()
+        tt = tr.TranslateThread("argos", "zh-CN", expected_src="ja")
+        tt._stop = False
+        tt._preload_argos()
+        assert calls == [("ja", "zh")], "锁定 ja 只预载 ja 方向"
+        calls.clear()
+        tt = tr.TranslateThread("argos", "zh-CN", expected_src="fr")
+        tt._stop = False
+        tt._preload_argos()
+        assert calls == [], "fr 无对应方向不预载"
     finally:
         op._get_translator, op.list_installed = orig_g, orig_l
 

@@ -739,7 +739,7 @@ def t_panel_clear_button_and_empty_hint():
     assert ov._clear_btn.isEnabled()
     ov.show_caption("world", "世界", True)
     ov._clear_btn.click()
-    assert ov._rows == [] and ov._pending_row is None, "行与占位必须全清"
+    assert ov._rows == [], "行与占位必须全清"
     assert ov._last_result == ("", ""), "最近一句也要清（复制/纠错入口同步失效）"
     assert ov._hint.isVisible(), "清空后占位提示回归"
     assert not ov._clear_btn.isEnabled()
@@ -1963,7 +1963,7 @@ def t_session_guard_rejects_stale_thread():
     old_asr.status_changed.connect(w._on_asr_status)
     # 旧线程迟到原文/译文/状态：全部拦截
     w._caption_seen = False
-    old_asr.text_ready.emit("stale text", "en", 1.0, -1.0, 0.0, 0.0)
+    old_asr.text_ready.emit("stale text", "en", 1.0, -1.0)
     assert w._caption_seen is False, "旧线程迟到的原文不得上屏"
     before = w.scroll_layout.count()
     old_tr.result_ready.emit("stale text", "旧译文", "argos", "en", "")
@@ -1977,7 +1977,7 @@ def t_session_guard_rejects_stale_thread():
     old_tr.result_ready.emit("stale 2", "x", "argos", "en", "")
     assert w.scroll_layout.count() == before, "旧线程第二次迟到译文仍不得建卡"
     # 新线程信号放行（身份匹配）
-    new_asr.text_ready.emit("fresh text", "en", 1.0, -1.0, 0.0, 0.0)
+    new_asr.text_ready.emit("fresh text", "en", 1.0, -1.0)
     assert w._caption_seen is True, "当前会话线程的原文应正常上屏"
     w._quitting = True
     w._teardown()

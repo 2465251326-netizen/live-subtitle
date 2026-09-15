@@ -216,7 +216,9 @@ class Config:
     def _coerce(key, val):
         """v2.7.4（A-2）：手编配置逐键消毒——类型不符按 DEFAULTS 原型挽救或丢弃。
         零校验时代的实锤事故（全量测试活体复现）："overlay_font_size":"18px"
-        启动即崩；"max_history":"200" 运行中崩；词典值设 list → 每段抛全场零字幕。"""
+        启动即崩；"max_history":"200" 运行中崩；词典值设 list → 每段抛全场零字幕。
+        v2.7.5（R-5）：负数无意义（负尺寸/负条数）——int 挽救链对负值回默认原型；
+        超大值属用户意愿不拦（UI 控件仍会 clamp 显示）。"""
         proto = DEFAULTS.get(key)
         try:
             if isinstance(proto, bool):
@@ -225,9 +227,10 @@ class Config:
                 if isinstance(val, bool):
                     return proto
                 if isinstance(val, int):
-                    return val
+                    return val if val >= 0 else proto
                 if isinstance(val, float):
-                    return int(val)
+                    coerced = int(val)
+                    return coerced if coerced >= 0 else proto
                 if isinstance(val, str):
                     return int(float(val.strip()))   # "200" 挽救；"18px" 抛→原型
                 return proto

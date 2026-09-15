@@ -1127,11 +1127,13 @@ class MainWindow(QMainWindow):
         c = self.config
         engine = c.get("engine")
         # v2.6.0：注入全词匹配开关与离线质量档快照（运行中可经 apply_pipeline_hotfix 热更）
+        # v2.7.5（R-3）：expected_src=识别侧配置语言，离线包预载只装该方向
         self.translate_thread = TranslateThread(engine, c.get("target_lang"), self,
                                                 translate_fix_map=dict(c.get("translate_fix_map") or {}),
                                                 fix_whole_word=bool(c.get("fix_whole_word")),
                                                 offline_quality=str(c.get("offline_quality") or "high"),
-                                                auto_fallback=bool(c.get("engine_auto_fallback")))
+                                                auto_fallback=bool(c.get("engine_auto_fallback")),
+                                                expected_src=str(c.get("asr_language") or "auto"))
         self.translate_thread.result_ready.connect(self._on_translated)
         # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
         # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"
@@ -1167,6 +1169,7 @@ class MainWindow(QMainWindow):
         self.asr_thread.status_changed.connect(self._on_asr_status)
         self.asr_thread.error_occurred.connect(self._on_pipeline_error)
         self.asr_thread.model_ready.connect(self._on_model_ready)
+        self.asr_thread.recheck_dropped.connect(self._on_recheck_dropped)
         # v2.7.3：识别线程退场（含排水）→ 冲刷攒句+关闭翻译输入门（治"每次停止必孤儿"）
         self.asr_thread.finished.connect(self._on_asr_finished)
         self.asr_thread.start()
@@ -1616,6 +1619,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_recheck_dropped(self, text, duration):
+        """v2.7.5（R-2）：语言复检丢弃留痕——engine 侧低置信不一致整段 return，
+        此前用户视角"字幕无预警跳过一大段"。弱化卡上屏（导出过滤集已含失败态，
+        不会混进 TXT/SRT），会话身份守卫与管线槽同策略。"""
+        s = self.sender()
+        if s is not None and s is not getattr(self, "_sid_asr", None):
+            return
+        card = self._new_card(text)
+        card.set_failed("语言复检与当前锁定语言不一致且置信度不足 · 该段保守丢弃")
+        self._insert_card(card)
+        if self.stack.currentIndex() == 0:
+            self.stack.setCurrentIndex(1)
+
     def _on_asr_finished(self):
         """v2.7.3：识别线程已退出=所有 text_ready 已发出，且本槽在主线程按序处理
         （排在全部尾句转发之后）——此刻把主窗攒句残组冲刷给翻译、再关闭翻译输入门，
@@ -1655,24 +1671,24 @@ class MainWindow(QMainWindow):
         else:
             self.engine_status_label.setText(msg)
 
-    def _on_asr_text(self, text, detected, duration, t_flush=-1.0,
-                     tail_q=0.0, last_lp=0.0):
+    def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
         # v2.6.2（P1-4/P1-6）：会话身份守卫替代 running 守卫——停止后旧
         # 会话的尾句仍要放行上屏（排水链最后一步，"说完立刻停"不再丢句），
         # 新会话开始后旧线程迟到信号按身份拦截
-        if not self._session_ok(getattr(self, "_sid_asr", None)):
+        s = self.sender()
+        if s is not None and s is not getattr(self, "_sid_asr", None):
             return
-        # v2.4.4（BUG-3）：字幕成功上屏即证明输入信号可识别——撤"输入信号过弱"
-        # 告警。此前该告警挂到会话结束，一边出字幕一边说"字幕可能无法识别"，
-        # 与事实自相矛盾（摸底实测：10 条字幕在屏、横幅仍警示）
-        if getattr(self, "_low_input_warn", False):
+        if getattr(self, "_caption_seen", False) is False:
+            self._caption_seen = True
+            # v2.7.5（R-8）：首片上屏同时复位低电平告警标志——v2.4.4 BUG-3
+            # 契约"字幕上屏即撤告警"此前只兑现显示层（横幅撤了），标志位仍
+            # True 会被下次 _on_low_input 的静音期判定重复引用
             self._low_input_warn = False
             self._set_engine_status(getattr(self, "_engine_status_text", ""))
             self.update_overlay_status()
         self._caption_seen = True
         # v2.7.0（T2）：暂存末片"段内尾静音/置信度"，供攒句提前冲判据使用
-        self._last_tail_q = float(tail_q or 0.0)
-        self._last_lp = float(last_lp or 0.0)
+        # v2.7.5（R-4）：tail_q/last_lp 已随 T2 审计证伪拆除（见 engine 信号注释）
         # v2.3.20（P26）：识别段延迟——"音频切分完成→原文上屏"（含判停、
         # 排队、转写、上屏全程）。t_flush 由 AsrThread 随 text_ready 第 4 参带来。
         if t_flush and t_flush > 0:
@@ -2153,6 +2169,15 @@ class MainWindow(QMainWindow):
             if tr is not None and tr.isRunning():
                 tr.close_input()
                 tr.wait(2000)
+                if tr.isRunning():
+                    # v2.7.5（R-1）：wait 超时后线程将被 terminate——线程末尾的
+                    # _cache.save() 永远执行不到，本次会话新增缓存整批丢失。
+                    # 主线程代刷（save 内部持锁，与翻译线程并发安全）再强杀
+                    from app.translate.translator import _cache
+                    try:
+                        _cache.save()
+                    except Exception:
+                        pass
         except Exception:
             pass
         self._stop_prewarm()  # v2.6.1（P0-2）：预热线程随退出收尾
