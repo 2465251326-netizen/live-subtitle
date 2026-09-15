@@ -463,6 +463,20 @@ class CaptionOverlay(QWidget):
         self._sync_dual_visibility()
         self._schedule_relayout()
 
+    def update_dual_draft_tgt(self, translated):
+        """v2.13.0：草稿推测译文——**只更新译文区**（spec 淡样式），不碰原文/
+        行簿记/_last_result/未读计数；片段级推测版（_dual_spec）与整句终版
+        （_dual_show_result）随后自然覆盖。dual 专属（调用方已按布局闸门过滤，
+        这里再防一道）。效果：译文区与原文区同节奏实时生长（0.9s 级）。"""
+        if self._layout_mode != "dual" or not translated:
+            return
+        self._dual_tgt.setProperty("spec", True)
+        self._dual_tgt.setProperty("empty", False)
+        self._dual_tgt.setText(translated)
+        self._restyle_dual_tgt()
+        self._sync_dual_visibility()
+        self._schedule_relayout()
+
     def show_caption(self, source_text, target_text, show_source=True):
         """一次性上屏（无占位）。v2.11.0：dual 模式同终态收口路径。"""
         if self._layout_mode == "dual":

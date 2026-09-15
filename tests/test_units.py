@@ -1531,6 +1531,23 @@ def test_coerce_float_segment_cap():
     assert c("segment_cap_s", 2.5) == 2.5, "合法浮点原样采纳"
 
 
+def test_stream_preview_restart():
+    """v2.13.0：stop→restart 热重启（中途切回 dual 布局场景）——停止标志
+    复位、陈旧音频缓冲清空（旧窗口不该混进新布局的第一拍草稿）。"""
+    from app.asr.preview import StreamPreview
+    p = StreamPreview(None, "en")
+    p.feed(np.zeros(1600, dtype=np.float32), 0.0)
+    assert p._buf_len > 0.0
+    p.stop()
+    assert p._stop is True
+    p.restart()
+    assert p._stop is False and p._buf_len == 0.0 and len(p._buf) == 0
+    # feed 在停止期间不得积累（省内存）
+    p.stop()
+    p.feed(np.zeros(1600, dtype=np.float32), 0.0)
+    assert p._buf_len == 0.0
+
+
 def test_strip_overlapped_prefix():
     """v2.12.0：流式草稿增量剥离——partial 窗口与已确认文本尾部天然重叠
     （同一段音频两次转写），剥离后只剩新增话音；无重叠时全量返回。"""
@@ -1542,8 +1559,9 @@ def test_strip_overlapped_prefix():
     assert f("hello world", "completely new text") == "completely new text"
     assert f("", "anything") == "anything"
     assert f("base", "") == ""
-    # 转写抖动（大小写漂移）无重叠 → 全量返回，残留由下一拍刷新覆盖
-    assert f("the quick brown fox", "The quick brown fox jumps") == "The quick brown fox jumps"
+    # 大小写抖动：词级锚 lower 匹配直接容错——正确剥离而非全量重复
+    # （v2.13.0a 算法升级：旧严格对齐在此场景会整句重复上屏）
+    assert f("the quick brown fox", "The quick brown fox jumps") == "jumps"
 
 
 def test_stream_preview_gate():

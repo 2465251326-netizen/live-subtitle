@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 凌晨 v2.12.0（dual 流式原文通道：讲到哪跟到哪，见第十七节；v2.11.0 上下双语布局 + relayout 状态机缺陷修复见第十六节；v2.8.0 推测式翻译见第十三节）
+> 最后更新：2026-09-16 凌晨 v2.13.0（草稿送译：译文与原文同节奏实时 + 流式三修，见第十八节；v2.12.0 流式原文通道见第十七节；v2.11.0 上下双语布局见第十六节）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.12.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.13.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -166,8 +166,8 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      77 项单元测试
-tests/test_integration.py 98 项集成测试
+tests/test_units.py      78 项单元测试
+tests/test_integration.py 99 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -352,4 +352,17 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **坑**：Qt 信号 `Signal(object)` 发元组 ≠ 双参数——`raw_chunk.emit((buf, t))` 连 `feed(audio, t)` 会 TypeError missing argument；发双参数信号 `Signal(object, float)` 正解。窗口滑动的草稿会带"前瞻性延展/改写"（whisper 对含未来音频的窗口转写），是流式草稿固有特征，UI 文案要写明"逐拍自我修正属正常"。
 - **锁**：`test_strip_overlapped_prefix`、`test_stream_preview_gate`、`t_overlay_stream_partial`、`t_main_partial_preview_alignment`（内联 stub——`_StubTr` 定义在文件后段，前段测试引用会 NameError）。单元 77 / 集成 98 全绿。
 - **版本**：v2.12.0（新功能 minor）。用户明示"不用监控 CI"——tag 推送即收尾，轮询器流程跳过。
+
+## 十八、会话快照（2026-09-16 凌晨 v2.13.0：草稿送译 + 流式三修）
+
+- **用户实测反馈**（真机 v2.12.0）："译文不是实时翻译的，还那种攒句，而且原文有种攒句的感觉"。真机遥测核实：流式通道已启动（preview.started ✓）、spec_p50=0.02s 但**节奏**被正式片段（2.5~4s 分段周期）卡死——草稿不送译是 v2.12.0 的设计取舍，实测被用户否决。
+- **草稿送译**：`_on_partial_preview` 每拍把"确认基线+草稿增量"送 spec 翻译；回复**不走 _spec_inflight 簿记**，按"`_dual_draft` == 回复原文"一次性配对（防迟到同文重复覆盖），`overlay.update_dual_draft_tgt` 只刷译文区淡态。冲刷（flush）与 stop_pipeline 作废在飞草稿。实测：译文 **1.8s 即出现**且与半截原文对应（旧 4.2s 整句一次性）。
+- **重叠剥离算法重写**（v2.12.0 严格对齐实测整句重复）：正式/预览是同音频两次转写，标点/大小写必异，`base.endswith(text[:k])` 语义是"text 前缀 vs base 尾缀"——base=text+"." 时永不匹配（除非周期串）→ 全量重复。新算法：**词级锚点**（base 尾 5→1 词，lower+strip 尾标点）在 text 前 2/3 找最后出现，其后即新增；CJK 源字符锚（base[-6:]，rfind 且限前半）；锚全失配返回全量（重复下一拍自愈 < 丢新话）。注意：词级 lower 匹配使"大小写抖动"从"全量重复"变成"正确剥离"——单测断言已随行为升级。
+- **草稿翻译语言回退**：`_tgroup_lang`（首片前为空）→ `asr_language` 配置。空串 lang 送 argos = 找不到语言包直接抛错（spec 不走备援链）→ 草稿译文全灭。
+- **中途切布局热启动**：tap_enabled 常开（无接收者 emit µs 级）；预览对象创建与布局解耦（start_pipeline 只看开关+cuda）；`_on_panel_layout_changed` 与 `apply_overlay_from_config`（设置页保存路径）都调 `_maybe_start_stream_preview`——闸门含布局，切 dual 热启（`restart()` 复位 stop 标志+清陈旧缓冲）、切 list 暂停（`_pause_stream_preview` 不销毁对象）。
+- **connect 幂等**：partial_ready/raw_chunk 的 connect 全部移到 start_pipeline 创建处一次性接好——_maybe_start 会被多次调用，重复 connect = 信号重复派发。
+- **预览节拍遥测**：`preview.beat`（每 20 拍：interval_avg vs INTERVAL_S、infer_avg）——GPU 分时排队拖慢节奏时日志可辨。
+- **用户配置提醒**（未代改，用户裁决）：真机 `neural_vad=true` + `segment_cap_s=2.5`，实测 hold_p50=4.12/7.0（应 ≈2.5~3）——神经 VAD 黏滞是嫌疑主因（v2.9.0 实测数据），已建议用户关闭对比。
+- **锁**：`t_main_draft_translation_flow`（草稿送译/一次性消费/冲刷作废；注意断言的 lang：草稿=asr_language 配置值（itest_home 为 "auto"）、终版=_tgroup_lang（"en"））、`test_stream_preview_restart`、`test_strip_overlapped_prefix`（升级）。单元 78 / 集成 99 全绿。
+- **版本**：v2.13.0（行为增强 minor）。CI 不监控（用户既定偏好）。
 

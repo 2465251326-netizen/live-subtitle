@@ -37,11 +37,25 @@ class StreamPreview(QThread):
         self._buf = deque()              # [(np.float32 16k mono, t_mono)]
         self._buf_len = 0.0
         self._stop = False
+        # v2.13.0：节拍遥测（每 20 拍汇总一条）——排查"GPU 分时排队拖慢
+        # 预览节奏"时，间隔均值 vs INTERVAL_S、推理均值一眼可辨
+        self._beat_n = 0
+        self._beat_interval_sum = 0.0
+        self._beat_infer_sum = 0.0
+        self._beat_last_t = None
 
     def set_model(self, model):
         """模型就绪后注入（与 AsrThread 共享同一 WhisperModel 实例）。
         start 前未注入则循环空转等待（不识别不报错）。"""
         self._model = model
+
+    def restart(self):
+        """v2.13.0：stop 后热重启（中途切回 dual 布局等场景）——重置停止
+        标志与音频缓冲（陈旧窗口不该混进新布局的第一拍草稿）。"""
+        self._stop = False
+        self._buf.clear()
+        self._buf_len = 0.0
+        self._beat_last_t = None
 
     def feed(self, audio, t_mono):
         """采集线程的原始 16k 单声道块（约 90ms 一块）。"""
@@ -63,13 +77,21 @@ class StreamPreview(QThread):
         return np.concatenate([a for a, _t in self._buf]).astype(np.float32)
 
     def run(self):
+        import time as _t
         while not self._stop:
-            t0 = __import__("time").monotonic()
+            t0 = _t.monotonic()
+            # 节拍遥测：实际间隔（含上一拍推理+睡眠）
+            if self._beat_last_t is not None:
+                self._beat_interval_sum += t0 - self._beat_last_t
+            self._beat_last_t = t0
+            infer_s = 0.0
             try:
                 audio = self._window_audio()
                 dur = self._buf_len
                 if audio is not None and dur >= MIN_AUDIO_S:
+                    ti = _t.monotonic()
                     text = self._transcribe(audio)
+                    infer_s = _t.monotonic() - ti
                     self.partial_ready.emit(text)
             except Exception as e:   # 单拍失败静默跳过（下一周期即恢复）
                 try:
@@ -77,8 +99,20 @@ class StreamPreview(QThread):
                     app_log.log("preview.round_failed", err=str(e)[:120])
                 except Exception:
                     pass
+            self._beat_n += 1
+            self._beat_infer_sum += infer_s
+            if self._beat_n >= 20:
+                try:
+                    from app import log as app_log
+                    app_log.log("preview.beat", n=self._beat_n,
+                                interval_avg=round(self._beat_interval_sum / max(1, self._beat_n - 1), 2),
+                                infer_avg=round(self._beat_infer_sum / self._beat_n, 2))
+                except Exception:
+                    pass
+                self._beat_n = 0
+                self._beat_interval_sum = 0.0
+                self._beat_infer_sum = 0.0
             # 周期对齐：推理耗时从 INTERVAL 里扣（模型忙时自动降频）
-            import time as _t
             wait = INTERVAL_S - (_t.monotonic() - t0)
             if wait > 0:
                 for _ in range(int(wait / 0.1)):

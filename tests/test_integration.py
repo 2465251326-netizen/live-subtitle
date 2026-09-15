@@ -987,6 +987,59 @@ def t_main_partial_preview_alignment():
         w.config.set("low_latency_mode", old_ll)
 check("pipeline: dual 流式原文接线与对齐", t_main_partial_preview_alignment)
 
+def t_main_draft_translation_flow():
+    """v2.13.0：草稿也送推测翻译——译文区与原文同节奏实时生长；
+    回复按"最新草稿全文"配对（不入 _spec_inflight 簿记）、一次性消费
+    防迟到同文重复覆盖；冲刷作废在飞草稿防盖新句。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.config.set("overlay_layout", "dual")
+    w.config.set("low_latency_mode", True)
+    w.apply_overlay_from_config()
+
+    class _Tr(object):
+        _active_engine = "argos"
+
+        def __init__(self):
+            self.sent = []
+
+        def isRunning(self):
+            return True
+
+        def submit(self, text, lang, spec=False):
+            self.sent.append((text, lang, bool(spec)))
+            return []
+
+    tr = _Tr()
+    w._active_translate = lambda: tr
+    try:
+        # 草稿到达：原文区刷新 + 草稿送推测翻译（spec=True）
+        w._dual_confirmed = ""
+        w._on_partial_preview("The market opened higher")
+        assert w.overlay._dual_src.text() == "The market opened higher"
+        assert w._dual_draft == "The market opened higher"
+        assert tr.sent[-1] == ("The market opened higher", "auto", True), tr.sent
+        # 草稿译文回复：译文区 spec 淡态更新（原文/配对/计数都不动）
+        w._on_spec_translated("The market opened higher", "市场高开", "argos", "en", "")
+        assert w.overlay._dual_tgt.text() == "市场高开"
+        assert w.overlay._dual_tgt.property("spec") is True
+        assert w._dual_draft is None, "一次性消费：防迟到同文重复覆盖"
+        # 同文迟到回复：忽略（草稿已消费）
+        w._on_spec_translated("The market opened higher", "陈旧草稿译文", "argos", "en", "")
+        assert w.overlay._dual_tgt.text() == "市场高开"
+        # 正式片段到达→攒句提交（spec 簿记通道），冲刷作废在飞草稿
+        w._on_partial_preview("The market opened higher today")
+        assert w._dual_draft == "The market opened higher today"
+        w._on_asr_text("The market opened higher today", "en", "1.0")
+        w._flush_tgroup()
+        assert w._dual_draft is None, "冲刷必须作废在飞草稿"
+        # 冲刷提交带 _tgroup_lang（正式片段锁定的语言），spec=False 终版
+        assert tr.sent[-1] == ("The market opened higher today", "en", False), tr.sent[-1]
+    finally:
+        w.stop_pipeline()
+check("pipeline: 草稿送推测翻译与迟到草稿作废", t_main_draft_translation_flow)
+
 def t_overlay_layout_config_roundtrip():
     """overlay_layout 配置经 apply_overlay_from_config 恢复布局；
     面板 ⋯ 菜单切换经主窗回调落盘。"""

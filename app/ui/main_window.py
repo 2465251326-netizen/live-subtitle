@@ -989,11 +989,13 @@ class MainWindow(QMainWindow):
         self._refresh_quick_panel()  # v2.3.2（G1）
 
     def _on_panel_layout_changed(self, mode):
-        """v2.11.0：面板布局变更 → 同步 overlay（幂等）+ 落盘 overlay_layout
-        （overlay 组键，即时生效；运行中切换即切即用，无需重启管线）。"""
+        """v2.11.0：面板 ⋯ 菜单切换布局 → 同步 overlay（幂等）+ 落盘 overlay_layout
+        （overlay 组键，即时生效；运行中切换即切即用，无需重启管线）。
+        v2.13.0：切换后按新布局热启/暂停流式预览通道。"""
         m = "dual" if str(mode) == "dual" else "list"
         self.overlay.set_layout_mode(m)      # 幂等：面板内部切换后此为 no-op
         self.config.set("overlay_layout", m)
+        self._maybe_start_stream_preview()
 
     def apply_overlay_from_config(self):
         c = self.config
@@ -1006,8 +1008,10 @@ class MainWindow(QMainWindow):
         )
         self.overlay.set_show_source(bool(c.get("show_source")))
         self.overlay.set_target_lang(str(c.get("target_lang") or "zh-CN"))
-        # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复
+        # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复；
+        # v2.13.0：恢复后按闸门热启/暂停流式预览（设置页保存路径同样生效）
         self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
+        self._maybe_start_stream_preview()
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
         self.overlay.set_pinned(bool(c.get("overlay_pin")))
         self.overlay.set_collapsed(bool(c.get("overlay_collapsed")))
@@ -1184,6 +1188,7 @@ class MainWindow(QMainWindow):
         # v2.12.0：dual 流式原文基线随会话清零
         self._dual_confirmed = ""
         self._dual_last_piece = ""
+        self._dual_draft = None          # v2.13.0：在飞草稿译文一并作废
         # v2.7.2：榨干模式——翻译运行期提升进程优先级（停止后恢复），
         # 让采集/转写线程在系统负载下不被普通进程抢时间片
         self._apply_process_priority(True)
@@ -1273,15 +1278,22 @@ class MainWindow(QMainWindow):
             # v2.9.0：神经 VAD 实验开关（默认关）——判定逻辑与实测留档
             # 全部在 capture.py，这里只透传配置不做决策
             neural_vad=bool(c.get("neural_vad")),
-            # v2.12.0：dual 流式原文——原始音频旁路（90ms 聚合）供预览通道
-            tap_enabled=self._stream_preview_enabled(),
+            # v2.12.0：原始音频旁路（90ms 聚合）。v2.13.0：**常开**——
+            # 无接收者的 emit 成本可忽略（µs 级），换来"运行中从列表切到
+            # dual 也能立刻热启流式通道"（此前 tap 在构造期按布局一次性判定，
+            # 中途切换 = 流式永远断粮，用户实测感知就是"原文攒句"）
+            tap_enabled=True,
         )
         # v2.12.0：流式预览通道——model_ready 后启动（需要 asr 的模型实例）；
-        # 此处先创建并接好 raw_chunk 进料（feed 是普通槽，排队连接跨线程安全）
+        # 此处先创建并接好进料/出料（feed 与 partial_ready 都是排队连接）。
+        # v2.13.0：创建闸门**不含布局**（只看开关+cuda）——运行中切到 dual
+        # 即可热启动；启动/暂停闸门在 _maybe_start_stream_preview（含布局）
         self._stream_preview = None
-        if self._stream_preview_enabled() and self.capture_thread is not None:
+        if (bool(c.get("stream_preview")) and str(c.get("asr_device")) == "cuda"
+                and self.capture_thread is not None):
             self._stream_preview = StreamPreview(None, str(c.get("asr_language") or ""))
             self.capture_thread.raw_chunk.connect(self._stream_preview.feed)
+            self._stream_preview.partial_ready.connect(self._on_partial_preview)
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)
         self.capture_thread.error_occurred.connect(self._on_pipeline_error)
@@ -1504,24 +1516,40 @@ class MainWindow(QMainWindow):
                 and str(self.config.get("asr_device")) == "cuda")
 
     def _maybe_start_stream_preview(self):
-        """模型就绪后启动预览线程（共享 asr 已加载的模型实例）。"""
+        """按闸门启停预览线程（共享 asr 已加载的模型实例）。
+        v2.13.0：设置页/⋯菜单切到 dual 后调用即可**中途热启动**（此前只在
+        model_ready 一次性判定，中途切布局流式永远断粮）；切回列表/关开关
+        则暂停（不白烧 GPU）。幂等：已运行 no-op，未 running 不启动。"""
         p = getattr(self, "_stream_preview", None)
-        if p is None or p.isRunning():
+        if p is None:
+            return
+        if not self._stream_preview_enabled() or not getattr(self, "running", False):
+            self._pause_stream_preview()
+            return
+        if p.isRunning():
             return
         asr = getattr(self, "asr_thread", None)
         model = getattr(asr, "_model", None)
-        if model is None or not getattr(self, "running", False):
+        if model is None:
             return
         p.set_model(model)
         self._dual_confirmed = ""
         self._dual_last_piece = ""
-        p.partial_ready.connect(self._on_partial_preview)
+        self._dual_draft = None
+        p.restart()          # 重置停止标志与陈旧音频缓冲（stop 后热重启）
         p.start()
         try:
             from app import log as app_log
             app_log.log("preview.started")
         except Exception:
             pass
+
+    def _pause_stream_preview(self):
+        """v2.13.0：中途暂停（不销毁对象——切回 dual 时可热重启）。"""
+        p = getattr(self, "_stream_preview", None)
+        if p is not None and p.isRunning():
+            p.stop()
+            p.wait(600)
 
     def _stop_stream_preview(self):
         p = getattr(self, "_stream_preview", None)
@@ -1532,14 +1560,45 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _strip_overlapped_prefix(base, text):
-        """流式草稿增量：text 去掉与 base 尾部最大重叠后的剩余。
-        预览窗口与已确认文本尾部天然重叠（同一段音频两次转写），重叠
-        剥离后只剩新增话音；转写抖动的少量残留由下一拍刷新覆盖。"""
-        max_k = min(len(base), len(text))
-        for k in range(max_k, 0, -1):
-            if base.endswith(text[:k]):
-                return text[k:].strip()
-        return text.strip()
+        """流式草稿增量：从 text 中剥掉与 base 尾部重叠的已确认部分。
+
+        base 与 text 是**同一段音频的两次转写**（正式 beam 档 vs 预览 beam=1），
+        标点/大小写/个别词必然有差异——严格字符串对齐实测整句重复
+        （base="...bank." vs text="...bank" 从首字符就失配）。改用词级锚点：
+        取 base 尾部 5/4/3/2/1 个词（lower+去尾标点）在 text 前部找最后出现
+        位置，其后即新增；CJK 源用字符锚（split 分词对中文无效）。锚全失配
+        （转写差异过大）返回全量——宁可少量重复下一拍自愈，也不丢新话。"""
+        text = (text or "").strip()
+        if not base or not text:
+            return text
+        if any("\u4e00" <= ch <= "\u9fff" for ch in base[-8:]):
+            anchor = base[-6:]                      # CJK：字符锚
+            pos = text.rfind(anchor)
+            if 0 <= pos <= len(text) // 2:          # 锚须落在已确认区（前半）
+                return text[pos + len(anchor):].strip()
+            return text
+        base_words = base.split()
+        text_words = text.split()
+        best_end = None
+        for n in (5, 4, 3, 2, 1):
+            if len(base_words) < n:
+                continue
+            anchor = " ".join(base_words[-n:]).lower().strip(".,!?;:")
+            if not anchor:
+                continue
+            limit = min(len(text_words), max(4, len(text_words) * 2 // 3))
+            for i in range(limit):
+                if i + n > len(text_words):
+                    break
+                chunk = " ".join(text_words[i:i + n]).lower().strip(".,!?;:")
+                if chunk == anchor:
+                    best_end = i + n
+                    break
+            if best_end is not None:
+                break
+        if best_end:
+            return " ".join(text_words[best_end:]).strip()
+        return text
 
     def _on_partial_preview(self, text):
         """预览草稿上屏：确认区 + 增量 → 原文区整体刷新（每 ~0.9s 一拍）。
@@ -1559,6 +1618,22 @@ class MainWindow(QMainWindow):
         else:
             full = (base + " " + diff).strip()
         self.overlay.update_partial(full)
+        # v2.13.0：**草稿也送推测翻译**——译文区跟着原文一起实时生长。
+        # 此前草稿不送译，译文只在正式片段到达（分段周期 2.5~4s）才刷新，
+        # 用户实测反馈"译文还那种攒句"。仅离线引擎闸内生效（argos 0.06s/次、
+        # 无额度，0.9s 一拍毫无压力；在线引擎请求量 ×4.4 保持不送）。
+        # 配对走"最新草稿全文"（_dual_draft）而非 _spec_inflight 簿记，
+        # 迟到草稿（非最新）自动作废——下一拍马上会有更新的。
+        self._dual_draft = full
+        if self._spec_enabled():
+            tr = self._active_translate()
+            if tr is not None and tr.isRunning():
+                # v2.13.0a：语言必须回退到配置项——首片到达前 _tgroup_lang 是
+                # 空串，argos 找不到 ""→zh 的语言包直接抛错（spec 不走备援链），
+                # 草稿译文全灭（真机密集拍实证：译文 4.2s 才随首片出现）
+                lang = (getattr(self, "_tgroup_lang", "")
+                        or str(self.config.get("asr_language") or ""))
+                tr.submit(full, lang, spec=True)
 
     def _on_level(self, value):
         """电平槽。契约：value 为 capture 的 0~1 比例（见 CaptureThread
@@ -2062,6 +2137,8 @@ class MainWindow(QMainWindow):
         combined = self._combine_pieces(grp)
         # v2.12.0：终版收口 = 流式原文的确认基线更新（预览草稿从整句尾部续接）
         self._dual_confirmed = combined
+        # v2.13.0：冲刷即作废在飞草稿译文（防迟到草稿盖住新句开头）
+        self._dual_draft = None
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
         self._tgroup_by_src[combined] = grp
         self._submit_ts = getattr(self, "_submit_ts", {})
@@ -2137,6 +2214,15 @@ class MainWindow(QMainWindow):
         ent = spec.pop(source_text, None)
         t0 = getattr(self, "_spec_ts", {}).pop(source_text, None)
         if ent is None:
+            # v2.13.0：草稿推测翻译的回复不在 _spec_inflight 簿记里——
+            # 按"仍是最新草稿全文"配对（一次性消费防迟到同文重复覆盖）；
+            # 只更新 dual 译文区淡色草稿态，不碰卡片/配对/计数，
+            # 片片段推测版与整句终版随后自然覆盖
+            if getattr(self, "_dual_draft", None) == source_text:
+                self._dual_draft = None
+                if (not error and translated and self.overlay.is_dual()
+                        and getattr(self, "running", False)):
+                    self.overlay.update_dual_draft_tgt(translated)
             return
         gen, pieces = ent
         if gen != getattr(self, "_tgroup_gen", 0):
