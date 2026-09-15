@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from app.config import Config
 from app.audio.capture import CaptureThread
 from app.asr.engine import AsrThread
+from app.asr.preview import StreamPreview
 from app.translate.translator import TranslateThread
 from app.ui.styles import DARK_QSS
 from app.ui.caption_overlay import CaptionOverlay
@@ -1180,6 +1181,9 @@ class MainWindow(QMainWindow):
         self._tgroup_gen = getattr(self, "_tgroup_gen", 0) + 1
         self._spec_inflight = {}
         self._lat_spec = []
+        # v2.12.0：dual 流式原文基线随会话清零
+        self._dual_confirmed = ""
+        self._dual_last_piece = ""
         # v2.7.2：榨干模式——翻译运行期提升进程优先级（停止后恢复），
         # 让采集/转写线程在系统负载下不被普通进程抢时间片
         self._apply_process_priority(True)
@@ -1269,7 +1273,15 @@ class MainWindow(QMainWindow):
             # v2.9.0：神经 VAD 实验开关（默认关）——判定逻辑与实测留档
             # 全部在 capture.py，这里只透传配置不做决策
             neural_vad=bool(c.get("neural_vad")),
+            # v2.12.0：dual 流式原文——原始音频旁路（90ms 聚合）供预览通道
+            tap_enabled=self._stream_preview_enabled(),
         )
+        # v2.12.0：流式预览通道——model_ready 后启动（需要 asr 的模型实例）；
+        # 此处先创建并接好 raw_chunk 进料（feed 是普通槽，排队连接跨线程安全）
+        self._stream_preview = None
+        if self._stream_preview_enabled() and self.capture_thread is not None:
+            self._stream_preview = StreamPreview(None, str(c.get("asr_language") or ""))
+            self.capture_thread.raw_chunk.connect(self._stream_preview.feed)
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)
         self.capture_thread.error_occurred.connect(self._on_pipeline_error)
@@ -1477,6 +1489,76 @@ class MainWindow(QMainWindow):
         if getattr(self, "running", False) and getattr(self, "session_count", 0) == 0:
             self._set_engine_status("模型就绪，正在聆听…（播放声音或说话即可出字幕）")
             self._set_listen_pulse(True)
+        # v2.12.0：模型就绪 → 启动流式原文预览（dual+GPU 时）
+        self._maybe_start_stream_preview()
+
+    # ---------- v2.12.0：流式原文预览通道（dual"实时不能停"） ----------
+
+    def _stream_preview_enabled(self):
+        """流式原文三重闸：①开关开 ②dual 布局（列表模式不需要草稿）
+        ③识别计算方式为 cuda——预览通道每 0.9s 重识别一次最近 4s 音频，
+        CPU 上单次要数秒、反而拖垮正式识别；GPU 下单次 ~0.4s，与正式
+        识别分时复用可行（CTranslate2 模型只读、推理线程安全）。"""
+        return (bool(self.config.get("stream_preview"))
+                and self.overlay.is_dual()
+                and str(self.config.get("asr_device")) == "cuda")
+
+    def _maybe_start_stream_preview(self):
+        """模型就绪后启动预览线程（共享 asr 已加载的模型实例）。"""
+        p = getattr(self, "_stream_preview", None)
+        if p is None or p.isRunning():
+            return
+        asr = getattr(self, "asr_thread", None)
+        model = getattr(asr, "_model", None)
+        if model is None or not getattr(self, "running", False):
+            return
+        p.set_model(model)
+        self._dual_confirmed = ""
+        self._dual_last_piece = ""
+        p.partial_ready.connect(self._on_partial_preview)
+        p.start()
+        try:
+            from app import log as app_log
+            app_log.log("preview.started")
+        except Exception:
+            pass
+
+    def _stop_stream_preview(self):
+        p = getattr(self, "_stream_preview", None)
+        if p is not None:
+            p.stop()
+            p.wait(2000)
+            self._stream_preview = None
+
+    @staticmethod
+    def _strip_overlapped_prefix(base, text):
+        """流式草稿增量：text 去掉与 base 尾部最大重叠后的剩余。
+        预览窗口与已确认文本尾部天然重叠（同一段音频两次转写），重叠
+        剥离后只剩新增话音；转写抖动的少量残留由下一拍刷新覆盖。"""
+        max_k = min(len(base), len(text))
+        for k in range(max_k, 0, -1):
+            if base.endswith(text[:k]):
+                return text[k:].strip()
+        return text.strip()
+
+    def _on_partial_preview(self, text):
+        """预览草稿上屏：确认区 + 增量 → 原文区整体刷新（每 ~0.9s 一拍）。
+        译文不跟进草稿（草稿反复改写不值得送译；推测式翻译已覆盖实时性）。"""
+        if not getattr(self, "running", False) or not self.overlay.is_dual():
+            return
+        t = (text or "").strip()
+        if not t:
+            return
+        base = getattr(self, "_dual_confirmed", "") or ""
+        diff = self._strip_overlapped_prefix(base, t)
+        if not diff:
+            return
+        if base and ("\u4e00" <= base[-1] <= "\u9fff"
+                     or ("\u4e00" <= diff[0] <= "\u9fff")):
+            full = base + diff
+        else:
+            full = (base + " " + diff).strip()
+        self.overlay.update_partial(full)
 
     def _on_level(self, value):
         """电平槽。契约：value 为 capture 的 0~1 比例（见 CaptureThread
@@ -1623,6 +1705,9 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(0)
 
         threads = (self.capture_thread, self.asr_thread, self.translate_thread)
+        # v2.12.0：流式预览通道先停——它引用 asr 的模型实例，且 stop 后
+        # raw_chunk 进料已无意义（放行 _schedule 排期链不受影响）
+        self._stop_stream_preview()
         # v2.6.2（P1-4）：排水式停止——旧顺序"先断全部信号再 stop"使
         # capture 的 flush 尾段无人接收，asr/translate 清空队列又丢掉已入队
         # 内容，数据槽的 running 守卫再拦一层——三层必死，"说完立刻停丢最后
@@ -1859,6 +1944,9 @@ class MainWindow(QMainWindow):
             self._flush_tgroup()
             grp = self._tgroup
         grp.append(text)
+        # v2.12.0：dual 流式原文的"已确认基线"随片段生长（预览草稿的剥离基准）
+        self._dual_last_piece = text
+        self._dual_confirmed = self._combine_pieces(grp)
         self._tgroup_last_at = time.monotonic()   # v2.7.0（T2）：攒住时长遥测起点
         if len(grp) == 1:
             # v2.3.18（P23）：组寿命起点——绝对上限用它算，续片无法续命
@@ -1972,6 +2060,8 @@ class MainWindow(QMainWindow):
         if hold_at is not None:
             self._lat_add("_lat_hold", max(0.0, time.monotonic() - hold_at))
         combined = self._combine_pieces(grp)
+        # v2.12.0：终版收口 = 流式原文的确认基线更新（预览草稿从整句尾部续接）
+        self._dual_confirmed = combined
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
         self._tgroup_by_src[combined] = grp
         self._submit_ts = getattr(self, "_submit_ts", {})

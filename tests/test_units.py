@@ -1531,6 +1531,56 @@ def test_coerce_float_segment_cap():
     assert c("segment_cap_s", 2.5) == 2.5, "合法浮点原样采纳"
 
 
+def test_strip_overlapped_prefix():
+    """v2.12.0：流式草稿增量剥离——partial 窗口与已确认文本尾部天然重叠
+    （同一段音频两次转写），剥离后只剩新增话音；无重叠时全量返回。"""
+    from app.ui.main_window import MainWindow
+    f = MainWindow._strip_overlapped_prefix
+    assert f("The quick brown fox", "The quick brown fox jumps") == "jumps"
+    # 部分重叠：partial 开头与 base 尾部对齐的部分剥掉
+    assert f("The quick brown fox", "brown fox jumps over") == "jumps over"
+    assert f("hello world", "completely new text") == "completely new text"
+    assert f("", "anything") == "anything"
+    assert f("base", "") == ""
+    # 转写抖动（大小写漂移）无重叠 → 全量返回，残留由下一拍刷新覆盖
+    assert f("the quick brown fox", "The quick brown fox jumps") == "The quick brown fox jumps"
+
+
+def test_stream_preview_gate():
+    """v2.12.0：流式原文三重闸——开关 × dual 布局 × cuda（CPU 自动停用：
+    预览每 0.9s 重识别一次，CPU 单次要数秒、反而拖垮正式识别）。"""
+    from app.ui.main_window import MainWindow
+
+    class FakeOverlay(object):
+        _dual = True
+
+        def is_dual(self):
+            return self._dual
+
+    class Cfg(object):
+        def __init__(self, d):
+            self._d = dict(d)
+
+        def get(self, k):
+            return self._d.get(k)
+
+    class W(object):
+        _stream_preview_enabled = MainWindow._stream_preview_enabled
+
+        def __init__(self, cfg, ov):
+            self.config = cfg
+            self.overlay = ov
+
+    d = {"stream_preview": True, "asr_device": "cuda"}
+    assert W(Cfg(d), FakeOverlay())._stream_preview_enabled() is True
+    assert W(Cfg(dict(d, asr_device="cpu")), FakeOverlay())._stream_preview_enabled() is False, \
+        "CPU 必须停用（预览推理反而拖垮正式识别）"
+    assert W(Cfg(dict(d, stream_preview=False)), FakeOverlay())._stream_preview_enabled() is False, \
+        "开关关闭不得启用"
+    assert W(Cfg(d), type("ListOv", (FakeOverlay,), {"_dual": False})())._stream_preview_enabled() is False, \
+        "列表布局不需要草稿"
+
+
 def test_spec_translate_offline_only_gate():
     """v2.7.6（A）：推测式翻译三重闸——在线引擎绝不推测（有额度与限流，
     MyMemory 每天约 5000 字符免费额度），engine=auto 按探测后实际选用引擎判定。

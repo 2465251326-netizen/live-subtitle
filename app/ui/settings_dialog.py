@@ -182,6 +182,7 @@ _FIELD_SPECS = {
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_layout":       ("overlay", "combo"),
+    "stream_preview":       ("pipeline", "check"),
     "overlay_font_size":    ("overlay", "spin"),
     "overlay_text_color":   ("overlay", "color"),
     "overlay_bg_color":     ("overlay", "color"),
@@ -307,6 +308,14 @@ _STD_ROWS = [
               "仅当你的视频是**突发强背景乐/噪声盖过语音**、且字幕明显不切句时值得一开一试，"
               "建议开启后与关闭状态对比字幕节奏。开销极小（约 0.4% CPU），模型缺失或加载失败会"
               "自动静默退回能量判据；只认人声，唱歌/纯音乐为主的场景字幕可能变少。",
+     "opts": {}},
+    {"key": "stream_preview", "attr": "stream_preview_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "流式原文（上下双语增强）",
+     "desc": "「上下双语」布局下，每 0.9 秒把最近 4 秒音频重识别一次，把新增话音实时追加到原文区——"
+              "新闻主持人连续不断讲话时，原文照样讲到哪跟到哪，不再等分段周期才蹦一段（连续语流下"
+              "正式识别每 4 秒才出一片，原文必然「停一下跳一段」）。原文以约 0.9 秒粒度高频改写、"
+              "逐拍自我修正，属正常现象；识别计算方式为 GPU 时实际启用，CPU 模式自动停用"
+              "（CPU 单次推理要数秒，反而拖慢识别）。默认开。",
      "opts": {}},
     {"key": "segment_cap_s", "attr": "segment_cap_combo", "page": "asr", "section": "语言与计算",
      "kind": "combo", "title": "连续语流分段上限",
@@ -1018,6 +1027,7 @@ class SettingsDialog(QDialog):
                              "low_latency_mode", "early_flush", "perf_turbo",
                              # v2.7.6/v2.9.0：延迟优化项紧随榨干模式（同为速度权衡项）
                              "spec_translate", "neural_vad", "segment_cap_s",
+                             "stream_preview",
                              "prewarm_model"))
         self._section(page, "识别质量调优")
         # v2.7.0（T3）：热词提示——事前纠正专名误听，与事后修正词典互补

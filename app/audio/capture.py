@@ -277,13 +277,17 @@ class CaptureThread(QThread):
     error_occurred = Signal(str)
     low_input = Signal(bool)  # True=输入信号持续过弱（可能音量过低/抓错设备）
     muted = Signal(bool)      # True=系统处于静音状态（补充5：静音盲区提示）
+    # v2.12.0：原始 16k 单声道旁路（90ms 聚合一块，(ndarray, t_mono)）——
+    # 供流式预览通道（StreamPreview）喂滑动窗口重识别。仅 dual+流式开启时
+    # 由主窗连接；tap_enabled=False 时不发射（零开销）。
+    raw_chunk = Signal(object, float)
 
     QUIET_WARN_S = 12.0       # 单位：秒
     QUIET_LEVEL = 0.012       # 单位：原始峰值幅度 0~1（与发出比例同量纲，8 倍增益前）
 
     def __init__(self, source_type: str, device_index: int, parent=None,
                  device_name: str = "", low_latency: bool = False, turbo: bool = False,
-                 cap_s=0.0, neural_vad: bool = False):
+                 cap_s=0.0, neural_vad: bool = False, tap_enabled: bool = False):
         super().__init__(parent)
         self.source_type = source_type
         self.device_index = device_index
@@ -293,6 +297,10 @@ class CaptureThread(QThread):
         self.segmenter = Segmenter(low_latency=low_latency, turbo=turbo, cap_s=cap_s)
         self._warned_quiet = False
         self._tail_seg = None   # v2.6.2（P1-4）：停止 flush 尾段暂存
+        # v2.12.0：原始音频旁路（流式预览通道的进料口）
+        self._tap_enabled = bool(tap_enabled)
+        self._tap_buf = None
+        self._tap_blocks = 0
         # v2.9.0：神经 VAD 实验开关（默认关，理由见 Segmenter.feed 实测留档）
         self._neural_vad = bool(neural_vad)
         self._vad_model = None
@@ -572,6 +580,17 @@ class CaptureThread(QThread):
                         self._warned_quiet = False
                         self.muted.emit(False)
                         self.low_input.emit(False)
+                # v2.12.0：原始音频旁路——90ms（3 块）聚合一发，供流式预览
+                if self._tap_enabled:
+                    if self._tap_buf is None:
+                        self._tap_buf = mono16
+                    else:
+                        self._tap_buf = np.concatenate([self._tap_buf, mono16])
+                    self._tap_blocks += 1
+                    if self._tap_blocks >= 3:
+                        self.raw_chunk.emit(self._tap_buf, time.monotonic())
+                        self._tap_buf = None
+                        self._tap_blocks = 0
                 # v2.9.0：神经判定可用时优先于能量判据（None=降级回能量）
                 seg = self.segmenter.feed(mono16, voiced_override=self._neural_voiced(mono16))
                 if seg is not None:

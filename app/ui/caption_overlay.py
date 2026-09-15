@@ -449,6 +449,20 @@ class CaptionOverlay(QWidget):
         self._relayout()
         self._schedule_relayout()
 
+    def update_partial(self, text_full):
+        """v2.12.0：流式草稿上屏（dual 专属）——主窗把「已确认 + 预览增量」
+        拼成整句传入，原文区整体刷新（每 ~0.9s 一拍，实现"主持人讲到哪、
+        原文跟到哪"）。终版收口（show_pending_result）会以正式文本覆盖；
+        列表模式忽略。样式与常态原文一致（草稿的未定稿感由高频刷新自证）。"""
+        if self._layout_mode != "dual":
+            return
+        t = (text_full or "").strip()
+        if not t:
+            return
+        self._dual_src.setText(t)
+        self._sync_dual_visibility()
+        self._schedule_relayout()
+
     def show_caption(self, source_text, target_text, show_source=True):
         """一次性上屏（无占位）。v2.11.0：dual 模式同终态收口路径。"""
         if self._layout_mode == "dual":

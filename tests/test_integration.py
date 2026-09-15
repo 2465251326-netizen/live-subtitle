@@ -924,6 +924,69 @@ def t_overlay_relayout_pending_release():
     ov.deleteLater()
 check("panel: relayout pending 释放（多句高度跟随）", t_overlay_relayout_pending_release)
 
+def t_overlay_stream_partial():
+    """v2.12.0：dual 流式原文——update_partial 整句刷新（每 ~0.9s 一拍）、
+    终版收口以正式文本覆盖草稿、列表模式忽略。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    ov.show_pending("The quick")
+    ov.update_partial("The quick brown fox jumps")
+    assert ov._dual_src.text() == "The quick brown fox jumps"
+    # 终版收口：正式文本覆盖草稿
+    ov.show_pending_result("The quick brown fox jumps over.", "敏捷的狐狸跳了过去。", True)
+    assert ov._dual_src.text() == "The quick brown fox jumps over."
+    # 列表模式：update_partial 忽略（草稿不进历史区）
+    ov.set_layout_mode("list")
+    ov.show_pending("list mode piece")
+    ov.update_partial("草稿不应进入列表")
+    assert "草稿不应进入列表" not in [it["src_text"] for it in ov._rows]
+    ov.deleteLater()
+check("panel: dual 流式草稿 update_partial", t_overlay_stream_partial)
+
+def t_main_partial_preview_alignment():
+    """主窗流式接线：确认基线随片段生长、partial 剥重叠后追加、final 收口
+    更新基线、非运行态忽略。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.config.set("overlay_layout", "dual")
+    w.apply_overlay_from_config()
+
+    class _Tr(object):                     # _StubTr 定义在文件后段，此处内联
+        _active_engine = "argos"
+
+        def isRunning(self):
+            return True
+
+        def submit(self, text, lang, spec=False):
+            return []
+
+    stub = _Tr()
+    w._active_translate = lambda: stub
+    old_ll = w.config.get("low_latency_mode")
+    w.config.set("low_latency_mode", True)
+    try:
+        # 片段到达：确认基线随攒句生长
+        w._on_asr_text("The market opened higher today", "en", "1.0")
+        assert w._dual_confirmed == "The market opened higher today"
+        # partial 到达：窗口文本剥掉与基线的重叠后只追加新增
+        w._on_partial_preview("The market opened higher today and stocks rallied")
+        assert w.overlay._dual_src.text() == "The market opened higher today and stocks rallied"
+        # 终版收口：基线更新为整句（下一轮 partial 从整句尾部续接）
+        w._flush_tgroup()
+        w._on_translated("The market opened higher today", "今天高开", "argos", "en", "")
+        assert w._dual_confirmed == "The market opened higher today"
+        # 非运行态：预览草稿不得改写面板
+        w.running = False
+        w._on_partial_preview("stale garbage after stop")
+        assert w.overlay._dual_src.text() == "The market opened higher today"
+        w.stop_pipeline()
+    finally:
+        w.config.set("low_latency_mode", old_ll)
+check("pipeline: dual 流式原文接线与对齐", t_main_partial_preview_alignment)
+
 def t_overlay_layout_config_roundtrip():
     """overlay_layout 配置经 apply_overlay_from_config 恢复布局；
     面板 ⋯ 菜单切换经主窗回调落盘。"""

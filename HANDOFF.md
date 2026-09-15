@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 深夜 v2.11.0（悬浮面板新增「上下双语」布局 + 修复 v2.4.3 起的 relayout pending 状态机缺陷，见第十六节；v2.8.0 译文速度专项见第十三节；v2.9.0 神经 VAD 实验开关见第十四节；v2.10.0 面板启动常驻见第十五节）
+> 最后更新：2026-09-16 凌晨 v2.12.0（dual 流式原文通道：讲到哪跟到哪，见第十七节；v2.11.0 上下双语布局 + relayout 状态机缺陷修复见第十六节；v2.8.0 推测式翻译见第十三节）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.11.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.12.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -166,8 +166,8 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      75 项单元测试
-tests/test_integration.py 96 项集成测试
+tests/test_units.py      77 项单元测试
+tests/test_integration.py 98 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -342,4 +342,14 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **验证方法论**：`QWidget.grab()` 把控件本体渲染成 PNG——不受桌面重叠/分辨率干扰，比全屏截图更适合 UI 排查；配合逐步 processEvents 打印 pending/height/want 轨迹，两轮就锁死根因。真机验证走隔离实例 + SAPI 连续语音 + PowerShell CopyFromScreen 全屏截图（弹窗前征得用户同意）。
 - **锁**：`t_overlay_dual_layout`（全链路）、`t_overlay_layout_config_roundtrip`（配置恢复+菜单落盘）、`t_overlay_relayout_pending_release`（多句高度跟随——钉死本次历史缺陷）。集成 96 / 单元 75 全绿。
 - **版本**：v2.11.0（新功能 minor）。
+
+## 十七、会话快照（2026-09-16 凌晨 v2.12.0：dual 流式原文通道）
+
+- **用户需求原话**："主持人讲了什么英文，就必须实时显示在原文里，必须实时不能停"×3——新闻连续口播场景，dual 原文区每 4s（分段周期）才蹦一段完全不够。
+- **方案**：滑动窗口流式预览识别——`app/asr/preview.py` StreamPreview 线程每 0.9s 把最近 4s 音频（CaptureThread 新增 `raw_chunk` 原始旁路，90ms 聚合）用共享的 whisper 模型重识别一次（beam=1 + without_timestamps + condition_off 最快档），输出草稿；主窗 `_strip_overlapped_prefix`（base 尾部与 text 头部最大重叠剥离）取出新增话音追加到原文区。
+- **关键设计取舍**：① 草稿不送译（每 0.9s 改写不值得，译文仍走分段+推测式）；② 不做精确时间对齐（重叠剥离 + 逐拍自我修正足够，字幕场景）；③ **仅 cuda 启用**（`_stream_preview_enabled` 三重闸：开关 × dual 布局 × asr_device==cuda——CPU 单次推理数秒会拖垮正式识别）；④ 模型共享：CTranslate2 推理线程安全（模型只读），GPU 争用时预览自动降频跳拍，实测单片识别反而 0.52→0.28s。
+- **实测**：密集连拍 2.0/3.0/4.0/5.5s——2s 时原文已显示大半句（旧版空白）、3s 窗口尾带部分转写逐拍自愈、4s 收敛正确整句。识别延迟遥测 reco_p50 同场 0.28s。
+- **坑**：Qt 信号 `Signal(object)` 发元组 ≠ 双参数——`raw_chunk.emit((buf, t))` 连 `feed(audio, t)` 会 TypeError missing argument；发双参数信号 `Signal(object, float)` 正解。窗口滑动的草稿会带"前瞻性延展/改写"（whisper 对含未来音频的窗口转写），是流式草稿固有特征，UI 文案要写明"逐拍自我修正属正常"。
+- **锁**：`test_strip_overlapped_prefix`、`test_stream_preview_gate`、`t_overlay_stream_partial`、`t_main_partial_preview_alignment`（内联 stub——`_StubTr` 定义在文件后段，前段测试引用会 NameError）。单元 77 / 集成 98 全绿。
+- **版本**：v2.12.0（新功能 minor）。用户明示"不用监控 CI"——tag 推送即收尾，轮询器流程跳过。
 
