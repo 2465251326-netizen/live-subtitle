@@ -159,9 +159,11 @@ _FIELD_SPECS = {
     "early_flush":          ("pipeline", "check"),
     "perf_turbo":           ("pipeline", "check"),
     # v2.7.6：延迟优化批——遥测实锤 hold_p50≈4.13s（连续语流复现 5.03s），
-    # 识别 0.55s + 翻译 0.06s 只占 13%，故两项都对着"攒句/切段等待"下手。
-    # （神经 VAD 句末判定曾一并实现，实测零收益已回退，见 capture.py 留档）
+    # 识别 0.55s + 翻译 0.06s 只占 13%，故各项都对着"攒句/切段等待"下手。
+    # neural_vad：实测零收益于 v2.8.0 回退，v2.9.0 应**用户要求**恢复为
+    # 默认关的实验开关（留档见 capture.py Segmenter.feed）
     "spec_translate":       ("pipeline", "check"),
+    "neural_vad":           ("pipeline", "check"),
     "segment_cap_s":        ("pipeline", "combo"),
     "asr_hotwords":         ("pipeline", "text"),
     "prewarm_model":        ("instant", "check"),
@@ -292,6 +294,15 @@ _STD_ROWS = [
               "中间版译文可能先显示半句、稍后被完整整句覆盖；停止时若仍是半句会保留并标注"
               "「译文可能不完整」。**仅离线 Argos 引擎生效**——在线引擎有额度与限流"
               "（MyMemory 每天约 5000 字符免费额度），逐片加发中间版会成倍消耗，故一律保持整句翻译。",
+     "opts": {}},
+    {"key": "neural_vad", "attr": "neural_vad_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "神经 VAD 句末判定（实验性，默认关）",
+     "desc": "用 Silero 模型判定「这块是不是人声」来找句末停顿，代替能量判据。默认关闭的原因如实相告："
+              "项目实测中它对干净素材与能量判据持平，对带**稳定背景乐**的素材反而切句更晚约 0.7 秒"
+              "（神经判定带滞回，会多抱一段尾音）；能量判据的自适应噪声底本就压得住稳定背景乐。"
+              "仅当你的视频是**突发强背景乐/噪声盖过语音**、且字幕明显不切句时值得一开一试，"
+              "建议开启后与关闭状态对比字幕节奏。开销极小（约 0.4% CPU），模型缺失或加载失败会"
+              "自动静默退回能量判据；只认人声，唱歌/纯音乐为主的场景字幕可能变少。",
      "opts": {}},
     {"key": "segment_cap_s", "attr": "segment_cap_combo", "page": "asr", "section": "语言与计算",
      "kind": "combo", "title": "连续语流分段上限",
@@ -991,8 +1002,8 @@ class SettingsDialog(QDialog):
         self._std_rows(page, "asr", "语言与计算",
                        keys=("hallucination_filter", "silero_vad", "lang_recheck",
                              "low_latency_mode", "early_flush", "perf_turbo",
-                             # v2.7.6：延迟优化两项紧随榨干模式（同为速度权衡项）
-                             "spec_translate", "segment_cap_s",
+                             # v2.7.6/v2.9.0：延迟优化项紧随榨干模式（同为速度权衡项）
+                             "spec_translate", "neural_vad", "segment_cap_s",
                              "prewarm_model"))
         self._section(page, "识别质量调优")
         # v2.7.0（T3）：热词提示——事前纠正专名误听，与事后修正词典互补

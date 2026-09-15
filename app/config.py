@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -65,8 +65,9 @@ DEFAULTS = {
     # 结构性等待；根因是句长超过分段上限被强制切段（**不是 VAD 找不到停顿**：
     # 短句+背景乐实测能量判据 15 句切 15 段、零硬切，已是最优）。
     # 附带结论：曾实现"Silero 神经 VAD 句末判定"，实测零收益（纯净素材与
-    # 能量判据持平；有背景乐时因滞回反而黏 0.66s），经验证后回退，
-    # 详见 app/audio/capture.py Segmenter.feed 的实测留档与 HANDOFF 第十三节。
+    # 能量判据持平；稳定背景乐下滞回反而黏 0.66s），v2.8.0 回退；
+    # v2.9.0 应**用户要求**恢复为默认关的实验开关（见下方 neural_vad），
+    # 详见 app/audio/capture.py Segmenter.feed 的实测留档与 HANDOFF 十三/十四节。
     "spec_translate": True,            # 推测式增量翻译：碎片一到达就把"当前已攒文本"送翻译并上屏，
                                         # 下一片到达时送更长版本、译文在同一张卡上原地生长覆盖。
                                         # 连续语流真机 A/B：译文感知延迟 hold 5.03s + tr 0.09s
@@ -79,6 +80,11 @@ DEFAULTS = {
                                         # 硬生生腰斩（4s 档 0~17%），而推测式增量翻译已让译文随
                                         # 碎片立即上屏，上限大小对"译文迟到"影响很小——
                                         # 故激进档只作可选项，不作默认。
+    "neural_vad": False,               # v2.9.0：Silero 神经 VAD 句末判定（实验开关，默认关）。
+                                        # 用户要求保留。默认关的理由：实测纯净素材与能量判据
+                                        # 持平、稳定背景乐下滞回反而黏 0.66s；仅"突发强背景乐/
+                                        # 噪声盖过语音"场景值得一试。开销 ~0.4% CPU，
+                                        # 加载失败自动静默退回能量判据。
     "asr_hotwords": "",                # v2.7.0（T3）：热词提示——人名/专名/术语注入 whisper
                                        # initial_prompt，事前纠正专名误听（留空=关闭）
     "lang_recheck": True,              # v2.7.0（T5）：语言锁复检——自动模式下每 20 段解除

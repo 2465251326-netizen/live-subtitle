@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 晚 v2.8.0 发布（译文速度专项，真机 A/B 实测 5.13s→0.10s；见第十三节）
+> 最后更新：2026-09-15 深夜 v2.9.0（v2.8.0 译文速度专项见第十三节；v2.9.0 应**用户复评**恢复神经 VAD 为默认关实验开关，见第十四节）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.8.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.9.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -166,7 +166,7 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      73 项单元测试
+tests/test_units.py      75 项单元测试
 tests/test_integration.py 92 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
@@ -176,7 +176,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.8.0 已发布（译文速度专项：推测式增量翻译，真机实测译文感知延迟 5.13s→0.10s）。第十三节有本轮的延迟结构定性、A/B 方法论与被否决方案留档。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.9.0 已发布（v2.8.0 译文速度专项：推测式增量翻译真机实测 5.13s→0.10s；v2.9.0 应用户要求把神经 VAD 恢复为默认关的实验开关）。第十三节有延迟结构定性、A/B 方法论与被否决方案留档；第十四节有神经 VAD 恢复始末。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
@@ -272,7 +272,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
   | 短句 + rms 0.03 持续背景乐 | **15 段，硬切 0%，中位 1.50s** | 15 段，0%，**2.16s** |
   能量判据的**自适应噪声底**（`threshold=max(noise_floor*3, 0.004)`，噪声底上限 0.02 → 阈值最高 0.06）本就压得住稳定背景乐；神经滞回反而多抱 0.66s 尾音与配乐。
 - **真因纠正**：`hold ≈ 分段上限` 是因为**句长超过上限被强制切段**（SAPI 长句 3~5s > 4s 上限），停顿根本没机会触发判定。诊断证据：停顿区 `rms` 中位 = **0.00000**（数字静音）、neural prob 中位 = **0.024**——两种判据都**正确识别**了停顿。
-- **处置**：用户裁决"回退 B"。已拆净 `capture.py` 的 `_init_neural_vad/_neural_voiced/voiced_override`、`DEFAULTS.neural_vad`、设置页三处登记、管线传参与 2 个单测；`Segmenter.feed` docstring 留实测数据档；结论固化为 `test_energy_vad_beats_steady_bgm`（合成"纯背景乐预热 10s + 15 短句"素材，断言零硬切且段长中位 <2.2s）。
+- **处置**：用户裁决"回退 B"。已拆净 `capture.py` 的 `_init_neural_vad/_neural_voiced/voiced_override`、`DEFAULTS.neural_vad`、设置页三处登记、管线传参与 2 个单测；`Segmenter.feed` docstring 留实测数据档；结论固化为 `test_energy_vad_beats_steady_bgm`（合成"纯背景乐预热 10s + 15 短句"素材，断言零硬切且段长中位 <2.2s）。**（更新：随即用户改主意要求保留，v2.9.0 已整套恢复为"实验开关（默认关）"，实现与本节回退前完全一致、实测数据不变仍留档，且新增"neural_vad 默认必须为 False"的回归锁。见第十四节）**
 - **教训**：瓶颈定位不能只看"hold 等于某个参数"就推因果——要造**能让该机制成为决定因素**的素材去反证（长句素材下 VAD 根本不参与判定，测了也白测）。
 
 ### 13.5 本轮新增环境坑（勿重踩）
@@ -306,4 +306,12 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - 新配置键：`spec_translate`（默认 True，仅离线引擎生效）、`segment_cap_s`（默认 4.0）。设置页新增两行（语音识别-语言与计算），已按 v2.3.0 规约三处登记（DEFAULTS + `_FIELD_SPECS` + `_STD_ROWS`），`bump_version --check` 与注册完整性双向断言均过。
 - 新日志字段：`pipeline.latency` 增 `n_spec / spec_p50 / spec_p95`。
 - 临时验证产物（均在 %TEMP%，不入库，可删）：`ls_gen_voice*.ps1`、`ls_ab_drive.py`、`ls_vad_ab.py`、`ls_vad_bgm.py`、`ls_vad_short.py`、`ls_diag_pause.py`、`ls_ab_voice*.wav`、隔离 home `ls_ab_base` / `ls_ab_new`（各含 81MB argos 拷贝）。
+
+## 十四、会话快照（2026-09-15 深夜 v2.9.0：神经 VAD 恢复为实验开关）
+
+- **背景**：v2.8.0 刚发布（tag 已推、CI 构建中），用户**推翻上一轮"回退 B"的裁决**，要求保留神经 VAD 能力。
+- **处置原则**：① 不动已发布的 v2.8.0——tag 已推送，改写已发布 tag/提交属破坏性操作，一律走新版本 **v2.9.0**；② **默认值仍为关**——实测数据没有变化（纯净素材与能量判据持平、稳定背景乐下滞回黏 0.66s），默认开会与"翻译提速"主线目标相悖；设置页文案如实写明默认关理由与实测数字，不搞"藏起来当免费功能"；③ 实现从第 13.4 节回退前的代码**逐字恢复**（`Segmenter.feed(voiced_override=None)` 注入、`_init_neural_vad`/`_neural_voiced`、滞回 0.50 进/0.35 出、异常静默永久降级），默认路径（不注入）与历代版本行为一字不差。
+- **登记五件套**：`DEFAULTS.neural_vad=False` + `_FIELD_SPECS` + `_STD_ROWS`（标题"神经 VAD 句末判定（实验性，默认关）"）+ `_std_rows` keys 元组 + `CaptureThread(neural_vad=...)` 管线传参。设置页三处登记规约照旧，管线传参处算第四、五处（v2.3.0 表驱动只管到控件层）。
+- **测试锁**：恢复 `test_segmenter_voiced_override`（注入/降级双路径）、`test_neural_vad_hysteresis_and_degrade`（滞回+异常降级）；另在 `test_energy_vad_beats_steady_bgm` 里新增断言 **`DEFAULTS["neural_vad"] is False`**——"要改默认值，先拿新的实测数据来"。单元 73→75、集成 92 全绿。
+- **教训（流程）**：回退随 v2.8.0 发布后**当晚**用户即改主意 → 多走一整个发版周期。对"价值有争议"的功能，今后优先提议**保留默认关**（代码与开关都在、文案写明数据与适用场景），而不是拆干净；拆干净仅在用户明确要求代码库整洁时执行。本次恢复成本可控是因为实现细节都在会话上下文里；若隔会话再恢复，就得从 git 历史或留档说明反推重写。
 

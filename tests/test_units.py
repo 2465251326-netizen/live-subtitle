@@ -1362,7 +1362,8 @@ def test_segmenter_cap_override():
 
 
 def test_energy_vad_beats_steady_bgm():
-    """v2.7.6 实测锁（否决"换神经 VAD 切句"提案的依据，勿再误诊）。
+    """v2.7.6 实测锁（neural_vad **默认关**的依据；v2.9.0 应**用户要求**恢复
+    该开关后默认值仍为关，本锁继续钉住"能量判据基线本来就够好"这一事实，勿再误诊）。
 
     结论：能量判据的自适应噪声底足以压住持续背景乐——15 个短句（1.5s 语音 +
     0.95s 静音）叠加 rms 0.030 的配乐，能量判据**一句一段、零硬切、段长中位
@@ -1372,6 +1373,10 @@ def test_energy_vad_beats_steady_bgm():
     vs 能量判据 1.50s——滞回多抱了 0.66s 尾音与背景乐，换过去反而更慢。
     另：hold_p50≈分段上限的真因是句长超过上限被强制切段，不是找不到停顿。"""
     from app.audio.capture import Segmenter, TARGET_SR, CHUNK_MS
+    from app.config import DEFAULTS
+    # v2.9.0 锁：neural_vad 默认必须为关（实测依据见下；要改默认先拿新数据来）
+    assert DEFAULTS["neural_vad"] is False, \
+        "neural_vad 默认必须 False——实测稳定背景乐下反而黏 0.66s，改默认需重新实测"
     rng = np.random.RandomState(11)
     chunk_n = int(TARGET_SR * CHUNK_MS / 1000)
     n_sent = 15
@@ -1413,6 +1418,75 @@ def test_energy_vad_beats_steady_bgm():
     assert len(out) >= 14, f"15 句应切出 ≈15 段（一句一段），实得 {len(out)}：{np.round(arr, 2).tolist()}"
     med = float(np.median(arr))
     assert med < 2.2, f"段长中位应贴近真实句长 1.5~1.8s，实得 {med:.2f}s（说明被判据黏住）"
+
+
+def test_segmenter_voiced_override():
+    """v2.9.0（恢复）：神经判定注入通道——voiced_override 提供时接管判决、
+    None 时完全退回能量判据（默认路径行为与历代版本逐字一致）。"""
+    from app.audio.capture import Segmenter, TARGET_SR
+    loud = (np.random.RandomState(7).randn(int(TARGET_SR * 0.3)) * 0.3).astype(np.float32)
+    # ① 能量很响但神经判非人声（背景乐）→ 不进语音态
+    seg = Segmenter(low_latency=True, cap_s=10.0)     # 上限放宽，隔离强制切段路径
+    for _ in range(4):
+        assert seg.feed(loud, voiced_override=False) is None
+    assert seg.in_speech is False, "神经判非人声时不得进语音态（纯能量会误判）"
+    assert seg.silence_run > 0.0, "非人声块应累积静音时长（这才是提前切句的依据）"
+    # ② 神经判人声（能量低到能量判据必然漏）→ 正常攒语音
+    seg2 = Segmenter(low_latency=True, cap_s=10.0)
+    quiet = (np.random.RandomState(3).randn(int(TARGET_SR * 0.3)) * 0.0002).astype(np.float32)
+    for _ in range(6):
+        seg2.feed(quiet, voiced_override=True)
+    assert seg2.in_speech is True, "神经判人声则低能量也要进语音态"
+    assert seg2.speech_len > 0.5
+    # ③ override=None → 完全沿用旧能量判据（默认/降级路径）
+    seg3 = Segmenter(low_latency=True, cap_s=10.0)
+    for _ in range(6):
+        seg3.feed(loud, voiced_override=None)
+    assert seg3.in_speech is True, "未给 override 时应走能量判据"
+
+
+def test_neural_vad_hysteresis_and_degrade():
+    """v2.9.0（恢复）：滞回双阈值（0.50 进/0.35 出）防词内短间隙把判定抖碎；
+    推理抛异常则永久降级返回 None（调用方静默回退能量判据，不反复刷错）。
+    注意滞回也正是"背景乐下黏 0.66s"的来源——调参必读 Segmenter.feed 留档。"""
+    from app.audio.capture import CaptureThread
+    ct = CaptureThread("system", -1)
+    ct._neural_vad = True
+    ct._vad_buf = np.zeros(0, dtype=np.float32)
+
+    class FakeModel:
+        def __init__(self, prob):
+            self.prob = prob
+        def __call__(self, audio):
+            assert audio.shape == (512,), f"必须按 512 样本整块喂给 Silero，实得 {audio.shape}"
+            return np.array([[self.prob]], dtype=np.float32)
+
+    blk = np.zeros(512, dtype=np.float32)
+    ct._vad_model, ct._vad_on, ct._vad_voiced = FakeModel(0.01), True, False
+    assert ct._neural_voiced(blk) is False
+    # 0.42 落在双阈值之间：非人声态不得翻成"人声"（无滞回时 0.5 门槛只差一点）
+    ct._vad_model = FakeModel(0.42)
+    assert ct._neural_voiced(blk) is False, "0.42 < 0.50 不应翻成人声"
+    # 0.9 → 人声；随后 0.42 仍保持人声（0.35 才退出）——这就是词内间隙不被腰斩的关键
+    ct._vad_model = FakeModel(0.90)
+    assert ct._neural_voiced(blk) is True
+    ct._vad_model = FakeModel(0.42)
+    assert ct._neural_voiced(blk) is True, "0.42 > 0.35 应保持人声（滞回）"
+    ct._vad_model = FakeModel(0.10)
+    assert ct._neural_voiced(blk) is False
+    # 跨块累积：不足 512 样本时不调模型、沿用最近结论
+    ct._vad_model, ct._vad_voiced = FakeModel(0.99), False
+    assert ct._neural_voiced(np.zeros(100, dtype=np.float32)) is False
+    assert ct._neural_voiced(np.zeros(500, dtype=np.float32)) is True, "凑满 512 才判定"
+
+    class Boom:
+        def __call__(self, audio):
+            raise RuntimeError("onnx broken")
+
+    ct._vad_model, ct._vad_on = Boom(), True
+    assert ct._neural_voiced(blk) is None, "异常应降级为 None（回退能量判据）"
+    assert ct._vad_on is False, "一次异常后永久降级，不再反复调用"
+    assert ct._neural_voiced(blk) is None
 
 
 def test_submit_spec_never_evicts_final():

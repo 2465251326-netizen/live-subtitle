@@ -1248,6 +1248,9 @@ class MainWindow(QMainWindow):
             # v2.7.6（C）：分段上限独立可调（>0 覆盖模式内置值）——句长超过上限
             # 即被强制切段，hold_p50 实测恒等于该周期（译文迟到的直接来源）
             cap_s=c.get("segment_cap_s"),
+            # v2.9.0：神经 VAD 实验开关（默认关）——判定逻辑与实测留档
+            # 全部在 capture.py，这里只透传配置不做决策
+            neural_vad=bool(c.get("neural_vad")),
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)

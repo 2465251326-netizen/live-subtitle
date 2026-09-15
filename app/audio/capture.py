@@ -189,17 +189,25 @@ class Segmenter:
             return 0.0
         return float(np.sqrt(np.mean(np.square(chunk))))
 
-    def feed(self, chunk: np.ndarray):
+    def feed(self, chunk: np.ndarray, voiced_override=None):
         """喂入一块 16k 单声道音频，切出完整语音段时返回 ndarray，否则 None。
 
-        v2.7.6 实测留档（防重做无用功）：曾在此实现"Silero 神经 VAD 句末判定"
-        （外部注入 voiced_override 覆盖能量判据），结论=**零收益，已回退**——
-        短句素材（15 句 × 1~2s，句间 950ms 静音）能量判据即 15 句切 15 段、
-        零硬切、段长中位 1.50s；叠加 rms 0.03 的持续背景乐后能量判据**仍零
-        硬切**（自适应噪声底上限 0.02 → 阈值 max(0.02*3, 0.004)=0.06 已压住
-        背景乐），而神经判据因滞回（0.50 进/0.35 出）多抱尾音与背景乐，段长
-        中位涨到 2.16s（黏 0.66s）。hold≈分段上限的真因是**句长超过上限被
-        强制切段**，不是找不到停顿；治它的是推测式增量翻译，不是换 VAD。"""
+        voiced_override（v2.7.6 实现，v2.8.0 回退，v2.9.0 按用户要求恢复为
+        **默认关的实验开关**）：外部神经 VAD 给出的"这块是否人声"判定，
+        None=不可用、走能量判据（默认路径，行为与历代版本逐字一致）。
+        噪声底仍由能量维护（电平显示与低输入告警依赖它），只有 voiced
+        判决在提供时被神经结果接管。
+
+        实测留档（为什么默认关，勿再当成免费午餐）：短句素材（15 句 × 1~2s、
+        句间 0.95s 静音）叠 rms 0.03 持续背景乐，能量判据本就 15 句切 15 段、
+        零硬切、段长中位 1.50s——自适应噪声底（上限 0.02 → 阈值
+        max(noise_floor*3, 0.004) 最高 0.06）压得住稳定背景乐；Silero 神经
+        判定（滞回 0.50 进/0.35 出）在同素材反而多抱 0.66s 尾音与背景乐
+        （段长中位 2.16s）。且 hold≈分段上限的真因是句长超过上限被强制切段，
+        不是找不到停顿（治它的是推测式增量翻译）。保留本开关供**突发强背景乐/
+        噪声**场景试验——能量判据在那种场景确实可能被骗；改完务必真机 A/B。
+        锁测试：test_energy_vad_beats_steady_bgm（能量判据基线）+
+        test_segmenter_voiced_override / test_neural_vad_hysteresis_and_degrade。"""
         duration = chunk.shape[0] / TARGET_SR
         rms = self._rms(chunk)
         if rms < self.noise_floor:
@@ -207,7 +215,10 @@ class Segmenter:
         else:
             self.noise_floor = min(self.noise_floor + (rms - self.noise_floor) * 0.01, 0.02)
         threshold = max(self.noise_floor * 3.0, 0.004)
-        voiced = rms > threshold
+        if voiced_override is None:
+            voiced = rms > threshold
+        else:
+            voiced = bool(voiced_override)
 
         if voiced:
             self.silence_run = 0.0
@@ -272,7 +283,7 @@ class CaptureThread(QThread):
 
     def __init__(self, source_type: str, device_index: int, parent=None,
                  device_name: str = "", low_latency: bool = False, turbo: bool = False,
-                 cap_s=0.0):
+                 cap_s=0.0, neural_vad: bool = False):
         super().__init__(parent)
         self.source_type = source_type
         self.device_index = device_index
@@ -282,6 +293,17 @@ class CaptureThread(QThread):
         self.segmenter = Segmenter(low_latency=low_latency, turbo=turbo, cap_s=cap_s)
         self._warned_quiet = False
         self._tail_seg = None   # v2.6.2（P1-4）：停止 flush 尾段暂存
+        # v2.9.0：神经 VAD 实验开关（默认关，理由见 Segmenter.feed 实测留档）
+        self._neural_vad = bool(neural_vad)
+        self._vad_model = None
+        self._vad_on = False
+        self._vad_buf = np.zeros(0, dtype=np.float32)
+        self._vad_voiced = None
+        # 滞回双阈值（对齐 faster-whisper VadOptions 的 threshold/neg_threshold
+        # = threshold-0.15）：防词内 30ms 级短间隙把判定抖成碎片。
+        # 注意：这正是实测"背景乐下黏 0.66s"的来源，调参前先看留档
+        self._vad_hi = 0.50
+        self._vad_lo = 0.35
 
     def _maybe_warn_quiet(self):
         """持续无声达阈值时发一次低输入/静音告警（补充5）。电平过弱与"完全
@@ -363,6 +385,72 @@ class CaptureThread(QThread):
         except Exception:
             return None
 
+    # ---------- v2.9.0：Silero 神经 VAD 句末判定（实验开关，默认关） ----------
+    # 开启理由与代价见 Segmenter.feed 实测留档：稳定背景乐下反而黏 0.66s，
+    # 只有突发强噪声/音乐盖过语音的场景才值得一试。开销本身可忽略。
+
+    def _init_neural_vad(self):
+        """在采集线程内构造 Silero VAD（onnx，CPU 单线程）。
+
+        成本实测（本机，47s 真实语音素材）：单块 512 样本（32ms）推理约
+        0.14ms → 占空比 ~0.4% CPU；概率分布 0.001~0.997 区分度好。
+        任何异常（缺 onnxruntime / 打包漏资产 / 模型损坏）都静默退回能量判据，
+        功能整体降级但不影响出字幕。"""
+        if not self._neural_vad:
+            return
+        try:
+            from app.asr.engine import _silero_assets_ok
+            if not _silero_assets_ok():
+                return                      # 资产缺失：不冒险（v1.9.0 同款教训）
+            from faster_whisper.vad import get_vad_model
+            self._vad_model = get_vad_model()
+            self._vad_on = True
+            self._vad_voiced = False
+            try:
+                from app import log as app_log
+                app_log.log("capture.neural_vad_enabled")
+            except Exception:
+                pass
+        except Exception:
+            self._vad_model = None
+            self._vad_on = False
+            self._vad_voiced = None
+            try:
+                from app import log as app_log
+                app_log.log("capture.neural_vad_unavailable")
+            except Exception:
+                pass
+
+    def _neural_voiced(self, mono16):
+        """喂入 16k 单声道音频，返回该块的人声判定（True/False），不可用返回 None。
+
+        Silero 要求输入长度为 512 的整数倍（32ms），而采集块是 480 样本（30ms），
+        故跨块累积、每凑满一个 512 块判一次，块间沿用最近结论（32ms 粒度远细于
+        判停阈值 0.20~0.40s，不需要插值）。"""
+        if not self._vad_on or self._vad_model is None:
+            return None
+        try:
+            self._vad_buf = np.concatenate(
+                [self._vad_buf, np.asarray(mono16, dtype=np.float32).reshape(-1)])
+            if self._vad_buf.shape[0] < 512:
+                return self._vad_voiced
+            n_blocks = self._vad_buf.shape[0] // 512
+            for i in range(n_blocks):
+                blk = self._vad_buf[i * 512:(i + 1) * 512]
+                probs = np.asarray(self._vad_model(blk)).reshape(-1)
+                p = float(probs[-1]) if probs.size else 0.0
+                if self._vad_voiced:
+                    if p < self._vad_lo:
+                        self._vad_voiced = False
+                elif p >= self._vad_hi:
+                    self._vad_voiced = True
+            self._vad_buf = self._vad_buf[n_blocks * 512:]
+            return self._vad_voiced
+        except Exception:
+            self._vad_on = False            # 一次异常即永久降级，不反复刷错
+            self._vad_model = None
+            return None
+
     def run(self):
         try:
             import pyaudiowpatch as pyaudio
@@ -422,6 +510,9 @@ class CaptureThread(QThread):
                 input_device_index=device_index,
                 frames_per_buffer=frames_per_buffer,
             )
+            # v2.9.0：VAD 模型在采集线程内构造（onnx 会话不跨线程共享）；
+            # 未开启或加载失败时 _neural_voiced 返回 None，feed 走能量判据
+            self._init_neural_vad()
 
             while not self._stop:
                 try:
@@ -481,7 +572,8 @@ class CaptureThread(QThread):
                         self._warned_quiet = False
                         self.muted.emit(False)
                         self.low_input.emit(False)
-                seg = self.segmenter.feed(mono16)
+                # v2.9.0：神经判定可用时优先于能量判据（None=降级回能量）
+                seg = self.segmenter.feed(mono16, voiced_override=self._neural_voiced(mono16))
                 if seg is not None:
                     # v2.3.20（P26）：随段携带"切分完成时刻"（monotonic 秒），
                     # 下游据此测"话音落→原文上屏"识别段延迟；AsrThread.submit
