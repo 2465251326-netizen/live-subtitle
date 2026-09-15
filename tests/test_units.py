@@ -1101,6 +1101,57 @@ def test_preload_argos_direction():
         op._get_translator, op.list_installed = orig_g, orig_l
 
 
+def test_engine_auto_fallback_switch():
+    """v2.7.1：「引擎自动切换」关→失败以错误终态，绝不触碰备援；
+    开=旧行为（互备链照常）。"""
+    from app.translate import translator as tmod
+    calls = []
+
+    class Fail:
+        def translate(self, text, source, target):
+            calls.append("fail")
+            raise RuntimeError("boom")
+
+    class Backup:
+        def translate(self, text, source, target):
+            calls.append("backup")
+            return ("备援译文", "en")
+
+    class FakeCache:
+        def get(self, k):
+            return None
+
+        def put(self, k, v):
+            pass
+
+        def save(self):
+            pass
+
+    orig_engines, orig_cache = tmod.ENGINES, tmod._cache
+    tmod.ENGINES = {"argos": Fail(), "mymemory": Backup(), "google": Fail()}
+    tmod._cache = FakeCache()
+    try:
+        tt = tmod.TranslateThread("argos", "zh-CN", auto_fallback=False)
+        got = []
+        tt.result_ready.connect(lambda s, tr, eng, det, err: got.append((tr, err)))
+        tt.queue_in.put(("hello one", "en"))
+        tt.queue_in.put(None)
+        tt.run()
+        assert got and got[0][1], "关闭时该句应带错误终态"
+        assert calls == ["fail"], f"关闭时不得触碰备援: {calls}"
+        calls.clear()
+        tt2 = tmod.TranslateThread("argos", "zh-CN", auto_fallback=True)
+        got2 = []
+        tt2.result_ready.connect(lambda s, tr, eng, det, err: got2.append((tr, err)))
+        tt2.queue_in.put(("hello two", "en"))
+        tt2.queue_in.put(None)
+        tt2.run()
+        assert got2 and got2[0][1] == "" and got2[0][0] == "备援译文", got2
+        assert calls == ["fail", "backup"], calls
+    finally:
+        tmod.ENGINES, tmod._cache = orig_engines, orig_cache
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

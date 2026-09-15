@@ -425,10 +425,12 @@ class TranslateThread(QThread):
     DRAIN_GRACE = 15.0
 
     def __init__(self, engine_name: str, target: str, parent=None, translate_fix_map=None,
-                 fix_whole_word=False, offline_quality="high"):
+                 fix_whole_word=False, offline_quality="high", auto_fallback=True):
         super().__init__(parent)
         self.engine_name = engine_name
         self.target = target
+        # v2.7.1：引擎自动切换开关——关=失败时不降级换引擎，只报错（默认开=旧行为）
+        self._auto_fallback = bool(auto_fallback)
         # v2.3.6（P7）：译文修正词典，上屏前应用（含缓存命中的存量错译）
         self.fix_map = dict(translate_fix_map or {})
         # v2.6.0（R2）：词典全词匹配开关快照
@@ -609,22 +611,25 @@ class TranslateThread(QThread):
                 app_log.exception("translate.failed", e, engine=self._active_engine)
                 error = friendly_error(e)
                 fallbacks = []
-                if self._active_engine != "mymemory":
-                    fallbacks.append("mymemory")
-                if self._active_engine != "google":
-                    fallbacks.append("google")
-                if self._active_engine != "argos":
-                    try:
-                        src_for_argos = WHISPER_LANG_MAP.get(detected, "") if detected and detected != "auto" else ""
-                        # Argos 元数据用 "zh"（ArgosEngine.translate 内部有同样归一），
-                        # 判断处漏做归一曾导致中文源永远不落 Argos 备援（v2.0.1 修）
-                        if src_for_argos.startswith("zh"):
-                            src_for_argos = "zh"
-                        tgt_for_argos = "zh" if self.target.startswith("zh") else self.target
-                        if src_for_argos and (src_for_argos, tgt_for_argos) in ENGINES["argos"].installed_pairs():
-                            fallbacks.append("argos")
-                    except Exception:
-                        pass
+                # v2.7.1：自动切换开关关闭→不组建备援链，本句以错误终态
+                #（卡片红字+连续失败横幅照常提示，用户可手动换引擎）
+                if self._auto_fallback:
+                    if self._active_engine != "mymemory":
+                        fallbacks.append("mymemory")
+                    if self._active_engine != "google":
+                        fallbacks.append("google")
+                    if self._active_engine != "argos":
+                        try:
+                            src_for_argos = WHISPER_LANG_MAP.get(detected, "") if detected and detected != "auto" else ""
+                            # Argos 元数据用 "zh"（ArgosEngine.translate 内部有同样归一），
+                            # 判断处漏做归一曾导致中文源永远不落 Argos 备援（v2.0.1 修）
+                            if src_for_argos.startswith("zh"):
+                                src_for_argos = "zh"
+                            tgt_for_argos = "zh" if self.target.startswith("zh") else self.target
+                            if src_for_argos and (src_for_argos, tgt_for_argos) in ENGINES["argos"].installed_pairs():
+                                fallbacks.append("argos")
+                        except Exception:
+                            pass
                 for fb in fallbacks:
                     try:
                         self.status_changed.emit(f"{self._active_engine} 失败，切换备援引擎 {fb}...")

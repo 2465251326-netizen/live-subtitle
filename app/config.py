@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.7.1"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -24,6 +24,8 @@ DEFAULTS = {
     "asr_device": "cpu",              # cpu | cuda | auto
     "asr_language": "auto",           # auto | en | ja | ko ...
     "engine": "auto",                 # auto | google | mymemory | argos
+    "engine_auto_fallback": True,     # v2.7.1：引擎失败时自动切换备援（在线互备→离线包）；
+                                      # 关=固定用当前引擎，失败只报错不换（离线包用户/想稳定复现者用）
     "target_lang": "zh-CN",
     "show_source": True,
     "max_history": 200,

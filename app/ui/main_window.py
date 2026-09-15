@@ -1097,7 +1097,8 @@ class MainWindow(QMainWindow):
         self.translate_thread = TranslateThread(engine, c.get("target_lang"), self,
                                                 translate_fix_map=dict(c.get("translate_fix_map") or {}),
                                                 fix_whole_word=bool(c.get("fix_whole_word")),
-                                                offline_quality=str(c.get("offline_quality") or "high"))
+                                                offline_quality=str(c.get("offline_quality") or "high"),
+                                                auto_fallback=bool(c.get("engine_auto_fallback")))
         self.translate_thread.result_ready.connect(self._on_translated)
         # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
         # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"

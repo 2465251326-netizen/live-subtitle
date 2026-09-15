@@ -163,6 +163,7 @@ _FIELD_SPECS = {
     "translate_fix_map":    ("pipeline", "mishear"),
     "engine":               ("pipeline", "combo"),
     "target_lang":          ("pipeline", "combo"),
+    "engine_auto_fallback": ("pipeline", "check"),
     "fix_whole_word":       ("pipeline", "check"),
     "offline_quality":      ("pipeline", "combo"),
     "proxy_mode":           ("instant", "combo"),
@@ -271,6 +272,12 @@ _STD_ROWS = [
      "desc": "在线引擎支持简繁中文、英、日、韩、法、德、西、俄、葡、意、泰、越、阿、印尼、印地共 16 种；"
              "离线语言包支持其中 15 种（暂缺繁体中文），选 Argos 引擎后可下载。",
      "opts": {"items": _STD_ROW_ITEMS["target"], "on_change": "_on_engine_changed"}},
+    {"key": "engine_auto_fallback", "attr": "engine_auto_fallback_check", "page": "translate", "section": "翻译方向",
+     "kind": "check", "title": "引擎自动切换（失败降级备援）",
+     "desc": "开启：当前翻译引擎失败时自动换备援通道（在线互备→已装离线包），网络恢复后自动切回。"
+             "关闭：固定使用当前引擎，失败只在字幕卡与状态栏明确报错、绝不悄悄换通道——"
+             "适合要求译文来源稳定（如对照测试、离线包用户）。重启翻译生效。",
+     "opts": {}},
     {"key": "offline_quality", "attr": "offline_quality_combo", "page": "translate", "section": "翻译方向",
      "kind": "combo", "title": "离线翻译质量",
      "desc": "仅影响 Argos 离线引擎（含自动模式断网回落）。高质量=更宽的翻译束宽，译文更连贯、"
