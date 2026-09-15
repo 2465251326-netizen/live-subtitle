@@ -807,6 +807,37 @@ def t_panel_first_show_flag_persist():
     w._teardown()
 check("panel: 首次引导标记落盘（D·主窗接线）", t_panel_first_show_flag_persist)
 
+def t_overlay_resident_on_launch():
+    """v2.10.0（启动即常驻）：上次退出时藏了面板（overlay_enabled=False 落盘），
+    新会话构造 MainWindow 后也必须可见、且回写 True（设置页勾选/仪表盘/托盘
+    语义一致）；热键隐藏只在本次运行内有效，toggle 显隐语义不变。"""
+    from app.config import Config
+    cfg = Config()
+    orig = cfg.get("overlay_enabled")
+    cfg.set("overlay_enabled", False)      # 模拟上次以"隐藏"状态退出
+    try:
+        w = MainWindow()
+        assert w.overlay.isVisible(), "启动即常驻：上次落盘 False 也必须显示"
+        assert bool(w.config.get("overlay_enabled")) is True, \
+            "常驻状态应回写 True（设置页勾选/仪表盘/托盘保持一致）"
+        ql = getattr(w, "_quick_labels", None)
+        if ql:
+            assert str(ql["字幕面板"].text()).startswith("已开启"), \
+                "仪表盘必须显示'已开启'——先 show 再刷面板的顺序不许反"
+        # 热键隐藏：当次生效并落盘 False（下次启动才恢复常驻）
+        w._toggle_overlay_hotkey()
+        assert not w.overlay.isVisible()
+        assert bool(w.config.get("overlay_enabled")) is False
+        w._overlay_hk_last = 0.0           # 解除 250ms 防抖（既有机制，非本测试对象）
+        w._toggle_overlay_hotkey()
+        assert w.overlay.isVisible(), "再按热键应重新显示（toggle 语义不变）"
+        assert bool(w.config.get("overlay_enabled")) is True
+        w._quitting = True
+        w._teardown()
+    finally:
+        cfg.set("overlay_enabled", orig)
+check("panel: 悬浮条启动常驻、热键隐藏当次有效", t_overlay_resident_on_launch)
+
 def t_panel_unread_badge():
     # v2.4.3（E）：非跟随时新句计数 +1、按钮变红显示"N"；回底两种路径（点按钮/
     # 滚到底）都归零复原。offscreen 字体度量退化（30 行仅 ~2px 溢出、maximum<4

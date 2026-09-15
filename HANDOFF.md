@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 深夜 v2.9.0（v2.8.0 译文速度专项见第十三节；v2.9.0 应**用户复评**恢复神经 VAD 为默认关实验开关，见第十四节）
+> 最后更新：2026-09-15 深夜 v2.10.0（悬浮面板启动即常驻，见第十五节；v2.8.0 译文速度专项见第十三节；v2.9.0 神经 VAD 恢复为默认关实验开关，见第十四节）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.9.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.10.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -167,7 +167,7 @@ app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      75 项单元测试
-tests/test_integration.py 92 项集成测试
+tests/test_integration.py 93 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -176,7 +176,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.9.0 已发布（v2.8.0 译文速度专项：推测式增量翻译真机实测 5.13s→0.10s；v2.9.0 应用户要求把神经 VAD 恢复为默认关的实验开关）。第十三节有延迟结构定性、A/B 方法论与被否决方案留档；第十四节有神经 VAD 恢复始末。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.10.0 已发布（v2.8.0 推测式增量翻译真机实测 5.13s→0.10s；v2.9.0 神经 VAD 恢复为默认关实验开关；v2.10.0 悬浮面板启动即常驻）。第十三节有延迟结构定性与 A/B 方法论，第十四节有神经 VAD 恢复始末，第十五节有常驻行为矩阵。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
@@ -314,4 +314,20 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **登记五件套**：`DEFAULTS.neural_vad=False` + `_FIELD_SPECS` + `_STD_ROWS`（标题"神经 VAD 句末判定（实验性，默认关）"）+ `_std_rows` keys 元组 + `CaptureThread(neural_vad=...)` 管线传参。设置页三处登记规约照旧，管线传参处算第四、五处（v2.3.0 表驱动只管到控件层）。
 - **测试锁**：恢复 `test_segmenter_voiced_override`（注入/降级双路径）、`test_neural_vad_hysteresis_and_degrade`（滞回+异常降级）；另在 `test_energy_vad_beats_steady_bgm` 里新增断言 **`DEFAULTS["neural_vad"] is False`**——"要改默认值，先拿新的实测数据来"。单元 73→75、集成 92 全绿。
 - **教训（流程）**：回退随 v2.8.0 发布后**当晚**用户即改主意 → 多走一整个发版周期。对"价值有争议"的功能，今后优先提议**保留默认关**（代码与开关都在、文案写明数据与适用场景），而不是拆干净；拆干净仅在用户明确要求代码库整洁时执行。本次恢复成本可控是因为实现细节都在会话上下文里；若隔会话再恢复，就得从 git 历史或留档说明反推重写。
+
+## 十五、会话快照（2026-09-15 深夜 v2.10.0：悬浮面板启动即常驻）
+
+- **用户原话**："我的意思是，打开软件，字幕悬浮窗一直常驻，按热键来显示或隐藏"。此前痛点：热键/X 隐藏会把 `overlay_enabled=False` 跨会话持久化，之后每次开软件甚至开始翻译都不弹面板，"每次都要手动唤"。
+- **行为矩阵**（新语义，`_load_settings` 无条件 show + 回写 True 实现）：
+  | 时机 | 面板 | overlay_enabled 落盘 |
+  |---|---|---|
+  | App 启动 | **必显示**（常驻） | True |
+  | 热键 / X / 设置页取消 | 隐藏 | False |
+  | 隐藏后开始翻译 | **不弹**（尊重当次隐藏，1274 行既有逻辑未动） | False |
+  | 再按热键 | 显示 | True |
+  | 下次启动 | 又常驻 | True |
+- **实现要点**：① `_load_settings` 里**先 `overlay.show()` 再 `_refresh_quick_panel()`**——速览卡按 `isVisible()` 取文案，顺序反了仪表盘会谎报"已关闭"（v2.10.0 锁里专门断言了这点）；② `_build_ui` 尾部原 v2.5.1 按配置恢复段改为无条件兜底 show；③ `start_pipeline`（1274 行）"仅 enabled=True 才补显示"逻辑**保持不变**——这是"隐藏后开始翻译不弹"的实现载体，勿"顺手统一"。
+- **文案同步**：设置页 `overlay_enabled` 行 desc、README 亮点 bullet、三分钟上手第 5 步、README「显示/悬浮字幕面板/托盘菜单」三节（顺带清了 v2.4.0 退役的描边/右键关闭/0-95% 透明度遗留描述与特性亮点里的"三种形态"过期文案——README 后半是 v2.3 时代残留，此前多轮改版都没扫到）。
+- **锁**：`t_overlay_resident_on_launch`（集成 93）——构造前落盘 False→构造后必可见且回写 True；热键隐藏→False；再按→True。注意热键有 **250ms 防抖**（既有机制），连测两次 toggle 前要 `w._overlay_hk_last = 0.0`，否则第二次被防抖吞掉误判失败。
+- **版本**：v2.10.0（行为变更走 minor，项目惯例）。改动面很小（main_window 两处 + settings_dialog 文案），全套 75+93 绿后才发布。
 

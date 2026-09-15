@@ -541,9 +541,9 @@ class MainWindow(QMainWindow):
         self._build_tray()
         self._install_global_hotkey()
         self._maybe_prewarm()
-        # v2.5.1（P1）：启动按配置恢复字幕面板显隐——此前 overlay_enabled=true
-        # 也要等"开始翻译"才显示，用户"明明开着面板"重启后却没了（设置不兑现）
-        if bool(self.config.get("overlay_enabled")) and not self.overlay.isVisible():
+        # v2.10.0：悬浮条启动即常驻（主逻辑在 _load_settings 的无条件 show）——
+        # 此处保留兜底，防构建顺序变更时"常驻"承诺失效
+        if not self.overlay.isVisible():
             self.set_overlay_visible(True)
 
     def _maybe_prewarm(self):
@@ -839,9 +839,16 @@ class MainWindow(QMainWindow):
             self.overlay.resize(ow, self.overlay.height())
             self.overlay._user_resized = True
         self.apply_overlay_from_config()
+        # v2.10.0：悬浮条**启动即常驻**（用户裁决：打开软件字幕悬浮窗一直在，
+        # 按热键显示/隐藏）——显隐不再由 overlay_enabled 的跨会话持久值决定，
+        # "隐藏"只在本次运行内有效（热键/X/设置页），下次启动恢复常驻。
+        # enabled 仍回写 True：设置页勾选、仪表盘"字幕面板"行、托盘语义保持一致。
+        # 必须先 show 再刷仪表盘——速览卡按 isVisible() 取文案（顺序反了会
+        # 显示"已关闭"谎报常驻实况）
+        self.overlay.show()
+        if not bool(c.get("overlay_enabled")):
+            c.set("overlay_enabled", True)
         self._refresh_quick_panel()
-        if c.get("overlay_enabled"):
-            self.overlay.show()
 
     def _save_settings(self):
         c = self.config
