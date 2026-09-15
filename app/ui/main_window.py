@@ -92,8 +92,12 @@ class CaptionCard(QFrame):
         # v2.2.11：SRT 时间轴数据——t_start=会话起算秒，dur_s=语音时长（Whisper 给）
         self.t_start = None
         self.dur_s = None
+        # v2.7.6（A）：推测式增量翻译——当前译文是"整句还没攒完"的中间版本。
+        # 终版到达后由 set_result 置回 False（导出/终态化据此区分完整句子）。
+        self.spec = False
 
     def set_result(self, translated, engine, detected, show_source):
+        self.spec = False      # v2.7.6（A）：终版覆盖，脱离推测态
         if translated:
             self.target_label.setText(translated)
         else:
@@ -103,12 +107,48 @@ class CaptionCard(QFrame):
         self.source_label.setStyleSheet("")   # v2.3.17（P22）撤下占位弱化色
         self.source_label.setVisible(show_source)
 
+    def set_spec_result(self, translated, engine, detected, show_source):
+        """v2.7.6（A）：推测式中间版译文上屏——只刷新译文文本，**不做终态化**
+        （不摘 _pending、不计会话条数、不切聚焦态）；整句终版随后走 set_result
+        原地覆盖。收益：连续语流中译文不再干等攒句冲刷（实测 hold_p50≈4.1s），
+        碎片一到就上屏并随句子生长。中间版译文可能不完整（半句），meta 标"攒句中"。"""
+        if not translated:
+            return                     # 推测失败静默——终版会来，中间版是增益
+        self.spec = True
+        self.target_label.setText(translated)
+        self.source_label.setStyleSheet("")
+        self.source_label.setVisible(show_source)
+        self.meta_label.setText(
+            f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} · "
+            f"引擎: {engine} · 攒句中")
+
+    def finalize_spec(self):
+        """v2.7.6（A）：停止/收尾时把推测中间版就地终态化。
+
+        **保留已上屏的译文**——它虽然可能只是半句，但比覆盖成"未完成翻译"
+        的失败文案有用得多（用户已经在看这行字）。只解除推测态并把 meta
+        标注为"可能不完整"。返回 True 表示本卡原是推测态、已就地收口。"""
+        if not self.spec:
+            return False
+        self.spec = False
+        self.meta_label.setText(
+            f"{datetime.now().strftime('%H:%M:%S')} · 已停止 · 译文可能不完整")
+        return True
+
     def is_pending(self):
-        """是否仍处于"译文未落地"占位态（流式两段式，v2.1.4）。"""
+        """是否仍处于"译文未落地"占位态（流式两段式，v2.1.4）。
+        v2.7.6（A）：推测态（spec=True）虽已有译文，但仍算"未完成"——
+        _take_pending 与终态化逻辑据此把它留在待决队列里等终版覆盖。"""
+        if self.spec:
+            return True
         return self.target_label.text() in ("...", "⟳ …")
 
     def translated_text(self):
-        """当前译文；占位/失败/已并入态返回空串（右键菜单据此决定可用性）。"""
+        """当前译文；占位/失败/已并入态返回空串（右键菜单据此决定可用性）。
+        v2.7.6（A）：推测态返回已有译文——用户看到就能复制，语义上"当前译文"。"""
+        if self.spec:
+            t = self.target_label.text()
+            return t if t and t != "[翻译失败]" else ""
         if self.is_pending():
             return ""
         t = self.target_label.text()
@@ -1006,6 +1046,12 @@ class MainWindow(QMainWindow):
             self._tgroup_by_src.clear()
         self._submit_ts = getattr(self, "_submit_ts", {})
         self._submit_ts.clear()
+        # v2.7.6（A）：推测式簿记同步清——否则清空后仍有中间版回复来更新
+        # 已删卡片（与 v2.6.1 P0-1 同源风险：迟到译文打到已删 C++ 对象）
+        if getattr(self, "_spec_inflight", None):
+            self._spec_inflight.clear()
+        if getattr(self, "_spec_ts", None):
+            self._spec_ts.clear()
         tg = getattr(self, "_tgroup_timer", None)
         if tg is not None:
             tg.stop()
@@ -1111,6 +1157,11 @@ class MainWindow(QMainWindow):
         self.running = True
         # v2.3.20（P26）：新会话清零延迟样本与提交时刻表（防跨会话混算）
         self._lat_reco, self._lat_tr, self._lat_hold, self._submit_ts = [], [], [], {}
+        # v2.7.6（A）：推测式增量翻译的簿记随会话清零——gen 递增使上一会话
+        # 迟到的推测回复自动失效，_spec_inflight 不跨会话残留
+        self._tgroup_gen = getattr(self, "_tgroup_gen", 0) + 1
+        self._spec_inflight = {}
+        self._lat_spec = []
         # v2.7.2：榨干模式——翻译运行期提升进程优先级（停止后恢复），
         # 让采集/转写线程在系统负载下不被普通进程抢时间片
         self._apply_process_priority(True)
@@ -1135,6 +1186,8 @@ class MainWindow(QMainWindow):
                                                 auto_fallback=bool(c.get("engine_auto_fallback")),
                                                 expected_src=str(c.get("asr_language") or "auto"))
         self.translate_thread.result_ready.connect(self._on_translated)
+        # v2.7.6（A）：推测式中间版译文走独立信号（终版通路零改动）
+        self.translate_thread.spec_result_ready.connect(self._on_spec_translated)
         # v2.0.4：状态改走带守卫的槽——lambda 无 running 守卫，停止后已入队的
         # 迟到状态（如孤儿加载线程的"正在加载模型"）会覆盖"已停止"
         self.translate_thread.status_changed.connect(self._on_translate_status)
@@ -1192,6 +1245,9 @@ class MainWindow(QMainWindow):
             low_latency=bool(c.get("low_latency_mode")),
             # v2.7.2：榨干模式——连续语流强制切段上限 6s→4s
             turbo=bool(c.get("perf_turbo")),
+            # v2.7.6（C）：分段上限独立可调（>0 覆盖模式内置值）——句长超过上限
+            # 即被强制切段，hold_p50 实测恒等于该周期（译文迟到的直接来源）
+            cap_s=c.get("segment_cap_s"),
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)
@@ -1515,7 +1571,11 @@ class MainWindow(QMainWindow):
             # 且 txt 导出会把占位行一起带出去（SRT 侧已过滤，两出口分叉）
             for _txt, _card in list(self._pending):
                 try:
-                    _card.set_failed("已停止 · 该句未完成翻译")
+                    # v2.7.6（A）：推测态卡片已有可用译文 → 就地终态化保留译文，
+                    # 不能覆盖成"未完成翻译"（用户正在看那行字，半句也胜过失败文案）
+                    finalize = getattr(_card, "finalize_spec", None)
+                    if not (finalize and finalize()):
+                        _card.set_failed("已停止 · 该句未完成翻译")
                 except Exception:
                     pass
             self._pending.clear()
@@ -1523,6 +1583,11 @@ class MainWindow(QMainWindow):
         self._tgroup = []
         if getattr(self, "_tgroup_by_src", None):
             self._tgroup_by_src.clear()
+        # v2.7.6（A）：推测簿记清零——排水期到达的中间版回复按 gen 失效自动丢弃
+        if getattr(self, "_spec_inflight", None):
+            self._spec_inflight.clear()
+        if getattr(self, "_spec_ts", None):
+            self._spec_ts.clear()
         tg = getattr(self, "_tgroup_timer", None)
         if tg is not None:
             tg.stop()
@@ -1778,6 +1843,10 @@ class MainWindow(QMainWindow):
             # v2.3.18（P23）：组寿命起点——绝对上限用它算，续片无法续命
             self._tgroup_start = time.monotonic()
         self._tgroup_lang = detected or self._tgroup_lang
+        # v2.7.6（A）推测式增量翻译：碎片一到达就把"当前已攒文本"送翻译上屏，
+        # 下一片到达再送更长版本，译文在同一张卡/同一面板行上原地生长覆盖。
+        # 连续语流下译文等待从 hold_p50≈4.1s 降到 ≈0.06s（离线引擎单次耗时）。
+        self._maybe_spec_submit(grp)
         if len(grp) >= 5:
             self._flush_tgroup()
             return
@@ -1856,6 +1925,15 @@ class MainWindow(QMainWindow):
         self._tgroup_last_at = None
         self._tgroup = []
         self._tgroup_start = None      # v2.3.18（P23）：组起点随组清空
+        # v2.7.6（A）：组代数递增 + 清空本组的推测簿记——终版已提交、马上
+        # 会带完整译文到达，仍在飞行中的"中间版"回复一律作废（不清空的话，
+        # 迟到的半句译文可能盖在已经终态化的卡上）。gen 另作双保险：
+        # _on_spec_translated 只接受与当前攒句组同代的回复。
+        self._tgroup_gen = getattr(self, "_tgroup_gen", 0) + 1
+        if getattr(self, "_spec_inflight", None):
+            self._spec_inflight.clear()
+        if getattr(self, "_spec_ts", None):
+            self._spec_ts.clear()
         t = getattr(self, "_tgroup_timer", None)
         if t is not None:
             t.stop()
@@ -1872,8 +1950,7 @@ class MainWindow(QMainWindow):
         # 起效，看日志 hold_p50 一行即证（此前"慢"的大头恰好不在任何遥测里）
         if hold_at is not None:
             self._lat_add("_lat_hold", max(0.0, time.monotonic() - hold_at))
-        joined = " ".join(grp)
-        combined = "".join(grp) if any("\u4e00" <= c <= "\u9fff" for c in joined) else joined
+        combined = self._combine_pieces(grp)
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
         self._tgroup_by_src[combined] = grp
         self._submit_ts = getattr(self, "_submit_ts", {})
@@ -1881,6 +1958,88 @@ class MainWindow(QMainWindow):
         # v2.6.2（P1-7）：合并句被队列挤掉时整组碎片卡立即终态化
         for d_text, _d_lang in (tr.submit(combined, getattr(self, "_tgroup_lang", "")) or []):
             self._drop_translation(d_text)
+
+    @staticmethod
+    def _combine_pieces(grp):
+        """碎片列表 → 送翻译的整句键（v2.7.6（A）提取为函数，冲刷与推测共用，
+        保证两侧算出的 combined 完全一致，否则终版回复会配不上推测建的簿记）。
+        含 CJK 时无空格直连，纯拉丁按空格连接。"""
+        joined = " ".join(grp)
+        return "".join(grp) if any("\u4e00" <= c <= "\u9fff" for c in joined) else joined
+
+    # ---------- v2.7.6（A）：推测式增量翻译 ----------
+    # 遥测实锤（用户真机会话，n_reco=110）：reco_p50=0.55s、tr_p50=0.06s，
+    # 而 hold_p50=4.13s——端到端延迟的 87% 是"攒句等下一片冲刷"的结构性等待，
+    # 识别+翻译本身只占约 0.6s。提前冲句（v2.7.0）只救末句、榨干模式（v2.7.2）
+    # 只是把等待从 6s 压到 4s，hold 始终等于分段周期；本方案才是根治。
+
+    def _spec_enabled(self):
+        """推测式翻译三重闸：①开关开 ②低延迟模式在攒句（否则逐句直送、无可推测）
+        ③**仅离线引擎**。在线引擎有额度与限流（MyMemory 每天约 5000 字符免费额度），
+        每片都送一份中间版会让请求量成倍增长，故一律退回整句翻译；
+        engine=auto 按引擎探测后的实际选用结果（_active_engine）判定。"""
+        if not bool(self.config.get("spec_translate")):
+            return False
+        if not bool(self.config.get("low_latency_mode")):
+            return False
+        tr = self._active_translate()
+        if tr is None:
+            return False
+        return str(getattr(tr, "_active_engine", "") or "") == "argos"
+
+    def _maybe_spec_submit(self, grp):
+        """把"当前已攒文本"送一次翻译。中间版失败静默忽略（终版随后到达），
+        队列满时 translator.submit(spec=True) 放弃自己、绝不挤掉终版。"""
+        if not grp or not self._spec_enabled():
+            return
+        combined = self._combine_pieces(grp)
+        if not combined.strip():
+            return
+        tr = self._active_translate()
+        if tr is None or not tr.isRunning():
+            return
+        self._spec_inflight = getattr(self, "_spec_inflight", {})
+        self._spec_inflight[combined] = (getattr(self, "_tgroup_gen", 0), list(grp))
+        self._spec_ts = getattr(self, "_spec_ts", {})
+        self._spec_ts[combined] = time.monotonic()
+        tr.submit(combined, getattr(self, "_tgroup_lang", ""), spec=True)
+
+    def _peek_pending(self, source_text):
+        """v2.7.6（A）：按原文查待决卡但**不摘走**——推测版更新必须保住配对，
+        整句终版还要靠它找到同一张卡做原地覆盖。"""
+        pend = getattr(self, "_pending", None) or []
+        for txt, card in pend:
+            if txt == source_text and card.is_pending():
+                return card
+        for txt, card in pend:
+            if txt == source_text:
+                return card
+        return None
+
+    def _on_spec_translated(self, source_text, translated, engine, detected, error):
+        """推测中间版译文回调：**只原地更新译文**。不终态化、不摘 pending、
+        不计会话条数、不切聚焦态、不动失败横幅——这些全部留给整句终版。
+        组已冲刷（gen 变化）则丢弃：终版已提交，马上会带完整译文到达。"""
+        if not self._session_ok(getattr(self, "_sid_tr", None)):
+            return
+        spec = getattr(self, "_spec_inflight", None) or {}
+        ent = spec.pop(source_text, None)
+        t0 = getattr(self, "_spec_ts", {}).pop(source_text, None)
+        if ent is None:
+            return
+        gen, pieces = ent
+        if gen != getattr(self, "_tgroup_gen", 0):
+            return
+        if error or not translated or not pieces:
+            return
+        if t0 is not None:
+            self._lat_add("_lat_spec", max(0.0, time.monotonic() - t0))
+        show_source = bool(self.config.get("show_source"))
+        card = self._peek_pending(pieces[-1])
+        if card is not None:
+            card.set_spec_result(translated, engine, detected, show_source)
+        if self.overlay.isVisible():
+            self.overlay.update_spec_result(source_text, translated, show_source)
 
     def _drop_translation(self, src_text):
         """v2.6.2（P1-7）：翻译队列满被挤掉的句子——占位卡/攒句簿记立即
@@ -1921,11 +2080,14 @@ class MainWindow(QMainWindow):
 
     def _log_latency_summary(self):
         """会话结束把识别/翻译两段延迟的 p50/p95 打进日志——想测速看日志
-        一行即可，不必再搭仪器（第十三轮三度折腾的教训）。随后清零。"""
+        一行即可，不必再搭仪器（第十三轮三度折腾的教训）。随后清零。
+        v2.7.6（A）：新增 spec 段——"碎片到达→推测译文上屏"，这是用户**实际
+        感知**的译文延迟；hold 仍照旧记录（整句终版的攒句等待，用于对照）。"""
         reco = getattr(self, "_lat_reco", []) or []
         tr = getattr(self, "_lat_tr", []) or []
         hold = getattr(self, "_lat_hold", []) or []
-        if reco or tr or hold:
+        spec = getattr(self, "_lat_spec", []) or []
+        if reco or tr or hold or spec:
             from app import log as app_log
             app_log.log(
                 "pipeline.latency",
@@ -1938,8 +2100,12 @@ class MainWindow(QMainWindow):
                 tr_max=round(max(tr), 2) if tr else 0,
                 n_hold=len(hold),
                 hold_p50=round(_pct(hold, 0.50), 2) if hold else 0,
-                hold_p95=round(_pct(hold, 0.95), 2) if hold else 0)
+                hold_p95=round(_pct(hold, 0.95), 2) if hold else 0,
+                n_spec=len(spec),
+                spec_p50=round(_pct(spec, 0.50), 2) if spec else 0,
+                spec_p95=round(_pct(spec, 0.95), 2) if spec else 0)
         self._lat_reco, self._lat_tr, self._lat_hold, self._submit_ts = [], [], [], {}
+        self._lat_spec = []
 
     # ---------- v2.3.13（P14）：字幕卡右键一键纠错（词典可达性） ----------
     # 第八轮实测：误听词典做了八轮仍空——不是没工具，是"看到错→查原文→

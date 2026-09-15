@@ -2014,7 +2014,10 @@ def t_stop_pipeline_drain_contract():
     # 队列 = 保留的最新段 + stop_pipeline 同步直塞的 capture 尾段
     assert asr.queue_in.qsize() == 2, "asr 应保留最新段并接收直塞尾段"
     assert tr._stop is True and tr.queue_in.qsize() == 1, "translate 应保留最新一句"
-    assert tr.queue_in.get_nowait() == ("old sentence", "en")
+    # v2.7.6（A）：队列项为 (text, lang, spec) 三元组——排水保留的必须是终版
+    _kept = tr.queue_in.get_nowait()
+    assert _kept[:2] == ("old sentence", "en")
+    assert len(_kept) == 3 and _kept[2] is False, "排水保留的待译句应带 spec=False"
     assert cap.pop_tail_seg() is None, "capture 尾段应已被 stop_pipeline 同步取走"
     head = asr.queue_in.get_nowait()
     tail = asr.queue_in.get_nowait()
@@ -2073,6 +2076,179 @@ check("pipeline: 切源前快照线程引用（P1-5）", t_toggle_source_snapsho
 
 # ---------- 汇总 ----------
 check("config: DEFAULTS 全键可读", lambda: [cfg.get(k) for k in DEFAULTS])
+
+# ---------- v2.7.6：推测式增量翻译（延迟三件套之 A） ----------
+# 遥测实锤：reco_p50=0.55s、tr_p50=0.06s，但 hold_p50=4.13s——端到端延迟的
+# 87% 是"攒句等下一片冲刷"。推测式翻译让碎片一到达就上屏译文并原地生长，
+# 整句终版随后接管终态化。这组锁钉住"中间版只更新、终版才收口"的契约。
+
+class _StubTr(object):
+    """离线引擎替身：只记录提交，不真翻（_active_engine 决定推测闸门放行）。"""
+    _active_engine = "argos"
+
+    def __init__(self, engine="argos"):
+        self._active_engine = engine
+        self.sent = []
+
+    def isRunning(self):
+        return True
+
+    def submit(self, text, lang, spec=False):
+        self.sent.append((text, lang, bool(spec)))
+        return []
+
+
+def t_spec_translate_growth():
+    w = MainWindow()
+    w.show()
+    w.running = True
+    stub = _StubTr()
+    w._active_translate = lambda: stub        # 不动 translate_thread，stop_pipeline 不受影响
+    old_spec, old_ll = w.config.get("spec_translate"), w.config.get("low_latency_mode")
+    w.config.set("spec_translate", True)
+    w.config.set("low_latency_mode", True)
+    try:
+        w._tgroup = []
+        w.session_count = 0
+        w.session_label.setText("本次会话：0 条")
+        # 碎片一到达：原文上屏 + 推测版已提交（spec=True）
+        w._on_asr_text("The quick", "en", "1.0")
+        card1 = w._pending[0][1]
+        assert stub.sent[-1] == ("The quick", "en", True), stub.sent
+        active_before = w._active_card     # 占位卡建立时即按 v2.2.5 聚焦
+        # 推测回复：译文上屏，但卡片仍是"未完成"（终版还要靠它配对）
+        w._on_spec_translated("The quick", "快速的", "argos", "en", "")
+        assert card1.spec is True and card1.target_label.text() == "快速的"
+        assert card1.is_pending() is True, "推测态必须仍算未完成"
+        assert len(w._pending) == 1, "推测回复不得摘 pending"
+        assert w.session_count == 0, "中间版不计入已完成字幕条数"
+        assert w._active_card is active_before, "中间版不得改写聚焦卡（那是终版的职责）"
+        # 碎片二（小写开头=同句延续）：送更长版本，译文在同一批卡上生长
+        w._on_asr_text("brown fox", "en", "1.0")
+        card2 = w._pending[-1][1]
+        assert stub.sent[-1] == ("The quick brown fox", "en", True), stub.sent
+        w._on_spec_translated("The quick brown fox", "快速的棕色狐狸", "argos", "en", "")
+        assert card2.spec is True and card2.target_label.text() == "快速的棕色狐狸"
+        # 终版冲刷：同一文本以 spec=False 提交，回复后终态化并收编前片
+        w._flush_tgroup()
+        assert stub.sent[-1] == ("The quick brown fox", "en", False), stub.sent
+        w._on_translated("The quick brown fox", "敏捷的棕色狐狸", "argos", "en", "")
+        assert card2.spec is False, "终版必须脱离推测态"
+        assert card2.target_label.text() == "敏捷的棕色狐狸"
+        assert card2.is_pending() is False
+        assert len(w._pending) == 0, "终版应摘走 pending"
+        assert w.session_count == 1, "只有终版计入会话条数"
+        # 代际守卫：条目仍在但代数不符（清理竞态窗口）→ 中间版必须被丢弃
+        w._running_guard_gen = w._tgroup_gen
+        w._on_asr_text("Guarded piece", "en", "1.0")
+        w._spec_inflight["Guarded piece"] = (w._tgroup_gen + 7, ["Guarded piece"])
+        w._on_spec_translated("Guarded piece", "不该上屏的译文", "argos", "en", "")
+        guarded = w._pending[-1][1]
+        assert guarded.spec is False and guarded.target_label.text() in ("...", "⟳ …"), \
+            "代数不符的中间版必须丢弃，不得上屏"
+        # 迟到的中间版也不得覆盖已终态化的卡
+        w._on_spec_translated("The quick brown fox", "迟到污染", "argos", "en", "")
+        assert card2.target_label.text() == "敏捷的棕色狐狸"
+        w.stop_pipeline()
+    finally:
+        w.config.set("spec_translate", old_spec)
+        w.config.set("low_latency_mode", old_ll)
+check("card: 推测译文原地生长、终版接管", t_spec_translate_growth)
+
+
+def t_spec_translate_online_engine_never_subs():
+    """在线引擎（google/mymemory）必须**完全不产生推测提交**——有额度与限流。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    online = _StubTr("google")
+    w._active_translate = lambda: online
+    old_spec, old_ll = w.config.get("spec_translate"), w.config.get("low_latency_mode")
+    w.config.set("spec_translate", True)
+    w.config.set("low_latency_mode", True)
+    try:
+        w._tgroup = []
+        w._on_asr_text("The quick", "en", "1.0")
+        w._on_asr_text("brown fox", "en", "1.0")
+        assert all(s[2] is False for s in online.sent), \
+            f"在线引擎不得出现 spec=True 提交：{online.sent}"
+        w.stop_pipeline()
+    finally:
+        w.config.set("spec_translate", old_spec)
+        w.config.set("low_latency_mode", old_ll)
+check("pipeline: 在线引擎永不推测提交", t_spec_translate_online_engine_never_subs)
+
+
+def t_overlay_spec_growth():
+    """面板侧：中间版让原文与译文**一起生长**在同一行，行保持待决；
+    终版才收口并计未读（中间版不算完成一句）。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    ov = CaptionOverlay()
+    ov.show()
+    ov._follow = False                      # 隔离未读计数逻辑
+    ov.show_pending("The quick")
+    ov.update_spec_result("The quick", "快速的", True)
+    r = ov._rows[-1]
+    assert r["pending"] is True, "中间版不得终态化行"
+    assert r.get("spec") is True
+    assert r["src_text"] == "The quick" and r["tgt_text"] == "快速的"
+    ov.show_pending("brown fox")            # 小写开头=延续片，同行生长
+    assert len([x for x in ov._rows if x["pending"]]) == 1, "延续片应在同一行生长"
+    n_before = len(ov._rows)
+    # combined 键以末片结尾 → 后缀匹配命中同一行，不新增行
+    ov.update_spec_result("The quick brown fox", "快速的棕色狐狸", True)
+    assert len(ov._rows) == n_before, "推测更新不得新增行"
+    r = ov._rows[-1]
+    assert r["src_text"] == "The quick brown fox", \
+        "原文行必须同步生长——否则重现 v2.7.4（B-8）'半句原文配整句译文'分叉"
+    assert r["tgt_text"] == "快速的棕色狐狸" and r["pending"] is True
+    unread0 = ov._unread
+    assert ov._last_result == ("", ""), "中间版不得改写 _last_result"
+    ov.show_pending_result("The quick brown fox", "敏捷的棕色狐狸", True)
+    r = ov._rows[-1]
+    assert r["pending"] is False and r.get("spec") is False, "终版必须收口并清除推测标记"
+    assert r["tgt_text"] == "敏捷的棕色狐狸"
+    assert ov._unread == unread0 + 1, "只有终版计未读"
+    # 找不到待决行时静默丢弃（已收编/已终态），绝不新建行
+    n2 = len(ov._rows)
+    ov.update_spec_result("不存在的句子", "幽灵译文", True)
+    assert len(ov._rows) == n2, "无匹配行时不得新建行"
+    ov.deleteLater()
+check("panel: 推测中间版同行生长、终版收口", t_overlay_spec_growth)
+
+
+def t_spec_finalize_on_stop():
+    """停止时：推测态卡片**保留已上屏的译文**（半句也胜过失败文案），
+    只解除推测态并标注可能不完整；无推测译文的卡片仍走原失败文案路径。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    stub = _StubTr()
+    w._active_translate = lambda: stub
+    old_spec, old_ll = w.config.get("spec_translate"), w.config.get("low_latency_mode")
+    w.config.set("spec_translate", True)
+    w.config.set("low_latency_mode", True)
+    try:
+        w.session_count = 0
+        w._on_asr_text("Half done", "en", "1.0")
+        w._on_spec_translated("Half done", "半句译文", "argos", "en", "")
+        card = w._pending[0][1]
+        assert card.spec is True
+        w._on_asr_text("No result yet", "en", "1.0")
+        plain = w._pending[-1][1]
+        w.stop_pipeline()
+        assert card.spec is False, "停止应解除推测态"
+        assert card.target_label.text() == "半句译文", \
+            "已有推测译文必须保留，不得被'未完成翻译'覆盖"
+        assert "不完整" in card.meta_label.text(), card.meta_label.text()
+        assert plain.target_label.text() == "[翻译失败]", "无译文的卡仍走失败终态"
+        assert "未完成翻译" in plain.meta_label.text()
+        assert len(w._pending) == 0
+    finally:
+        w.config.set("spec_translate", old_spec)
+        w.config.set("low_latency_mode", old_ll)
+check("card: 停止时推测译文保留并标注", t_spec_finalize_on_stop)
+
 
 report = "\n".join(RESULTS)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_report.txt"),

@@ -140,7 +140,7 @@ def resample_to_16k(data: np.ndarray, orig_sr: int, carry_key=None) -> np.ndarra
 
 
 class Segmenter:
-    def __init__(self, low_latency=False, turbo=False):
+    def __init__(self, low_latency=False, turbo=False, cap_s=0.0):
         self.buffer = []
         self.buffer_len = 0.0
         self.speech_len = 0.0
@@ -154,7 +154,17 @@ class Segmenter:
         self.low_latency = bool(low_latency)
         # v2.7.2：榨干模式——连续说话的强制切段上限 6s→4s（没人停顿也 4s 必交付一片，
         # 代价=句子更易被腰斩，配合提前冲地板 1.2s 使用）
-        self.max_seg = (4.0 if turbo else 6.0) if self.low_latency else MAX_SEGMENT_S
+        # v2.7.6（C）：分段上限改为可独立调节（segment_cap_s>0 时覆盖模式内置值）。
+        # 遥测实锤：hold_p50 恒等于分段周期（turbo 关=6.04s / turbo 开=4.03~4.43s），
+        # 因为连续语流中"本句译文由下一片到达冲刷"，下一片到达间隔=分段周期。
+        # 默认 2.5s——有推测式增量翻译（A）兜底后，切短造成的半截译文会被整句
+        # 终版原地覆盖，质量损失不再由用户承担。
+        builtin = (4.0 if turbo else 6.0) if self.low_latency else MAX_SEGMENT_S
+        try:
+            cap = float(cap_s or 0.0)
+        except (TypeError, ValueError):
+            cap = 0.0
+        self.max_seg = cap if cap > 0.05 else builtin
         self.sil_lo = 0.20 if self.low_latency else 0.30
         self.sil_hi = 0.40 if self.low_latency else 0.60
         # 自适应切句（建议2）：按语速在 [sil_lo, sil_hi] 间动态调整静音判停
@@ -180,6 +190,16 @@ class Segmenter:
         return float(np.sqrt(np.mean(np.square(chunk))))
 
     def feed(self, chunk: np.ndarray):
+        """喂入一块 16k 单声道音频，切出完整语音段时返回 ndarray，否则 None。
+
+        v2.7.6 实测留档（防重做无用功）：曾在此实现"Silero 神经 VAD 句末判定"
+        （外部注入 voiced_override 覆盖能量判据），结论=**零收益，已回退**——
+        短句素材（15 句 × 1~2s，句间 950ms 静音）能量判据即 15 句切 15 段、
+        零硬切、段长中位 1.50s；叠加 rms 0.03 的持续背景乐后能量判据**仍零
+        硬切**（自适应噪声底上限 0.02 → 阈值 max(0.02*3, 0.004)=0.06 已压住
+        背景乐），而神经判据因滞回（0.50 进/0.35 出）多抱尾音与背景乐，段长
+        中位涨到 2.16s（黏 0.66s）。hold≈分段上限的真因是**句长超过上限被
+        强制切段**，不是找不到停顿；治它的是推测式增量翻译，不是换 VAD。"""
         duration = chunk.shape[0] / TARGET_SR
         rms = self._rms(chunk)
         if rms < self.noise_floor:
@@ -251,13 +271,15 @@ class CaptureThread(QThread):
     QUIET_LEVEL = 0.012       # 单位：原始峰值幅度 0~1（与发出比例同量纲，8 倍增益前）
 
     def __init__(self, source_type: str, device_index: int, parent=None,
-                 device_name: str = "", low_latency: bool = False, turbo: bool = False):
+                 device_name: str = "", low_latency: bool = False, turbo: bool = False,
+                 cap_s=0.0):
         super().__init__(parent)
         self.source_type = source_type
         self.device_index = device_index
         self.device_name = str(device_name or "")
         self._stop = False
-        self.segmenter = Segmenter(low_latency=low_latency, turbo=turbo)
+        # v2.7.6（C）：cap_s>0 覆盖模式内置分段上限
+        self.segmenter = Segmenter(low_latency=low_latency, turbo=turbo, cap_s=cap_s)
         self._warned_quiet = False
         self._tail_seg = None   # v2.6.2（P1-4）：停止 flush 尾段暂存
 

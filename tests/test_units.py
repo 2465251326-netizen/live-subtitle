@@ -720,7 +720,10 @@ def test_translate_stop_drain_keeps_latest():
     assert tt._stop is True
     assert tt.queue_in.qsize() == 1, "应保留队尾最新一条"
     item = tt.queue_in.get_nowait()
-    assert item == ("line3", "en"), "保留的应是最新的待译句"
+    assert item[:2] == ("line3", "en"), "保留的应是最新的待译句"
+    # v2.7.6（A）：队列项升级为 (text, lang, spec) 三元组——spec 位区分
+    # "推测中间版"与"整句终版"，普通 submit 恒为 False
+    assert len(item) == 3 and item[2] is False, "普通提交应带 spec=False 终版标记"
     assert item is not None
 
 
@@ -1332,6 +1335,171 @@ def test_prewarm_turbo_passthrough():
         emod.AsrThread._load_model = orig_load
         emod.AsrThread._warmup = orig_warm
         emod.AsrThread.model_cached = orig_cached
+
+
+# ---------- v2.7.6：延迟三件套回归锁 ----------
+# 遥测实锤（用户真机会话 n_reco=110）：reco_p50=0.55s、tr_p50=0.06s，
+# 而 hold_p50=4.13s——端到端延迟的 87% 是"攒句等下一片冲刷"的结构性等待。
+# hold 数值恒等于分段周期（turbo 关 6.04s / turbo 开 4.03~4.43s），三件套
+# 分别从"送更早的片"(C)、"更早找到句末"(B)、"不等整句就翻"(A) 三处下手。
+
+
+def test_segmenter_cap_override():
+    """v2.7.6（C）：segment_cap_s 覆盖模式内置上限；0/毒药值回退内置值。"""
+    from app.audio.capture import Segmenter, MAX_SEGMENT_S
+    assert abs(Segmenter(cap_s=2.5).max_seg - 2.5) < 1e-6
+    assert abs(Segmenter(low_latency=True, cap_s=2.5).max_seg - 2.5) < 1e-6
+    assert abs(Segmenter(low_latency=True, turbo=True, cap_s=2.5).max_seg - 2.5) < 1e-6
+    # 0 = 跟随模式内置值（旧行为逐字不变）
+    assert abs(Segmenter(low_latency=True).max_seg - 6.0) < 1e-6
+    assert abs(Segmenter(low_latency=True, turbo=True).max_seg - 4.0) < 1e-6
+    assert abs(Segmenter().max_seg - MAX_SEGMENT_S) < 1e-6
+    assert abs(Segmenter(cap_s=0.0).max_seg - MAX_SEGMENT_S) < 1e-6
+    # 毒药值一律回退内置——绝不能得到 0/负数（那会把每块都切成一片）
+    for bad in ("2.5s", None, -3, object()):
+        s = Segmenter(low_latency=True, cap_s=bad)
+        assert abs(s.max_seg - 6.0) < 1e-6, f"毒药值 {bad!r} 应回退内置 6s，实得 {s.max_seg}"
+
+
+def test_energy_vad_beats_steady_bgm():
+    """v2.7.6 实测锁（否决"换神经 VAD 切句"提案的依据，勿再误诊）。
+
+    结论：能量判据的自适应噪声底足以压住持续背景乐——15 个短句（1.5s 语音 +
+    0.95s 静音）叠加 rms 0.030 的配乐，能量判据**一句一段、零硬切、段长中位
+    贴近真实句长**。机理：threshold = max(noise_floor*3, 0.004) 且噪声底上限
+    0.02 → 阈值最高 0.06 > 背景乐 rms 0.03，停顿期照常判静音。
+    对照：Silero 神经判定（滞回 0.50 进/0.35 出）在同一素材上段长中位 2.16s
+    vs 能量判据 1.50s——滞回多抱了 0.66s 尾音与背景乐，换过去反而更慢。
+    另：hold_p50≈分段上限的真因是句长超过上限被强制切段，不是找不到停顿。"""
+    from app.audio.capture import Segmenter, TARGET_SR, CHUNK_MS
+    rng = np.random.RandomState(11)
+    chunk_n = int(TARGET_SR * CHUNK_MS / 1000)
+    n_sent = 15
+    seg_s, gap_s, warm_s = 1.5, 0.95, 10.0
+
+    n_total = int(TARGET_SR * (warm_s + n_sent * (seg_s + gap_s)))
+    t = np.arange(n_total) / TARGET_SR
+    bgm = (0.5 * np.sin(2 * np.pi * 220 * t)
+           + 0.35 * np.sin(2 * np.pi * 330 * t)
+           + 0.25 * np.sin(2 * np.pi * 440 * t))
+    bgm *= 0.5 + 0.5 * np.sin(2 * np.pi * 0.7 * t)          # 起伏，模拟真实配乐
+    bgm *= 0.030 / max(1e-9, float(np.sqrt((bgm ** 2).mean())))
+
+    voice = np.zeros(n_total, dtype=np.float32)
+    placed, pos = 0, int(TARGET_SR * warm_s)   # 前 10s 纯背景乐：先让噪声底建立（等同视频开播）
+    seg_len, gap = int(TARGET_SR * seg_s), int(TARGET_SR * gap_s)
+    while pos + seg_len < n_total and placed < n_sent:
+        x = np.arange(seg_len) / TARGET_SR
+        voice[pos:pos + seg_len] = (np.sin(2 * np.pi * 180 * x) * 0.2
+                                    + rng.randn(seg_len) * 0.02).astype(np.float32)
+        pos += seg_len + gap
+        placed += 1
+    assert placed == n_sent, placed
+    mixed = (voice + bgm).astype(np.float32)
+
+    seg = Segmenter(low_latency=True, turbo=True, cap_s=4.0)
+    out = []
+    for i in range(0, len(mixed) - chunk_n + 1, chunk_n):
+        r = seg.feed(mixed[i:i + chunk_n])
+        if r is not None:
+            out.append(len(r) / TARGET_SR)
+    tail = seg.flush()
+    if tail is not None:
+        out.append(len(tail) / TARGET_SR)
+
+    arr = np.array(out)
+    hard = int((arr >= 3.82).sum())
+    assert hard == 0, f"有背景乐也不该硬切到上限，硬切 {hard} 段：{np.round(arr, 2).tolist()}"
+    assert len(out) >= 14, f"15 句应切出 ≈15 段（一句一段），实得 {len(out)}：{np.round(arr, 2).tolist()}"
+    med = float(np.median(arr))
+    assert med < 2.2, f"段长中位应贴近真实句长 1.5~1.8s，实得 {med:.2f}s（说明被判据黏住）"
+
+
+def test_submit_spec_never_evicts_final():
+    """v2.7.6（A）：队列满时推测提交**放弃自己、绝不挤掉终版**——被挤掉的
+    终版会被 _drop_translation 置终态，而它的文本不会再来第二次，卡片就此悬挂。"""
+    from app.translate.translator import TranslateThread
+    tt = TranslateThread("argos", "zh-CN")
+    for i in range(5):
+        tt.submit(f"final{i}", "en")
+    assert tt.queue_in.qsize() == 5
+    assert tt.submit("speculative piece", "en", spec=True) == [], "推测提交不得挤掉别人"
+    assert tt.queue_in.qsize() == 5, "队列满时推测应放弃自己"
+    assert [tt.queue_in.get_nowait()[:2] for _ in range(5)] == \
+        [(f"final{i}", "en") for i in range(5)], "五条终版必须原封不动"
+    # 队列有空位时推测照常入队，带 spec=True
+    tt2 = TranslateThread("argos", "zh-CN")
+    assert tt2.submit("piece A", "en", spec=True) == []
+    assert tt2.queue_in.get_nowait() == ("piece A", "en", True)
+    # dropped 恒为二元组：保住主窗两处 `for d_text, _d_lang in (tr.submit(...) or [])` 解包契约
+    tt3 = TranslateThread("argos", "zh-CN")
+    for i in range(7):
+        tt3.submit(f"s{i}", "en", spec=True)
+    assert tt3.queue_in.qsize() == 5
+    d = tt3.submit("overflow", "en")
+    assert d and all(len(x) == 2 for x in d), f"dropped 应为二元组，实得 {d}"
+
+
+def test_coerce_float_segment_cap():
+    """v2.7.6：segment_cap_s 是项目首个 float 型配置键——旧 _coerce 没有
+    float 分支（=零校验），手编 "2.5s"/负数会原样送进 Segmenter。"""
+    from app.config import Config, DEFAULTS
+    # 默认 4.0=榨干档（用户裁决）：fixture A/B 实测 2.5s 会让 71% 句子被腰斩，
+    # 而推测式翻译已消除上限对"译文迟到"的影响，激进档只保留为可选项
+    assert DEFAULTS["segment_cap_s"] == 4.0, f"默认应为 4.0，实得 {DEFAULTS['segment_cap_s']}"
+    c = Config._coerce
+    d = DEFAULTS["segment_cap_s"]
+    assert c("segment_cap_s", "2.5s") == d, "毒药字符串回默认"
+    assert c("segment_cap_s", -3) == d, "负值回默认"
+    assert c("segment_cap_s", "3") == 3.0, "数字字符串被挽救"
+    assert isinstance(c("segment_cap_s", 4), float), "int 归一为 float（combo findData 要求类型一致）"
+    assert c("segment_cap_s", True) == d, "bool 回默认"
+    assert c("segment_cap_s", 2.5) == 2.5, "合法浮点原样采纳"
+
+
+def test_spec_translate_offline_only_gate():
+    """v2.7.6（A）：推测式翻译三重闸——在线引擎绝不推测（有额度与限流，
+    MyMemory 每天约 5000 字符免费额度），engine=auto 按探测后实际选用引擎判定。
+
+    不构造 MainWindow（QWidget 需 QApplication，单元测试环境没有）——
+    直接借用 _spec_enabled 的函数体挂到轻量替身类上，判定逻辑逐字同源。"""
+    from app.ui.main_window import MainWindow
+
+    class W(object):
+        _spec_enabled = MainWindow._spec_enabled    # 借用未绑定函数，不建控件
+
+        def __init__(self, cfg, tr):
+            self.config = cfg
+            self._tr = tr
+
+        def _active_translate(self):
+            return self._tr
+
+    class Cfg(object):
+        def __init__(self, d):
+            self._d = dict(d)
+
+        def get(self, k):
+            return self._d.get(k)
+
+    class Online(object):
+        _active_engine = "google"
+
+    class Offline(object):
+        _active_engine = "argos"
+
+    d = {"spec_translate": True, "low_latency_mode": True}
+    assert W(Cfg(d), Online())._spec_enabled() is False, "在线引擎不得推测（额度/限流）"
+    assert W(Cfg(d), Offline())._spec_enabled() is True, "离线 argos 允许推测"
+    d2 = dict(d, spec_translate=False)
+    assert W(Cfg(d2), Offline())._spec_enabled() is False, "开关关闭不得推测"
+    d3 = dict(d, low_latency_mode=False)
+    assert W(Cfg(d3), Offline())._spec_enabled() is False, "非攒句模式（逐句直送）无可推测"
+    assert W(Cfg(d), None)._spec_enabled() is False, "翻译线程不存在不得推测"
+    # 引擎尚未探测完（_active_engine 为空）时不推测——避免把中间版打给未知引擎
+    class Unprobed(object):
+        _active_engine = ""
+    assert W(Cfg(d), Unprobed())._spec_enabled() is False, "引擎未探测完不得推测"
 
 
 if __name__ == "__main__":

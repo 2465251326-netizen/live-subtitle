@@ -359,6 +359,7 @@ class CaptionOverlay(QWidget):
         r = self._find_pending(source_text)
         if r is not None:
             r["pending"] = False
+            r["spec"] = False    # v2.7.6（A）：整句终版覆盖推测中间版，脱离推测态
             r["src_text"], r["tgt_text"] = source_text or "", target_text or ""
             r["src"].setText(source_text or "")
             r["src"].setVisible(bool(source_text) and self._show_source)
@@ -371,6 +372,32 @@ class CaptionOverlay(QWidget):
             self._add_row(source_text or "", target_text or "", False)
         self._count_unread()
         self._sync_bar_texts()
+
+    def update_spec_result(self, source_text, target_text, show_source=True):
+        """v2.7.6（A）推测式中间版译文：在匹配的待决行上**原地生长覆盖**。
+
+        与 show_pending_result 的区别（三条都是刻意的）：
+        ① 行保持 pending=True —— 整句终版随后到达还要走补齐路径收口；
+        ② 不动 _last_result / 不计未读 —— 中间版不是"完成了一句"；
+        ③ 原文行同步生长为整句（combined）—— 否则会出现"半句原文配整句
+           译文"，正是 v2.7.4（B-8）在主窗侧修过的同款分叉。
+        配对复用 _find_pending（精确 + 后缀匹配）：combined 键以末片结尾，
+        所以能命中末片占位行；找不到行说明已收编/已终态，静默丢弃。"""
+        r = self._find_pending(source_text)
+        if r is None:
+            return
+        self._show_source = bool(show_source)
+        r["spec"] = True
+        r["tgt_text"] = target_text or ""
+        r["tgt"].setText(target_text or "")
+        if source_text:
+            r["src_text"] = source_text
+            r["src"].setText(source_text)
+            r["src"].setVisible(self._show_source)
+        if self._collapsed:
+            self._update_mini()
+        self._relayout()
+        self._schedule_relayout()
 
     def show_caption(self, source_text, target_text, show_source=True):
         """一次性上屏（无占位）。"""

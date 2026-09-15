@@ -407,6 +407,10 @@ def select_engine(timeout=2.5):
 
 class TranslateThread(QThread):
     result_ready = Signal(str, str, str, str, str)  # source_text, translated, engine, detected_lang, error
+    # v2.7.6（A）推测式增量翻译：中间版本（整句还没攒完）的回复走**独立信号**，
+    # 不挤进 result_ready——终版通路签名与语义完全不变，既有测试/连接零影响。
+    # 消费方（主窗）据此只原地更新译文、不终态化卡片、不计会话条数。
+    spec_result_ready = Signal(str, str, str, str, str)  # 同上，语义为"中间版"
     status_changed = Signal(str)
     # v2.3.2（G2）：在线引擎启动即不可达的事前通知（engine_desc, reason）
     engine_fallback = Signal(str, str)
@@ -467,17 +471,31 @@ class TranslateThread(QThread):
         except Exception:
             pass
 
-    def submit(self, text, detected_lang):
+    def submit(self, text, detected_lang, spec=False):
         """入队待译句。v2.6.2（P1-7）：返回因队列满（≥5）被挤掉的旧句列表
-        [(text, lang), ...]——调用方据此把对应占位卡置终态，不再悬挂 "⟳ …"。"""
+        [(text, lang), ...]——调用方据此把对应占位卡置终态，不再悬挂 "⟳ …"。
+
+        v2.7.6（A）推测式增量翻译：spec=True 表示提交的是"整句还没攒完"的
+        中间版本（每个识别碎片到达即送译一次，让译文立刻上屏原地生长）。
+        **队列满时推测提交放弃自己、绝不挤掉别人**——被挤掉的若是终版，
+        占位卡会被 _drop_translation 误置终态，而终版文本更长、永远不会
+        再有一次相同文本的回复，卡片就此悬挂。推测是增益，丢了只是慢一拍。
+        返回的 dropped 恒为二元组（剥掉 spec 位），保住调用方解包契约。"""
         dropped = []
         try:
-            while self.queue_in.qsize() >= 5:
-                try:
-                    dropped.append(self.queue_in.get_nowait())
-                except queue.Empty:
-                    break
-            self.queue_in.put_nowait((text, detected_lang))
+            if spec:
+                if self.queue_in.qsize() >= 5:
+                    return dropped
+            else:
+                while self.queue_in.qsize() >= 5:
+                    try:
+                        old = self.queue_in.get_nowait()
+                        dropped.append((old[0], old[1]))
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+            self.queue_in.put_nowait((text, detected_lang, bool(spec)))
         except Exception:
             pass
         return dropped
@@ -604,12 +622,21 @@ class TranslateThread(QThread):
                 continue
             if item is None:
                 break   # 兼容历史哨兵语义
-            text, detected = item
+            # v2.7.6（A）：队列项为 (text, lang, spec) 三元组；兼容裸二元组
+            # （测试/脚本直接 put 的历史格式，见 tests、deep_windows、smoke_test）
+            try:
+                text, detected = item[0], item[1]
+                spec = bool(item[2]) if len(item) > 2 else False
+            except Exception:
+                continue
             if not text.strip():
                 continue
             norm_detected = WHISPER_LANG_MAP.get(detected, detected)
             if self.target.startswith("zh") and norm_detected and norm_detected.startswith("zh"):
-                self.result_ready.emit(text, text, self._active_engine, detected, "")
+                if spec:
+                    self.spec_result_ready.emit(text, text, self._active_engine, detected, "")
+                else:
+                    self.result_ready.emit(text, text, self._active_engine, detected, "")
                 continue
             error = ""
             translated = ""
@@ -626,7 +653,12 @@ class TranslateThread(QThread):
                 fallbacks = []
                 # v2.7.1：自动切换开关关闭→不组建备援链，本句以错误终态
                 #（卡片红字+连续失败横幅照常提示，用户可手动换引擎）
-                if self._auto_fallback:
+                # v2.7.6（A）：推测式中间版本也不组建备援链——它几秒内就会被
+                # 整句终版覆盖，为它跑一遍降级重试（每级 2.5s 探测）纯属浪费；
+                # 更要紧的是备援成功会改写 self._active_engine，让"中间版把
+                # 引擎切走了、终版却用新引擎"这种用户看不懂的漂移发生。
+                # 引擎真坏了，终版会照常走备援并告警。
+                if self._auto_fallback and not spec:
                     if self._active_engine != "mymemory":
                         fallbacks.append("mymemory")
                     if self._active_engine != "google":
@@ -669,8 +701,11 @@ class TranslateThread(QThread):
                     except Exception as e2:
                         error = friendly_error(e2)
                         app_log.exception("translate.fallback_failed", e2, engine=fb)
-            self.result_ready.emit(text, apply_fix_map(translated, self.fix_map, self._fix_whole_word),
-                                   used_engine, detected, error)
+            fixed = apply_fix_map(translated, self.fix_map, self._fix_whole_word)
+            if spec:
+                self.spec_result_ready.emit(text, fixed, used_engine, detected, error)
+            else:
+                self.result_ready.emit(text, fixed, used_engine, detected, error)
         # v2.0.6：退出前 flush 攒批缓存（stop 哨兵/break 落到此处）
         try:
             _cache.save()

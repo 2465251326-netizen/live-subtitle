@@ -1,7 +1,8 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 v2.7.3 发布（孤儿线程案销账；见第十一节）
+> 最后更新：2026-09-15 晚 v2.8.0 发布（译文速度专项，真机 A/B 实测 5.13s→0.10s；见第十三节）
+> ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
 
@@ -11,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.7.3**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.8.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -165,8 +166,8 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      56 项单元测试
-tests/test_integration.py 81 项集成测试
+tests/test_units.py      73 项单元测试
+tests/test_integration.py 92 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -175,7 +176,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.2.11 已发布，第三节的端到端测试任务已完成（全链路通过，argos 离线包其实一直在，前文『packages 为空』是笔误）。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.8.0 已发布（译文速度专项：推测式增量翻译，真机实测译文感知延迟 5.13s→0.10s）。第十三节有本轮的延迟结构定性、A/B 方法论与被否决方案留档。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
@@ -230,4 +231,79 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **v2.7.4 内容速查**（详见 CHANGELOG）：A-1 指针单键随 save 同步（迁移回滚/覆盖双修）；A-2 `Config._coerce` 逐键消毒（"18px"型毒药实测）；A-3 退出链 `close_input`+`wait(2000)`（不再强杀翻译线程）；B-1 `_flush_tgroup` 死队列守卫；B-2 `AsrThread.submit` 尾段身份去重（排队+直塞双通道）；B-3 GPU/CUDA worker 重入闸；B-4 设置重入有暂存只前置不 reload；B-6 默认输出项恒在首位；B-7 透明度 0-100；B-8 面板整句生长（后缀匹配+combined 上屏）；B-9 速览卡热键文案实况化；B-12 导出过滤统一+停止时占位终态化；C-2/C-5/C-9/C-10/C-11 死代码/重复连接/auto primary 恒 google/下载扫描降频/词典热更统一；向导文案纠旧；5 面板键登记+双向断言。
 - **接手教训（新）**：产品加了 `tr.isRunning()` 这类接口调用，**所有测试 stub 要同步扫**（grep 调用点在测试里的替身类）；文案从硬编码改实况分支后，断言旧文案的测试要升级为断言全部分支。父代理断点=「回归锁补充」做到一半：新锁已进（毒药/登记/导出/指针 roundtrip/尾段去重），旧锁适配未做——**接手时先跑全套看红点，红点即断点**。
 - **QA 工具留盘**：`scripts/qa/`（qa_toolkit.ps1 活体测试台 + winflash_probe.py 窗口事件差分器 + winflash.txt 440 行零闪窗证据）已 gitignore，供后续会话复用。
+
+## 十三、会话快照（2026-09-15 深夜 v2.8.0 译文速度专项）
+
+### 13.1 起点与延迟定性（先测量再动手，别猜因果）
+
+- **用户诉求**："翻译速度还是太慢"。开局先读 `~/.live_subtitle/logs/app.log` 的 `pipeline.latency` 遥测（用户 9-15 真机会话，最大样本 n_reco=110）：
+  `reco_p50=0.55s`、`tr_p50=0.06s`、**`hold_p50=4.13s`（p95 7.25s）**。识别+翻译只占 13%，**攒句等待占 87%**。
+- **决定性对照**：13:00 场（turbo 关，分段上限 6s）`hold_p50=6.04`；18:36 后（turbo 开，上限 4s）`hold_p50=4.03~4.43`——**hold 恒等于分段周期**，因为两轨制下"本句译文由下一片到达冲刷"，而下一片间隔=分段周期。代码注释自己也承认"两轨制固有，hold≈6s 不变"；`early_flush`（v2.7.0）只救末句，连续语流一点忙都帮不上。
+- **用户当时配置**（`C:\Users\Administrator\.live_subtitle\config.json`，注意 USERPROFILE 是 Administrator 不是 Loomy 运行账号）：`large-v3-turbo` + `cuda` + `engine=argos` + `engine_auto_fallback=false` + `asr_accuracy=fast` + `perf_turbo=true` + `low_latency_mode=true` + `silero_vad=false`。
+
+### 13.2 方案 A：推测式增量翻译（唯一被证明有效的方案，51 倍）
+
+- **思路**：碎片一到达就翻译"目前攒到的文本"并上屏，下一片到达送更长版本，译文在同一张卡／同一面板行**原地生长覆盖**；整句终版随后接管终态。
+- **实现落点**（全部走"独立新通道"，既有通路零改动，这是测试全绿的关键）：
+  - `translator.py`：`submit(text, lang, spec=False)` 第三参；队列项升级为 `(text, lang, spec)` 三元组（消费侧兼容裸二元组）；**新增独立信号 `spec_result_ready`**（不是给 `result_ready` 加第 6 参——现有测试全是 5 参 lambda，改签名会全线炸）；spec 请求**不组建备援链**（备援会改写 `_active_engine` 造成引擎漂移）；队列满时 spec **放弃自己绝不挤掉终版**（`dropped` 恒回二元组，保住主窗 `for d_text, _d_lang in ...` 解包契约）。
+  - `main_window.py`：`CaptionCard.spec` 标记 + `set_spec_result()`（只刷译文）+ `finalize_spec()`（停止时**保留半句译文**、标注"可能不完整"，不覆盖成失败文案）；`is_pending()` 对 spec 态返回 True（终版还要靠它配对）；`translated_text()` 对 spec 态返回已有译文；`_peek_pending()`（查卡不摘走）；`_tgroup_gen` 代数 + `_spec_inflight` 簿记；`_combine_pieces()` 提取为函数（**冲刷与推测必须算出完全相同的 combined，否则终版配不上簿记**）；`_on_spec_translated` 不计数/不切聚焦/不动横幅。
+  - `caption_overlay.py`：`update_spec_result()` —— **原文行必须与译文一起生长**，否则重现 v2.7.4（B-8）"半句原文配整句译文"分叉；不动 `_last_result`、不计未读。
+  - `config.py`：`_coerce` **补 float 分支**（`segment_cap_s` 是项目首个 float 键，旧消毒链没有 float 分支=零校验；顺带保证 int→float 归一，combo `findData` 才匹配得上）。
+- **闸门**：`_spec_enabled()` = 开关 && 低延迟模式（否则不攒句、无可推测）&& **实际引擎 == argos**。在线引擎一律退回整句（MyMemory 每天约 5000 字符免费额度，逐片加发会成倍消耗）。
+- **真机 A/B 结果**（连续语流素材，同模型同 GPU，两轮独立复跑）：
+  | 组 | 译文感知延迟 | n_reco | reco_p50 | hold_p50 |
+  |---|---|---|---|---|
+  | baseline（spec 关） | hold 5.04 + tr 0.09 = **5.13s** | 8 | 0.52 | 5.04 |
+  | new（spec 开） | **spec_p50 = 0.10s** | 8 | 0.52 | 4.98 |
+  → **51.3 倍**，识别侧零副作用。回归锁：单元 +5、集成 +4。
+
+### 13.3 方案 C：分段上限可调（`segment_cap_s`，默认 4.0）
+
+- 用户先选 4s→2.5s，实测数据出来后**裁决收回 4.0**：真实素材 2.5s 档有 **57~71%** 的句子在上限处被硬切（4s 档 0~17%），而 A 已让译文随碎片立即上屏，上限大小对"译文迟到"影响已很小——激进档只留作可选项。
+- 默认 4.0 恰等于榨干模式内置值，所以**默认行为不变**，只是多给一个调节档位（2.5/3/4/6/10/0=跟随模式）。
+
+### 13.4 方案 B：神经 VAD —— 完整实现后经实测**否决并回退**（重要留档，勿重做）
+
+- **当初的错误推断**：见 `hold≈分段上限` 就推"能量 VAD 在有背景乐时把停顿判成还在说话、静音判停失效"。据此实现了 Silero 逐块判定（`get_vad_model()`，512 样本=32ms 一块，滞回 0.50 进/0.35 出），实测开销 **0.136ms/块 = 占空 0.42%**，确实等于免费。
+- **实测否决**（15 句 ×1.5s、句间 0.95s 静音的短句素材，让"在哪切"由停顿判定而非分段上限决定）：
+  | 素材 | 能量判据 | 神经判据 |
+  |---|---|---|
+  | 纯净短句 | 15 句→15 段，硬切 0%，中位 1.50s | 15 段，0%，1.59s |
+  | 短句 + rms 0.03 持续背景乐 | **15 段，硬切 0%，中位 1.50s** | 15 段，0%，**2.16s** |
+  能量判据的**自适应噪声底**（`threshold=max(noise_floor*3, 0.004)`，噪声底上限 0.02 → 阈值最高 0.06）本就压得住稳定背景乐；神经滞回反而多抱 0.66s 尾音与配乐。
+- **真因纠正**：`hold ≈ 分段上限` 是因为**句长超过上限被强制切段**（SAPI 长句 3~5s > 4s 上限），停顿根本没机会触发判定。诊断证据：停顿区 `rms` 中位 = **0.00000**（数字静音）、neural prob 中位 = **0.024**——两种判据都**正确识别**了停顿。
+- **处置**：用户裁决"回退 B"。已拆净 `capture.py` 的 `_init_neural_vad/_neural_voiced/voiced_override`、`DEFAULTS.neural_vad`、设置页三处登记、管线传参与 2 个单测；`Segmenter.feed` docstring 留实测数据档；结论固化为 `test_energy_vad_beats_steady_bgm`（合成"纯背景乐预热 10s + 15 短句"素材，断言零硬切且段长中位 <2.2s）。
+- **教训**：瓶颈定位不能只看"hold 等于某个参数"就推因果——要造**能让该机制成为决定因素**的素材去反证（长句素材下 VAD 根本不参与判定，测了也白测）。
+
+### 13.5 本轮新增环境坑（勿重踩）
+
+- **git 没配代理、shell 里也没有 HTTP_PROXY 环境变量** → git 直连 `github.com:443` 必失败（`ls-remote` 偶尔能通是运气）。正解：单命令参数 `git -c http.proxy=http://127.0.0.1:10808 -c https.proxy=... fetch/push`，**不必也不该改全局 git config**（系统级 `credential.helper=manager` 的 GCM 凭据本身有效，`gh auth setup-git` 非必需）。
+- **严禁 `git fetch --tags`/`git fetch origin`（不带 refspec）**：默认 refspec 连带**所有远程分支**，那些 feature 分支里有大对象，实测 120s 超时并在 `.git` 留下 176MB 垃圾包 `tmp_pack_*`（仓库本体只 1.3MiB）。正解：`git fetch origin +refs/heads/main:refs/remotes/origin/main --no-tags`，tag 单独 `+refs/tags/vX:refs/tags/vX`；事后 `git count-objects -vH` 查 `garbage`，删掉即愈。
+- **本地曾落后远程一整版**（远程已发 v2.7.5、本地停在 v2.7.4、`APP_VERSION` 也是旧的）。**接手第一件事先比对** `gh api repos/<o>/<r>/commits/main --jq .sha` vs `git rev-parse main`，否则 bump 会撞已存在版本号。
+- **正牌解释器是 `C:\Python314\python.exe`（3.14.7，六项依赖齐全）**；PATH 里默认 `python` 是 3.13.13 且**缺 PySide6**，直接 `python tests\...` 必报 ModuleNotFoundError。
+- **PowerShell 5.1 会把 UTF-8 无 BOM 的中文注释按 GBK 读**，全角括号的字节可破坏字符串解析 → `Unexpected token ')'`。写 .ps1 一律**用英文注释**（.py 不受影响）。
+- **单元测试里不能构造 QWidget**（`MainWindow()`）→ 无 QApplication，进程直接 `0xC0000409`（STATUS_STACK_BUFFER_OVERRUN）且 stdout 缓冲全丢，看似"无输出"。要测 MainWindow 的方法逻辑就用**轻量替身类借用未绑定函数**（`class W: _spec_enabled = MainWindow._spec_enabled`，见 `test_spec_translate_offline_only_gate`）；要真构造就去集成测试（有 QApplication）。排查此类崩溃加 `PYTHONUNBUFFERED=1` 才能看到崩在哪个测试。
+- `gh --jq` 表达式含空格/管道时 PS5.1 会拆参数（`accepts 1 arg(s), received 5`）→ 用**无空格表达式**（`--jq .sha`）或改走 `--json` + PowerShell 处理。
+
+### 13.6 真机 A/B 方法论（可照抄，本轮跑通三次）
+
+- **隔离实例**：`LIVETRANSLATE_HOME=<临时目录>`（配置+日志隔离）+ `HF_HOME=C:\Users\Administrator\.live_subtitle\hf`（复用 1.6GB 模型缓存，app 用 setdefault 不覆盖注入值）+ **拷贝 `<真实根>\argos` 到隔离 home**（`offline_pack.PACKS_DIR` 是从 `ARGOS_DATA=CONFIG_DIR/"argos"` 派生的模块常量，光注入环境变量没用，不拷则离线包为空、argos 必失败）。
+- **启动**：`subprocess.Popen([PY, "main.py"], env=env)`，env 里 **pop 掉 `QT_QPA_PLATFORM`**（offscreen 会失真）；config 预写 `wizard_done=true / auto_start=true / close_action=exit / proxy_mode=none`。
+- **就绪判定**：轮询隔离 home 的 `logs/app.log` 出现 `asr.model_loaded`（或 `asr.model_reused`）——本机 turbo+CUDA 缓存加载约 4s，比 sleep 死等可靠。
+- **素材**：SAPI（Zira en-US）经 **SSML** 生成 wav——`PromptBuilder.AppendSilence` 在此运行时不存在，改用 `SpeakSsml` + `<break time="950ms"/>`；`SetOutputToWaveFile(path, SpeechAudioFormatInfo(44100, Sixteen, Mono))` 出 PCM 才能被 `winsound.PlaySound` 播放（阻塞精确，可当计时器）。**素材必须匹配验证目标**：长句（>cap）验 A、短句（<cap）验 VAD。
+- **收尾**：`EnumWindows` 按 pid 找可见无 owner 的顶层窗 → `PostMessageW(hwnd, 0x0010 /*WM_CLOSE*/)`；`close_action=exit` 保证不弹询问框。**严禁 Stop-Process**（会跳过 `pipeline.latency` 遥测汇总，拿不到数据）。
+- **占屏必须预先征得同意**（第十二节红线；本轮两次弹窗均先问、用户明确授权后才跑）。
+
+### 13.7 用户裁决与偏好（本轮新增）
+
+- GitHub 令牌已接入 gh keyring（账号 `2465251326-netizen`，scope 含 `repo`+`workflow`）；**令牌在对话中明文出现过，已提示用户去 GitHub 撤销重发**。凭据未写入任何仓库文件/git config。
+- 裁决记录：① 分段上限默认值"收回 4s"；② 授权 GUI 真机测试；③ 神经 VAD"回退"。
+- 用户偏好复证：**要数据不要解释**、**文案必须与实际行为一致**（本轮设置页文案三易其稿，把"71% 腰斩""0.42% CPU"等实测数字直接写进说明）；被否掉的方案也要留档，不许悄悄删掉当没发生。
+
+### 13.8 本轮产物清单
+
+- 版本：`v2.8.0`（tag 触发 CI 出双资产）。套件：**单元 73 / 集成 92 全绿**。
+- 新配置键：`spec_translate`（默认 True，仅离线引擎生效）、`segment_cap_s`（默认 4.0）。设置页新增两行（语音识别-语言与计算），已按 v2.3.0 规约三处登记（DEFAULTS + `_FIELD_SPECS` + `_STD_ROWS`），`bump_version --check` 与注册完整性双向断言均过。
+- 新日志字段：`pipeline.latency` 增 `n_spec / spec_p50 / spec_p95`。
+- 临时验证产物（均在 %TEMP%，不入库，可删）：`ls_gen_voice*.ps1`、`ls_ab_drive.py`、`ls_vad_ab.py`、`ls_vad_bgm.py`、`ls_vad_short.py`、`ls_diag_pause.py`、`ls_ab_voice*.wav`、隔离 home `ls_ab_base` / `ls_ab_new`（各含 81MB argos 拷贝）。
 

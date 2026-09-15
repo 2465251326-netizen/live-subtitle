@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.7.5"
+APP_VERSION = "2.8.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -58,7 +58,27 @@ DEFAULTS = {
     "early_flush": True,               # v2.7.0（T2）：低延迟提前冲句——攒句静默地板 3.5s→2.0s
                                        # （仅低延迟模式生效；榨干模式再压到 1.2s）
     "perf_turbo": False,               # v2.7.2：榨干模式——GPU INT8 推理 + 进程高优先级 +
-                                       # 分段上限 6s→4s + 冲句地板 2.0s→1.2s（捆绑开关，默认关=一切照旧）
+                                        # 分段上限 6s→4s + 冲句地板 2.0s→1.2s（捆绑开关，默认关=一切照旧）
+    # v2.7.6：延迟优化批（用户反馈"翻译速度还是太慢"）。遥测实锤定位：
+    # hold_p50≈4.13s（连续语流真机复现 5.03s），而识别 reco_p50=0.55s +
+    # 翻译 tr_p50=0.06s 合计只占 13%——瓶颈是攒句两轨制"等下一片冲刷"的
+    # 结构性等待；根因是句长超过分段上限被强制切段（**不是 VAD 找不到停顿**：
+    # 短句+背景乐实测能量判据 15 句切 15 段、零硬切，已是最优）。
+    # 附带结论：曾实现"Silero 神经 VAD 句末判定"，实测零收益（纯净素材与
+    # 能量判据持平；有背景乐时因滞回反而黏 0.66s），经验证后回退，
+    # 详见 app/audio/capture.py Segmenter.feed 的实测留档与 HANDOFF 第十三节。
+    "spec_translate": True,            # 推测式增量翻译：碎片一到达就把"当前已攒文本"送翻译并上屏，
+                                        # 下一片到达时送更长版本、译文在同一张卡上原地生长覆盖。
+                                        # 连续语流真机 A/B：译文感知延迟 hold 5.03s + tr 0.09s
+                                        # → spec_p50 0.09s（56.9 倍），识别侧零副作用。
+                                        # **仅离线引擎生效**（无额度限制、单次 0.06s）；在线引擎自动
+                                        # 退回整句翻译，避免 Google/MyMemory 请求量翻倍被限流。
+    "segment_cap_s": 4.0,              # 连续语流强制切段上限（秒）。0=跟随模式内置值
+                                        # （低延迟 6s / 榨干 4s / 普通 14s）。默认 4s=与榨干档一致：
+                                        # 真实素材 A/B 实测 2.5s 会让 57~71% 的句子在上限处被
+                                        # 硬生生腰斩（4s 档 0~17%），而推测式增量翻译已让译文随
+                                        # 碎片立即上屏，上限大小对"译文迟到"影响很小——
+                                        # 故激进档只作可选项，不作默认。
     "asr_hotwords": "",                # v2.7.0（T3）：热词提示——人名/专名/术语注入 whisper
                                        # initial_prompt，事前纠正专名误听（留空=关闭）
     "lang_recheck": True,              # v2.7.0（T5）：语言锁复检——自动模式下每 20 段解除
@@ -236,6 +256,16 @@ class Config:
                 return proto
             if isinstance(proto, str):
                 return val if isinstance(val, str) else proto
+            if isinstance(proto, float):
+                # v2.7.6：浮点键（分段上限秒数）同享消毒——手编 "2.5s"/负数
+                # 一律回默认原型，不再原样放行（旧实现无 float 分支=零校验）
+                if isinstance(val, bool):
+                    return proto
+                if isinstance(val, (int, float)):
+                    return float(val) if val >= 0 else proto
+                if isinstance(val, str):
+                    return float(val.strip())   # "2.5" 挽救；"2.5s" 抛→原型
+                return proto
             if isinstance(proto, dict):
                 if isinstance(val, dict) and all(
                         isinstance(k, str) and isinstance(v, str) for k, v in val.items()):
