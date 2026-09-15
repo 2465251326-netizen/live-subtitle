@@ -894,6 +894,37 @@ def t_overlay_dual_layout():
     ov.deleteLater()
 check("panel: 上下双语布局（dual）全链路", t_overlay_dual_layout)
 
+def t_overlay_dual_user_height_body():
+    """v2.14.1：拉高 = **锁定面板总高**——原文区吃"总高-工具条-历史"的全部
+    剩余（拖动即时反馈）；历史最多占 55%、保底 56px 可滚；历史无行时当前
+    句区独占整板。v2.14.0 曾把增量全分给历史区，历史无行时拉高完全无效
+    （面板弹回，用户实测"完全拉不了"）。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    ov._dual_show_pending("The quick brown fox jumps over the lazy dog")
+    for _ in range(4):
+        app.processEvents()
+    h0 = ov._dual_body.height()
+    ov.set_user_height(520)
+    for _ in range(6):
+        app.processEvents()
+    h1 = ov._dual_body.height()
+    assert h1 > h0, f"拉高后原文区必须变大：{h0} -> {h1}"
+    assert abs(ov.height() - 520) <= 14, \
+        f"面板总高应锁定为用户高度：{ov.height()} vs 520"
+    assert ov._dual_hist.isVisible() is False, "历史无行时应隐藏、当前句区独占"
+    ov.dual_push_history("Past sentence", "过去的句子")
+    for _ in range(4):
+        app.processEvents()
+    assert ov._dual_hist.isVisible(), "历史行出现后历史区可见"
+    assert abs(ov.height() - 520) <= 14, "历史出现后总高仍锁定"
+    h2 = ov._dual_body.height()
+    assert h2 >= 350, f"原文区不应被历史压瘪：{h2}"
+    ov.deleteLater()
+check("panel: dual 拉高锁定总高、原文区优先", t_overlay_dual_user_height_body)
+
 def t_overlay_relayout_pending_release():
     """v2.11.0 关键修复锁：_consume_relayout 收敛后必须释放 _relayout_pending。
 

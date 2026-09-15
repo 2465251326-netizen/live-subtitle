@@ -828,8 +828,12 @@ class CaptionOverlay(QWidget):
             self._mini.setFixedHeight(min(self._mini.sizeHint().height(), 120))
         elif self._layout_mode == "dual":
             # v2.11.0：上下双语——当前句区贴内容；v2.14.0：历史区吃剩余
-            # 空间（有内容才显示），面板可被 user_height 自由拉高（历史区
-            # 随之变高），超屏比时历史区滚动
+            # 空间（有内容才显示）
+            # v2.14.1（关键修复）：**用户拉高的空间优先给当前句原文区**——
+            # v2.14.0 把增量全分给历史区，历史无行时 hist_h 强制 0、body 固定
+            # 内容高 → 拖底缘面板弹回原高，用户实测"完全拉不了"（底缘命中与
+            # 拖拽逻辑本身正常，是高度分配把它吃了）。现语义：拖底缘 = 原文
+            # 显示区变大（内容顶部对齐，多余空间留白），历史区吃剩余。
             self._mini.setVisible(False)
             self._scroll.setVisible(False)
             self._dual_body.setVisible(True)
@@ -838,24 +842,43 @@ class CaptionOverlay(QWidget):
             # label 被压在旧高度里，终版长译文底部裁切（真机截图实证）
             self._dual_body.setMinimumHeight(0)
             self._dual_body.setMaximumHeight(16777215)
-            body_want = self._dual_want_height()
-            body_want = min(max(body_want, 46), 300)   # 当前句区上限：防超长句独占整板
-            self._dual_body.setFixedHeight(body_want)
-            avail = int((QGuiApplication.primaryScreen().availableGeometry().height()
-                         or 800) * 0.68)
-            if self._user_height:
-                # v2.14.0：面板拉高 → 历史区变高（"自由上下拉长"）
-                avail = max(avail, self._user_height)
+            body_want = min(max(self._dual_want_height(), 46), 300)
             chrome = 54 + 12                          # 工具条 + outer margins/spacing
-            hist_want = (self._dual_hist_body.sizeHint().height()
-                         if self._dual_hist_rows else 0)
-            hist_h = max(0, min(hist_want, avail - chrome - body_want))
-            if self._dual_hist_rows and hist_h >= 40:
-                self._dual_hist.setVisible(True)
-                self._dual_hist.setFixedHeight(hist_h)
+            if self._user_height:
+                # v2.14.1：拉高 = **锁定面板总高**——原文区吃"总高-工具条-
+                # 历史"的全部剩余（拖动即时反馈，绝不弹回）；历史区最多占
+                # 总高 55%、保底 56px 可滚。历史无行时当前句区独占整板。
+                total = self._user_height
+                hist_h = 0
+                if self._dual_hist_rows:
+                    # 有行即保底 56px（可滚）——单行内容需求 ~38px，若按
+                    # "内容需求≥40 才显示"判定会把单行历史整条杀掉
+                    # （集成锁与独立调试双双实证）
+                    hist_h = max(56, min(self._dual_hist_body.sizeHint().height(),
+                                         int(total * 0.55),
+                                         max(56, total - chrome - 46)))
+                body_h = max(46, total - chrome - hist_h)
+                self._dual_body.setFixedHeight(body_h)
+                if hist_h:
+                    self._dual_hist.setVisible(True)
+                    self._dual_hist.setFixedHeight(hist_h)
+                else:
+                    self._dual_hist.setVisible(False)
+                    self._dual_hist.setFixedHeight(0)
             else:
-                self._dual_hist.setVisible(False)
-                self._dual_hist.setFixedHeight(0)
+                body_h = min(max(body_want, 46), 300)
+                self._dual_body.setFixedHeight(body_h)
+                avail = int((QGuiApplication.primaryScreen().availableGeometry().height()
+                             or 800) * 0.68)
+                hist_want = (self._dual_hist_body.sizeHint().height()
+                             if self._dual_hist_rows else 0)
+                hist_h = max(0, min(hist_want, avail - chrome - body_h))
+                if self._dual_hist_rows and hist_h >= 40:
+                    self._dual_hist.setVisible(True)
+                    self._dual_hist.setFixedHeight(hist_h)
+                else:
+                    self._dual_hist.setVisible(False)
+                    self._dual_hist.setFixedHeight(0)
         else:
             self._mini.setVisible(False)
             self._dual_body.setVisible(False)
@@ -1190,6 +1213,15 @@ class CaptionOverlay(QWidget):
             cy = self.height() // 2
             for dy in (-7, 0, 7):
                 p.drawEllipse(QPoint(cx - 1, cy + dy - 1), 1, 1)
+            # v2.14.1：底缘"⋯"横向三点把手——底缘拉伸此前是隐形手势（右缘
+            # 有 ⋮ 而底缘没有），用户实测"连最下边的边都拉不了"的观感之一；
+            # 拖拽中提亮给出反馈
+            grip2 = QColor(255, 255, 255, 90 if not self._v_resizing else 180)
+            p.setBrush(grip2)
+            cy2 = self.height() - self.RESIZE_EDGE // 2 - 1
+            cx2 = self.width() // 2
+            for dx in (-7, 0, 7):
+                p.drawEllipse(QPoint(cx2 + dx - 1, cy2 - 1), 1, 1)
 
     # ---------- 鼠标：整板拖移 + 右缘调宽 + 双击贴边 ----------
 
