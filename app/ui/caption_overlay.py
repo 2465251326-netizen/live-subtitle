@@ -30,6 +30,7 @@ class CaptionOverlay(QWidget):
     MIN_W = 360
     RESIZE_EDGE = 14   # v2.4.1：右缘调宽命中带（10px 太窄且无光标反馈→普通人找不到）
     MAX_ROWS = 40
+    MAX_DUAL_HIST = 30  # v2.14.0：dual 历史区上限行数（超出删最老，防无限增长）
     LANGS = [("zh-CN", "中文"), ("en", "英语"), ("ja", "日语"), ("ko", "韩语"),
              ("fr", "法语"), ("de", "德语"), ("ru", "俄语"), ("es", "西班牙语")]
     FONTS = [("小号", 16), ("中号", 22), ("大号", 30), ("特大", 40)]
@@ -239,6 +240,30 @@ class CaptionOverlay(QWidget):
         # 对标豆包 PC 实时翻译：上半=原文（识别片段流式生长，淡色小字），
         # 下半=译文（推测式翻译就地更新、终版收口，主字号加粗）。
         # 与列表模式互斥显示；工具条/拖动/置顶/透明度/收起全部复用。
+        # v2.14.0：加**历史区**——终版句自动沉入历史（原文小灰+译文小白成对），
+        # 滚轮上下回看；当前句大字区保持流式实时。用户需求："原文和译文不是
+        # 都应该保留吗，可以用滚轮进行滚上滚下查看"。
+        self._dual_hist = QScrollArea(self)
+        self._dual_hist.setObjectName("PanelDualHist")
+        self._dual_hist.setWidgetResizable(True)
+        self._dual_hist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._dual_hist.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._dual_hist.viewport().setAutoFillBackground(False)
+        self._dual_hist.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dual_hist_body = QWidget()
+        self._dual_hist_body.setAutoFillBackground(False)
+        self._dual_hist_body.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dual_hist_lay = QVBoxLayout(self._dual_hist_body)
+        self._dual_hist_lay.setContentsMargins(10, 2, 14, 2)
+        self._dual_hist_lay.setSpacing(7)
+        self._dual_hist_lay.addStretch(1)
+        self._dual_hist.setWidget(self._dual_hist_body)
+        outer.addWidget(self._dual_hist, 1)
+        self._dual_hist.hide()
+        self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
+        self._hist_follow = True           # 用户上滚回看时不自动滚底
+        self._dual_hist.verticalScrollBar().valueChanged.connect(self._on_hist_scroll)
+
         self._dual_body = QWidget(self)
         self._dual_body.setObjectName("PanelDual")
         self._dual_body.setAutoFillBackground(False)
@@ -490,6 +515,14 @@ class CaptionOverlay(QWidget):
 
     def clear_caption(self):
         if self._layout_mode == "dual":
+            # v2.14.0：当前句 + 历史区一并清空
+            while self._dual_hist_rows > 0:
+                it = self._dual_hist_lay.itemAt(0)
+                if it and it.widget():
+                    it.widget().deleteLater()
+                    self._dual_hist_lay.removeItem(it)
+                self._dual_hist_rows -= 1
+            self._hist_follow = True
             self._dual_src.setText("")
             self._dual_tgt.setProperty("spec", False)
             self._dual_tgt.setProperty("empty", True)
@@ -531,6 +564,72 @@ class CaptionOverlay(QWidget):
                  if self._dual_src.isVisible() else 0)
         tgt_h = self._dual_tgt.heightForWidth(avail)
         return src_h + tgt_h + 25
+
+    def _on_hist_scroll(self, v):
+        """v2.14.0：历史区滚动跟随——用户上滚回看时不自动滚底，回底恢复。"""
+        sb = self._dual_hist.verticalScrollBar()
+        self._hist_follow = (v >= sb.maximum() - 4)
+
+    def _dual_hist_scroll_bottom(self):
+        sb = self._dual_hist.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def dual_push_history(self, src, tgt):
+        """v2.14.0：终版句沉入历史区（原文小灰 + 译文小白成对行）。
+        超上限删最老；跟随状态下自动滚底（用户上滚回看时不打断）。
+        主窗在整句终版翻译到达时调用。"""
+        if self._layout_mode != "dual":
+            return
+        src = (src or "").strip()
+        tgt = (tgt or "").strip()
+        if not src and not tgt:
+            return
+        w = QWidget()
+        w.setAttribute(Qt.WA_TranslucentBackground, True)
+        l = QVBoxLayout(w)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(1)
+        lab_src = QLabel(src)
+        lab_src.setObjectName("DualHistSrc")
+        lab_src.setWordWrap(True)
+        f = QFont()
+        f.setPixelSize(max(10, int(self._font_size * 0.55)))
+        lab_src.setFont(f)
+        lab_src.setVisible(bool(src) and self._show_source)
+        lab_tgt = QLabel(tgt or "…")
+        lab_tgt.setObjectName("DualHistTgt")
+        lab_tgt.setWordWrap(True)
+        f2 = QFont()
+        f2.setPixelSize(max(11, int(self._font_size * 0.66)))
+        f2.setWeight(QFont.DemiBold)
+        lab_tgt.setFont(f2)
+        l.addWidget(lab_src)
+        l.addWidget(lab_tgt)
+        self._dual_hist_lay.insertWidget(self._dual_hist_lay.count() - 1, w)
+        self._dual_hist_rows += 1
+        while self._dual_hist_rows > self.MAX_DUAL_HIST:
+            it = self._dual_hist_lay.itemAt(0)
+            if it and it.widget():
+                it.widget().deleteLater()
+                self._dual_hist_lay.removeItem(it)
+            self._dual_hist_rows -= 1
+        if self._dual_hist_rows and self._hist_follow:
+            QTimer.singleShot(0, self._dual_hist_scroll_bottom)
+        self._schedule_relayout()
+
+    def dual_clear_current(self):
+        """v2.14.0：当前句区清空（终版句已沉历史，等待下一句草稿/片段；
+        空态由 _update_empty_hint 写占位/引导）。"""
+        if self._layout_mode != "dual":
+            return
+        self._dual_src.setText("")
+        self._dual_tgt.setProperty("empty", True)
+        self._dual_tgt.setProperty("spec", False)
+        self._dual_tgt.setText("")
+        self._restyle_dual_tgt()
+        self._sync_dual_visibility()
+        self._update_empty_hint()
+        self._schedule_relayout()
 
     def set_layout_mode(self, mode):
         """切换面板布局："list"=历史滚动列表，"dual"=上下双语（豆包风）。
@@ -691,9 +790,11 @@ class CaptionOverlay(QWidget):
         if self._layout_mode == "dual" and not self._collapsed:
             want0 = self._dual_want_height()
             h0 = self._dual_body.height()
+            h1 = self._dual_hist.height()
             self._relayout()
             if ((self._dual_want_height() != want0
-                 or self._dual_body.height() != h0) and self._relayout_passes < 12):
+                 or self._dual_body.height() != h0
+                 or self._dual_hist.height() != h1) and self._relayout_passes < 12):
                 self._relayout_passes += 1
                 self._relayout_pending = True
                 QTimer.singleShot(0, self._consume_relayout)
@@ -726,8 +827,9 @@ class CaptionOverlay(QWidget):
             self._mini.setVisible(True)
             self._mini.setFixedHeight(min(self._mini.sizeHint().height(), 120))
         elif self._layout_mode == "dual":
-            # v2.11.0：上下双语——正文贴内容高度、无滚动条（当前句聚焦）；
-            # 手动高度锁定语义与列表一致（⋯ 菜单可恢复自动）
+            # v2.11.0：上下双语——当前句区贴内容；v2.14.0：历史区吃剩余
+            # 空间（有内容才显示），面板可被 user_height 自由拉高（历史区
+            # 随之变高），超屏比时历史区滚动
             self._mini.setVisible(False)
             self._scroll.setVisible(False)
             self._dual_body.setVisible(True)
@@ -736,13 +838,24 @@ class CaptionOverlay(QWidget):
             # label 被压在旧高度里，终版长译文底部裁切（真机截图实证）
             self._dual_body.setMinimumHeight(0)
             self._dual_body.setMaximumHeight(16777215)
-            want = self._dual_want_height()
-            cap = int((QGuiApplication.primaryScreen().availableGeometry().height()
-                       or 800) * 0.55)
+            body_want = self._dual_want_height()
+            body_want = min(max(body_want, 46), 300)   # 当前句区上限：防超长句独占整板
+            self._dual_body.setFixedHeight(body_want)
+            avail = int((QGuiApplication.primaryScreen().availableGeometry().height()
+                         or 800) * 0.68)
             if self._user_height:
-                self._dual_body.setFixedHeight(max(46, self._user_height - 54))
+                # v2.14.0：面板拉高 → 历史区变高（"自由上下拉长"）
+                avail = max(avail, self._user_height)
+            chrome = 54 + 12                          # 工具条 + outer margins/spacing
+            hist_want = (self._dual_hist_body.sizeHint().height()
+                         if self._dual_hist_rows else 0)
+            hist_h = max(0, min(hist_want, avail - chrome - body_want))
+            if self._dual_hist_rows and hist_h >= 40:
+                self._dual_hist.setVisible(True)
+                self._dual_hist.setFixedHeight(hist_h)
             else:
-                self._dual_body.setFixedHeight(min(max(want, 46), cap))
+                self._dual_hist.setVisible(False)
+                self._dual_hist.setFixedHeight(0)
         else:
             self._mini.setVisible(False)
             self._dual_body.setVisible(False)
@@ -907,6 +1020,8 @@ class CaptionOverlay(QWidget):
         self._jump_btn.setVisible(not self._follow and not self._collapsed and not dual)
         self._scroll.setVisible(not self._collapsed and not dual)
         self._dual_body.setVisible(not self._collapsed and dual)
+        # v2.14.0：历史区可见性与 body 同步（_relayout 按行数精调高度）
+        self._dual_hist.setVisible(not self._collapsed and dual)
         self._mini.setVisible(self._collapsed)
         if self._collapsed:
             self._update_mini()
@@ -1002,6 +1117,12 @@ class CaptionOverlay(QWidget):
             QLabel#PanelMiniSrc {{ font-size: {max(11, int(fs * 0.62))}px; color: #98a2b3; }}
             QLabel#PanelMiniTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
             QWidget#PanelDual {{ background: transparent; }}
+            QScrollArea#PanelDualHist {{ background: transparent; border: none;
+                                          border-bottom: 1px solid rgba(255,255,255,20); }}
+            QScrollArea#PanelDualHist > QWidget {{ background: transparent; }}
+            QScrollArea#PanelDualHist > QWidget > QWidget {{ background: transparent; }}
+            QLabel#DualHistSrc {{ color: #7d8794; }}
+            QLabel#DualHistTgt {{ color: rgba(255,255,255,218); }}
             QLabel#DualSrc {{ color: #98a2b3; }}
             QLabel#DualTgt {{ color: {self._text_color.name()}; }}
             QLabel#DualTgt[spec="true"] {{ color: rgba(255,255,255,205); }}

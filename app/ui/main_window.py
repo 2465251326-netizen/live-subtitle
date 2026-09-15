@@ -1185,8 +1185,9 @@ class MainWindow(QMainWindow):
         self._tgroup_gen = getattr(self, "_tgroup_gen", 0) + 1
         self._spec_inflight = {}
         self._lat_spec = []
-        # v2.12.0：dual 流式原文基线随会话清零
-        self._dual_confirmed = ""
+        # v2.12.0/v2.14.0：dual 流式原文状态随会话清零
+        self._dual_hist_base = ""
+        self._dual_current = ""
         self._dual_last_piece = ""
         self._dual_draft = None          # v2.13.0：在飞草稿译文一并作废
         # v2.7.2：榨干模式——翻译运行期提升进程优先级（停止后恢复），
@@ -1533,7 +1534,7 @@ class MainWindow(QMainWindow):
         if model is None:
             return
         p.set_model(model)
-        self._dual_confirmed = ""
+        self._dual_current = ""
         self._dual_last_piece = ""
         self._dual_draft = None
         p.restart()          # 重置停止标志与陈旧音频缓冲（stop 后热重启）
@@ -1600,6 +1601,29 @@ class MainWindow(QMainWindow):
             return " ".join(text_words[best_end:]).strip()
         return text
 
+    @staticmethod
+    def _merge_stream(current, diff):
+        """v2.14.0：当前句显示文本与流式增量合并。
+
+        diff 是预览窗口内相对上一句的新增话音，current 是当前句已显示文本：
+        a) diff 以 current 为前缀延伸 → 取更长的 diff（窗口重写更准）
+        b) current 包含 diff（窗口滑动后 partial 变短）→ 保留 current
+        c) current 尾部与 diff 头部重叠 → 拼接去重叠
+        d) 无重叠 → 空格拼接（转写差异过大：宁可重复下一拍自愈）"""
+        if not current:
+            return diff
+        if not diff:
+            return current
+        if diff.startswith(current):
+            return diff
+        if current.startswith(diff):
+            return current
+        max_k = min(len(current), len(diff))
+        for k in range(max_k, 0, -1):
+            if current.endswith(diff[:k]):
+                return current + diff[k:]
+        return (current + " " + diff).strip()
+
     def _on_partial_preview(self, text):
         """预览草稿上屏：确认区 + 增量 → 原文区整体刷新（每 ~0.9s 一拍）。
         译文不跟进草稿（草稿反复改写不值得送译；推测式翻译已覆盖实时性）。"""
@@ -1608,23 +1632,23 @@ class MainWindow(QMainWindow):
         t = (text or "").strip()
         if not t:
             return
-        base = getattr(self, "_dual_confirmed", "") or ""
+        # v2.14.0：流式模型拆分——_dual_hist_base（最后终版句，剥离基线）
+        # 与 _dual_current（当前句显示文本）分离，终版句沉历史后当前句从
+        # 零开始，不再混句
+        base = getattr(self, "_dual_hist_base", "") or ""
         diff = self._strip_overlapped_prefix(base, t)
         if not diff:
             return
-        if base and ("\u4e00" <= base[-1] <= "\u9fff"
-                     or ("\u4e00" <= diff[0] <= "\u9fff")):
-            full = base + diff
-        else:
-            full = (base + " " + diff).strip()
-        self.overlay.update_partial(full)
+        cur = self._merge_stream(getattr(self, "_dual_current", "") or "", diff)
+        self._dual_current = cur
+        self.overlay.update_partial(cur)
         # v2.13.0：**草稿也送推测翻译**——译文区跟着原文一起实时生长。
         # 此前草稿不送译，译文只在正式片段到达（分段周期 2.5~4s）才刷新，
         # 用户实测反馈"译文还那种攒句"。仅离线引擎闸内生效（argos 0.06s/次、
         # 无额度，0.9s 一拍毫无压力；在线引擎请求量 ×4.4 保持不送）。
         # 配对走"最新草稿全文"（_dual_draft）而非 _spec_inflight 簿记，
         # 迟到草稿（非最新）自动作废——下一拍马上会有更新的。
-        self._dual_draft = full
+        self._dual_draft = cur
         if self._spec_enabled():
             tr = self._active_translate()
             if tr is not None and tr.isRunning():
@@ -1633,7 +1657,7 @@ class MainWindow(QMainWindow):
                 # 草稿译文全灭（真机密集拍实证：译文 4.2s 才随首片出现）
                 lang = (getattr(self, "_tgroup_lang", "")
                         or str(self.config.get("asr_language") or ""))
-                tr.submit(full, lang, spec=True)
+                tr.submit(cur, lang, spec=True)
 
     def _on_level(self, value):
         """电平槽。契约：value 为 capture 的 0~1 比例（见 CaptureThread
@@ -2020,8 +2044,9 @@ class MainWindow(QMainWindow):
             grp = self._tgroup
         grp.append(text)
         # v2.12.0：dual 流式原文的"已确认基线"随片段生长（预览草稿的剥离基准）
+        # v2.14.0：正式片段覆盖当前句显示文本（权威性高于草稿 merge）
         self._dual_last_piece = text
-        self._dual_confirmed = self._combine_pieces(grp)
+        self._dual_current = self._combine_pieces(grp)
         self._tgroup_last_at = time.monotonic()   # v2.7.0（T2）：攒住时长遥测起点
         if len(grp) == 1:
             # v2.3.18（P23）：组寿命起点——绝对上限用它算，续片无法续命
@@ -2136,7 +2161,9 @@ class MainWindow(QMainWindow):
             self._lat_add("_lat_hold", max(0.0, time.monotonic() - hold_at))
         combined = self._combine_pieces(grp)
         # v2.12.0：终版收口 = 流式原文的确认基线更新（预览草稿从整句尾部续接）
-        self._dual_confirmed = combined
+        # v2.14.0：基线更名 _dual_hist_base——整句音频已完，后续 partial 相对
+        # 它剥离出"新句增量"；_dual_current 保留显示（终版翻译回复时沉历史+清）
+        self._dual_hist_base = combined
         # v2.13.0：冲刷即作废在飞草稿译文（防迟到草稿盖住新句开头）
         self._dual_draft = None
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
@@ -2501,6 +2528,13 @@ class MainWindow(QMainWindow):
                 combined_src or source_text,
                 translated or ("[" + engine + " 翻译失败]"), show_source,
                 merged_from=merged_srcs)
+            # v2.14.0：dual 布局——整句终版沉入历史区（原文+译文成对，滚轮
+            # 可回看），当前句区保留显示至下一句开始（new_sentence 自然清空）
+            if self.overlay.is_dual() and not error:
+                self.overlay.dual_push_history(
+                    combined_src or source_text,
+                    translated or "")
+                self._dual_current = ""   # 数据清空：下一拍草稿从新句零起点合并
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         evicted = []

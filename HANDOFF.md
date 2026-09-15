@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 凌晨 v2.13.0（草稿送译：译文与原文同节奏实时 + 流式三修，见第十八节；v2.12.0 流式原文通道见第十七节；v2.11.0 上下双语布局见第十六节）
+> 最后更新：2026-09-16 凌晨 v2.14.0（dual 历史区+面板自由拉高，见第十九节；v2.13.0 草稿送译见第十八节；v2.12.0 流式原文通道见第十七节）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.13.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.14.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -365,4 +365,15 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **用户配置提醒**（未代改，用户裁决）：真机 `neural_vad=true` + `segment_cap_s=2.5`，实测 hold_p50=4.12/7.0（应 ≈2.5~3）——神经 VAD 黏滞是嫌疑主因（v2.9.0 实测数据），已建议用户关闭对比。
 - **锁**：`t_main_draft_translation_flow`（草稿送译/一次性消费/冲刷作废；注意断言的 lang：草稿=asr_language 配置值（itest_home 为 "auto"）、终版=_tgroup_lang（"en"））、`test_stream_preview_restart`、`test_strip_overlapped_prefix`（升级）。单元 78 / 集成 99 全绿。
 - **版本**：v2.13.0（行为增强 minor）。CI 不监控（用户既定偏好）。
+
+## 十九、会话快照（2026-09-16 凌晨 v2.14.0：dual 历史区 + 面板自由拉高）
+
+- **用户需求原话**："原文和译文不是都应该保留吗，可以用滚轮进行滚上滚下查看；原文的显示范围太小了，改成可以自由上下拉长"——dual 从"当前句聚焦"演进为"历史区（可滚轮回看）+ 当前句大字区"。
+- **结构**：dual 布局 = 工具条 + `_dual_hist`（QScrollArea 历史区，行=原文小灰 0.55×fs + 译文小白 0.66×fs DemiBold 成对）+ `_dual_body`（当前句大字区，流式不变）。终版句沉历史时机 = `_on_translated`（翻译成功 not error）调 `overlay.dual_push_history(combined, translated)` + `_dual_current=""`（数据清空，**显示保留**至下一句 new_sentence 自然覆盖——空窗观感更平滑）。上限 MAX_DUAL_HIST=30 行（超出删最老）；「同时显示原文」关闭时历史行原文一并隐藏。
+- **高度分配**（_relayout dual 分支）：body 贴内容但上限 300px（防超长句独占）；hist 吃剩余空间（hist_want vs avail-54-body 上限），avail = max(0.68 屏, user_height)——**拉高面板=历史区变大**（v2.13 前拉高只撑 body）；cap 0.55→0.68。hist 无内容时 hide（body 独占）。
+- **滚轮跟随**：`_hist_follow` + valueChanged 守卫（同列表语义：上滚不打断、回底恢复）——push 行后仅在跟随时 singleShot 滚底。
+- **真机验证教训（音频链路不可信时）**：第二轮真机截图出现"信号弱+whisper 静音幻觉（you Thank you.）"——用户实时环境的系统默认输出可能已切换，环回抓空 → **音频链路验证结果不可信**。改用 `QWidget.grab()` 本体渲染 + 直接注入 6 句终版（绕开音频），两轮 grab 定案：6 行历史成对完整可见、拉高后 hist 变大、当前句草稿态、零裁切。终版→沉历史链路另有集成锁（t_main_partial_preview_alignment 断言 hist_rows==1 / _dual_current==""）。
+- **易错点**：_on_translated 里 push_history 后**别忘了 `_dual_current=""`**——首轮实现漏写导致数据层当前句不归零（集成锁当场抓获：'终版沉历史后当前句数据清空'）。
+- **锁**：t_main_partial_preview_alignment 升级（hist_rows==1 / hist_base / current 清空）。单元 78 / 集成 99 全绿。
+- **版本**：v2.14.0（新功能 minor）。CI 不监控（用户既定偏好）。
 

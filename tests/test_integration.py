@@ -968,16 +968,19 @@ def t_main_partial_preview_alignment():
     old_ll = w.config.get("low_latency_mode")
     w.config.set("low_latency_mode", True)
     try:
-        # 片段到达：确认基线随攒句生长
+        # 片段到达：当前句显示文本随攒句生长（正式权威覆盖草稿）
         w._on_asr_text("The market opened higher today", "en", "1.0")
-        assert w._dual_confirmed == "The market opened higher today"
-        # partial 到达：窗口文本剥掉与基线的重叠后只追加新增
+        assert w._dual_current == "The market opened higher today"
+        # partial 到达：窗口文本剥掉与历史基线的重叠后合并进当前句
         w._on_partial_preview("The market opened higher today and stocks rallied")
         assert w.overlay._dual_src.text() == "The market opened higher today and stocks rallied"
-        # 终版收口：基线更新为整句（下一轮 partial 从整句尾部续接）
+        # 冲刷：剥离基线更新为整句
         w._flush_tgroup()
+        assert w._dual_hist_base == "The market opened higher today"
+        # 终版翻译到达：沉入历史区（原文+译文成对）+ 当前句数据清空
         w._on_translated("The market opened higher today", "今天高开", "argos", "en", "")
-        assert w._dual_confirmed == "The market opened higher today"
+        assert w.overlay._dual_hist_rows == 1, "终版句应沉入历史区"
+        assert w._dual_current == "", "终版沉历史后当前句数据清空"
         # 非运行态：预览草稿不得改写面板
         w.running = False
         w._on_partial_preview("stale garbage after stop")
@@ -1015,7 +1018,7 @@ def t_main_draft_translation_flow():
     w._active_translate = lambda: tr
     try:
         # 草稿到达：原文区刷新 + 草稿送推测翻译（spec=True）
-        w._dual_confirmed = ""
+        w._dual_current = ""
         w._on_partial_preview("The market opened higher")
         assert w.overlay._dual_src.text() == "The market opened higher"
         assert w._dual_draft == "The market opened higher"
