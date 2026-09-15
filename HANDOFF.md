@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 v2.16.2（dual wrap 白块三保险修复，见 CHANGELOG；v2.16.x 分割线拖拽+视觉重设计见 CHANGELOG）
+> 最后更新：2026-09-16 v2.16.2（dual wrap 白块三保险修复，见 CHANGELOG；另：bump 后漏 add config.py 的问题**本届会话犯了两次**——发版前 status 必查、或直接 `git add -A`，见 CHANGELOG v2.16.2）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
