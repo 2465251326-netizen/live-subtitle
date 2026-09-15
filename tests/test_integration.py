@@ -925,6 +925,46 @@ def t_overlay_dual_user_height_body():
     ov.deleteLater()
 check("panel: dual 拉高锁定总高、原文区优先", t_overlay_dual_user_height_body)
 
+def t_overlay_dual_split_drag():
+    """v2.15.0：分割把手——拖出的历史区高度（_dual_hist_h_user）被
+    _relayout 尊重：拖大历史区则 body 让位、拖小则原文区变大；
+    锁定总高与自动两种模式都生效。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    ov.resize(620, 200)
+    for src, tgt in [("Sentence one here", "第一句在这里"),
+                     ("Sentence two here", "第二句在这里")]:
+        ov._dual_show_result(src, tgt, True)
+        ov.dual_push_history(src, tgt)
+    ov._dual_show_pending("Current sentence growing")
+    for _ in range(6):
+        app.processEvents()
+    ov.set_user_height(520)
+    for _ in range(6):
+        app.processEvents()
+    h_auto = ov._dual_hist.height()
+    assert h_auto >= 56, f"历史区保底 56px：{h_auto}"
+    # 模拟分割把手下拖 120px（历史区变大、原文区让位）
+    ov.set_dual_hist_h_user(h_auto + 120)
+    for _ in range(6):
+        app.processEvents()
+    h1 = ov._dual_hist.height()
+    assert abs(h1 - (h_auto + 120)) <= 12, f"分割拖拽应即时生效：{h_auto} -> {h1}"
+    assert ov._dual_body.height() <= 520 - 66 - 40 + 8, \
+        f"原文区应给历史让位：{ov._dual_body.height()}"
+    # 模拟分割把手上拖回保底（历史区变小、原文区变大）
+    ov.set_dual_hist_h_user(56)
+    for _ in range(6):
+        app.processEvents()
+    h2 = ov._dual_hist.height()
+    assert 56 <= h2 <= 72, f"历史区应回缩到保底附近：{h2}"
+    assert ov._dual_body.height() > 520 - 66 - 120, \
+        f"历史缩小后原文区应变大：{ov._dual_body.height()}"
+    ov.deleteLater()
+check("panel: dual 分割线拖拽分配两区高度", t_overlay_dual_split_drag)
+
 def t_overlay_relayout_pending_release():
     """v2.11.0 关键修复锁：_consume_relayout 收敛后必须释放 _relayout_pending。
 

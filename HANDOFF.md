@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 凌晨 v2.14.1（dual 底缘拉伸失效修复+底缘把手，见 CHANGELOG v2.14.1；v2.14.0 dual 历史区+自由拉高见第十九节；v2.13.0 草稿送译见第十八节）
+> 最后更新：2026-09-16 凌晨 v2.15.0（dual 分割线自由拖拽，见 CHANGELOG；v2.14.x 历史区/拉高/底缘修复见第十九节与 CHANGELOG）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.14.1**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.15.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -167,7 +167,7 @@ app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      78 项单元测试
-tests/test_integration.py 100 项集成测试
+tests/test_integration.py 101 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）

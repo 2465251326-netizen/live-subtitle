@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.14.1"
+APP_VERSION = "2.15.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -33,6 +33,9 @@ DEFAULTS = {
                                         # （v2.4.0 起的形态）；"dual"=上下双语（豆包风：
                                         # 上半原文随识别流式生长、下半译文随推测式翻译就地更新）。
                                         # 面板 ⋯ 菜单随时切换，设置页保存即时生效。
+    "overlay_dual_hist_h": 0,          # v2.15.0：dual 布局历史区用户拖出的高度
+                                        # （px，0=自动分配）。拖历史区与当前句区之间
+                                        # 的分割把手即可自由调整两区比例，重启保持。
     "stream_preview": True,            # v2.12.0：dual 布局的流式原文通道——每 0.9s 把
                                         # 最近 4s 音频重识别一次，把新增话音实时追加到
                                         # 原文区（主持人讲到哪原文跟到哪，不等分段周期）。

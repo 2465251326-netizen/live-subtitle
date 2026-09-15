@@ -47,7 +47,7 @@ class CaptionOverlay(QWidget):
                  on_correct=None, on_export_srt=None, on_language=None,
                  on_font_size=None, on_pin_changed=None, on_collapsed=None,
                  on_first_show=None, on_opacity=None, on_height_changed=None,
-                 on_layout_changed=None):
+                 on_layout_changed=None, on_dual_split=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -92,6 +92,7 @@ class CaptionOverlay(QWidget):
         self._on_opacity = on_opacity
         self._on_height_changed = on_height_changed
         self._on_layout_changed = on_layout_changed
+        self._on_dual_split = on_dual_split
         # v2.5.3：手动高度（用户裁决回归——面板支持上下拉长）。None=自动贴内容；
         # 拖底缘/主窗配置恢复后锁定手动高度，⋯ 菜单可恢复自动
         self._user_height = None
@@ -263,6 +264,13 @@ class CaptionOverlay(QWidget):
         self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
         self._hist_follow = True           # 用户上滚回看时不自动滚底
         self._dual_hist.verticalScrollBar().valueChanged.connect(self._on_hist_scroll)
+        # v2.15.0：分割线拖拽——历史区/当前句区的高度比例由用户拖 hist 底缘
+        # （分隔把手）自由分配；None=自动分配。用户需求："中间的分割线依然
+        # 不能自由的上下拉长"
+        self._dual_hist_h_user = None
+        self._dual_split_drag = False
+        self._dual_split_start_y = None
+        self._dual_split_start_h = 0
 
         self._dual_body = QWidget(self)
         self._dual_body.setObjectName("PanelDual")
@@ -570,6 +578,27 @@ class CaptionOverlay(QWidget):
         sb = self._dual_hist.verticalScrollBar()
         self._hist_follow = (v >= sb.maximum() - 4)
 
+    def _dual_hist_bottom_y(self):
+        """v2.15.0：历史区底边在面板坐标系中的 y（分割把手命中带中心）。"""
+        try:
+            return self._dual_hist.mapTo(self, QPoint(
+                0, self._dual_hist.height())).y()
+        except RuntimeError:
+            return -1
+
+    def _dual_split_hit(self, y):
+        """v2.15.0：分割把手命中判定（历史区底边 ±6px，仅 dual+可见+未收起）。"""
+        return (self._layout_mode == "dual" and not self._collapsed
+                and self._dual_hist.isVisible()
+                and abs(y - self._dual_hist_bottom_y()) <= 6)
+
+    def set_dual_hist_h_user(self, h):
+        """v2.15.0：历史区用户高度入口（主窗配置恢复/0=回自动分配）。
+        拖分割线改的就是这个值——决定历史区与当前句区的高度比例。"""
+        self._dual_hist_h_user = int(h) if h and int(h) >= 40 else None
+        if self._layout_mode == "dual" and not self._collapsed:
+            self._relayout()
+
     def _dual_hist_scroll_bottom(self):
         sb = self._dual_hist.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -848,15 +877,21 @@ class CaptionOverlay(QWidget):
                 # v2.14.1：拉高 = **锁定面板总高**——原文区吃"总高-工具条-
                 # 历史"的全部剩余（拖动即时反馈，绝不弹回）；历史区最多占
                 # 总高 55%、保底 56px 可滚。历史无行时当前句区独占整板。
+                # v2.15.0：分割线拖出的历史高度（_dual_hist_h_user）优先——
+                # 用户显式拖过的比例不应被自动分配覆盖。
                 total = self._user_height
                 hist_h = 0
                 if self._dual_hist_rows:
-                    # 有行即保底 56px（可滚）——单行内容需求 ~38px，若按
-                    # "内容需求≥40 才显示"判定会把单行历史整条杀掉
-                    # （集成锁与独立调试双双实证）
-                    hist_h = max(56, min(self._dual_hist_body.sizeHint().height(),
-                                         int(total * 0.55),
-                                         max(56, total - chrome - 46)))
+                    if self._dual_hist_h_user:
+                        hist_h = max(40, min(self._dual_hist_h_user,
+                                             max(40, total - chrome - 46)))
+                    else:
+                        # 有行即保底 56px（可滚）——单行内容需求 ~38px，若按
+                        # "内容需求≥40 才显示"判定会把单行历史整条杀掉
+                        # （集成锁与独立调试双双实证）
+                        hist_h = max(56, min(self._dual_hist_body.sizeHint().height(),
+                                             int(total * 0.55),
+                                             max(56, total - chrome - 46)))
                 body_h = max(46, total - chrome - hist_h)
                 self._dual_body.setFixedHeight(body_h)
                 if hist_h:
@@ -872,7 +907,15 @@ class CaptionOverlay(QWidget):
                              or 800) * 0.68)
                 hist_want = (self._dual_hist_body.sizeHint().height()
                              if self._dual_hist_rows else 0)
-                hist_h = max(0, min(hist_want, avail - chrome - body_h))
+                if self._dual_hist_rows:
+                    # v2.15.0：分割线拖过的历史高度优先（自动总高模式下拖大
+                    # 历史区 → 面板随之长高，分配依然自由）
+                    if self._dual_hist_h_user:
+                        hist_h = max(40, self._dual_hist_h_user)
+                    else:
+                        hist_h = max(0, min(hist_want, avail - chrome - body_h))
+                else:
+                    hist_h = 0
                 if self._dual_hist_rows and hist_h >= 40:
                     self._dual_hist.setVisible(True)
                     self._dual_hist.setFixedHeight(hist_h)
@@ -1222,6 +1265,16 @@ class CaptionOverlay(QWidget):
             cx2 = self.width() // 2
             for dx in (-7, 0, 7):
                 p.drawEllipse(QPoint(cx2 + dx - 1, cy2 - 1), 1, 1)
+            # v2.15.0：分割把手三点（历史区底边中央）——"中间的分割线"此前
+            # 是纯装饰不可拖，现可拖动分配历史/当前句高度；拖拽中提亮
+            if (self._layout_mode == "dual" and self._dual_hist.isVisible()
+                    and not self._collapsed):
+                grip3 = QColor(255, 255, 255, 150 if self._dual_split_drag else 90)
+                p.setBrush(grip3)
+                by = self._dual_hist_bottom_y()
+                cx3 = self.width() // 2
+                for dx in (-7, 0, 7):
+                    p.drawEllipse(QPoint(cx3 + dx - 1, by - 1), 1, 1)
 
     # ---------- 鼠标：整板拖移 + 右缘调宽 + 双击贴边 ----------
 
@@ -1240,6 +1293,11 @@ class CaptionOverlay(QWidget):
                 self._v_resizing = True
                 self._v_resize_start = event.globalPosition().toPoint()
                 self._v_resize_start_h = self.height()
+            elif self._dual_split_hit(pos.y()):
+                # v2.15.0：分割把手拖拽——历史区/当前句区高度比例自由分配
+                self._dual_split_drag = True
+                self._dual_split_start_y = event.globalPosition().toPoint()
+                self._dual_split_start_h = self._dual_hist.height()
             else:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 # v2.5.0：精简条上"按住=拖、原地点击=展开"的判定锚点
@@ -1265,6 +1323,16 @@ class CaptionOverlay(QWidget):
             self._relayout()
             event.accept()
             return
+        if self._dual_split_drag and event.buttons() & Qt.LeftButton:
+            # v2.15.0：分割把手拖拽——上移历史区变小（原文区变大）、下移相反；
+            # 值记忆在 _dual_hist_h_user，_relayout 按它分配两区高度
+            dy = event.globalPosition().toPoint().y() - self._dual_split_start_y
+            new_h = max(40, min(self._dual_split_start_h + dy,
+                                self.height() - 54 - 46))
+            self._dual_hist_h_user = new_h
+            self._relayout()
+            event.accept()
+            return
         if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
@@ -1275,9 +1343,10 @@ class CaptionOverlay(QWidget):
                       and not self._collapsed)
         near_bottom = (pos.y() >= self.height() - self.RESIZE_EDGE
                        and not self._collapsed)
+        near_split = self._dual_split_hit(pos.y())
         if near_right:
             self.setCursor(Qt.SizeHorCursor)
-        elif near_bottom:
+        elif near_bottom or near_split:
             self.setCursor(Qt.SizeVerCursor)
         else:
             self.setCursor(Qt.ArrowCursor)
@@ -1292,6 +1361,11 @@ class CaptionOverlay(QWidget):
             self._v_resizing = False
             if self._on_height_changed:
                 self._on_height_changed(self._user_height)
+        elif self._dual_split_drag:
+            # v2.15.0：分割拖拽结束——经专用回调落盘（下次启动保持比例）
+            self._dual_split_drag = False
+            if getattr(self, "_on_dual_split", None):
+                self._on_dual_split(self._dual_hist_h_user or 0)
         elif self._drag_pos is not None:
             pos = event.position()
             pos = pos.toPoint() if hasattr(pos, "toPoint") else pos

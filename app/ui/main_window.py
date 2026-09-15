@@ -539,7 +539,9 @@ class MainWindow(QMainWindow):
                                        on_opacity=self._on_panel_opacity,
                                         on_height_changed=self._on_panel_height,
                                         # v2.11.0：面板 ⋯ 菜单切换布局 → 回调落盘
-                                        on_layout_changed=self._on_panel_layout_changed)
+                                        on_layout_changed=self._on_panel_layout_changed,
+                                        # v2.15.0：分割线拖拽 → 历史区高度落盘
+                                        on_dual_split=self._on_panel_dual_split)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -997,6 +999,14 @@ class MainWindow(QMainWindow):
         self.config.set("overlay_layout", m)
         self._maybe_start_stream_preview()
 
+    def _on_panel_dual_split(self, hist_h):
+        """v2.15.0：分割线拖拽结束 → 历史区高度落盘 overlay_dual_hist_h
+        （0=回自动分配；internal 键，恢复默认归零）。"""
+        try:
+            self.config.set("overlay_dual_hist_h", int(hist_h or 0))
+        except Exception:
+            pass
+
     def apply_overlay_from_config(self):
         c = self.config
         # v2.4.0 面板形态：三形态/穿透/描边全部退役，只剩内容相关的外观项
@@ -1010,7 +1020,9 @@ class MainWindow(QMainWindow):
         self.overlay.set_target_lang(str(c.get("target_lang") or "zh-CN"))
         # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复；
         # v2.13.0：恢复后按闸门热启/暂停流式预览（设置页保存路径同样生效）
+        # v2.15.0：分割线拖出的历史区高度随配置恢复（0=自动）
         self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
+        self.overlay.set_dual_hist_h_user(int(c.get("overlay_dual_hist_h") or 0))
         self._maybe_start_stream_preview()
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
         self.overlay.set_pinned(bool(c.get("overlay_pin")))
