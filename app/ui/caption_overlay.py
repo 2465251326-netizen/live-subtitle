@@ -268,7 +268,9 @@ class CaptionOverlay(QWidget):
         # （分隔把手）自由分配；None=自动分配。用户需求："中间的分割线依然
         # 不能自由的上下拉长"
         self._dual_hist_h_user = None
+        self._dual_src_h_user = None       # v2.16.0：原文区用户拖出的高度（px）
         self._dual_split_drag = False
+        self._dual_split_mode = "hist"     # "hist"=历史区底缘 / "src"=原文译文分割线
         self._dual_split_start_y = None
         self._dual_split_start_h = 0
 
@@ -279,20 +281,47 @@ class CaptionOverlay(QWidget):
         dl = QVBoxLayout(self._dual_body)
         dl.setContentsMargins(10, 6, 14, 8)
         dl.setSpacing(5)
-        self._dual_src = QLabel("", self._dual_body)
+        # v2.16.0：原文区/译文区改为**各自可滚动的 QScrollArea**（用户需求：
+        # "原文和译文不是都应该保留吗，可以用滚轮进行滚上滚下查看"——长句
+        # 超出区域高度时不再被裁切，滚轮即可看全）；中间 `_dual_sep` 从装饰
+        # 线升级为**可拖分割把手**（"原文的显示范围太小了，改成可以自由上下
+        # 拉长"——拖动分配原文/译文两区高度，原文区想多大拖多大）。
+        self._dual_src_wrap = QScrollArea(self._dual_body)
+        self._dual_src_wrap.setObjectName("DualSrcWrap")
+        self._dual_src_wrap.setWidgetResizable(True)
+        self._dual_src_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._dual_src_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._dual_src_wrap.viewport().setAutoFillBackground(False)
+        self._dual_src_wrap.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dual_src = QLabel("", self._dual_src_wrap)
         self._dual_src.setObjectName("DualSrc")
         self._dual_src.setWordWrap(True)
         self._dual_src.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._dual_src.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._dual_src_wrap.setWidget(self._dual_src)
         self._dual_sep = QFrame(self._dual_body)
         self._dual_sep.setObjectName("DualSep")
-        self._dual_sep.setFrameShape(QFrame.HLine)
-        self._dual_tgt = QLabel("", self._dual_body)
+        self._dual_sep.setFixedHeight(8)     # 抓取带：内画 1px 线，好抓
+        self._dual_sep.setCursor(Qt.SizeVerCursor)
+        self._dual_tgt_wrap = QScrollArea(self._dual_body)
+        self._dual_tgt_wrap.setObjectName("DualTgtWrap")
+        self._dual_tgt_wrap.setWidgetResizable(True)
+        self._dual_tgt_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._dual_tgt_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._dual_tgt_wrap.viewport().setAutoFillBackground(False)
+        self._dual_tgt_wrap.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dual_tgt = QLabel("", self._dual_tgt_wrap)
         self._dual_tgt.setObjectName("DualTgt")
         self._dual_tgt.setWordWrap(True)
         self._dual_tgt.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        dl.addWidget(self._dual_src)
+        self._dual_tgt.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # v2.16.0：空态占位标记初始化——此前 property 未设时 _sync_dual_visibility
+        # 误判"有译文"，导致空态下分隔线可见（用户截图圈出的那条"神秘线"）
+        self._dual_tgt.setProperty("empty", True)
+        self._dual_tgt_wrap.setWidget(self._dual_tgt)
+        dl.addWidget(self._dual_src_wrap, 1)
         dl.addWidget(self._dual_sep)
-        dl.addWidget(self._dual_tgt, 1)
+        dl.addWidget(self._dual_tgt_wrap, 2)
         outer.addWidget(self._dual_body, 1)
         self._dual_body.hide()
         # v2.15.2：分割线交互改走**事件过滤器**。为什么必须用它：
@@ -306,6 +335,8 @@ class CaptionOverlay(QWidget):
         self._dual_split_watch = [
             self._dual_hist, self._dual_hist.viewport(), self._dual_hist_body,
             self._dual_body, self._dual_src, self._dual_sep, self._dual_tgt,
+            self._dual_src_wrap, self._dual_src_wrap.viewport(),
+            self._dual_tgt_wrap, self._dual_tgt_wrap.viewport(),
         ]
         for _w in self._dual_split_watch:
             _w.installEventFilter(self)
@@ -576,16 +607,17 @@ class CaptionOverlay(QWidget):
         return self._layout_mode == "dual"
 
     def _dual_want_height(self):
-        """dual 正文的内容需求高度。
+        """dual 当前句区的内容需求高度。
 
         QLabel 带 wordWrap 时 sizeHint 是**单行**值，直接用会在长句下裁切
         （真机截图实证）；heightForWidth(可用宽度) 才是换行后的真实高度。
-        常数 25 = dl 上下 margins(6+8) + spacing×2(10) + 分隔线(1)。"""
-        avail = max(80, self._dual_body.width() - 24)   # dl margins 左10+右14
-        src_h = (self._dual_src.heightForWidth(avail)
+        v2.16.0：src/tgt 已各自进 QScrollArea（wrap 内含 2px frame 余量），
+        常数 = sep 抓取带 8 + dl 纵向 margins 14 + spacing×2 10。"""
+        avail = max(80, self._dual_body.width() - 24)
+        src_h = (self._dual_src.heightForWidth(max(40, avail - 2)) + 2
                  if self._dual_src.isVisible() else 0)
-        tgt_h = self._dual_tgt.heightForWidth(avail)
-        return src_h + tgt_h + 25
+        tgt_h = self._dual_tgt.heightForWidth(max(40, avail - 2)) + 2
+        return src_h + tgt_h + 8 + 24
 
     def _on_hist_scroll(self, v):
         """v2.14.0：历史区滚动跟随——用户上滚回看时不自动滚底，回底恢复。"""
@@ -609,17 +641,25 @@ class CaptionOverlay(QWidget):
     def _dual_split_hit(self, global_y):
         """v2.15.0：分割把手命中判定，仅 dual+可见+未收起。参数必须是
         **全局屏幕 y**（见 _dual_hist_bottom_y 的坐标说明）。
-        v2.15.1：命中带中心下移 2px、放宽 ±9——分割线上半落在 QScrollArea
-        内（press 会被它消费），可用的主要是下方（当前句区）一侧，故带心
-        偏下让有效命中区最大化。"""
+        v2.15.2：命中中心 = 历史区底边本身（布局缝隙的视觉中心，±9px）——
+        该点可能落在布局缝隙（无子控件，事件直达 overlay）或 src_wrap 顶部
+        （事件过滤器处理），双通道都按同一中心判定。"""
         return (self._layout_mode == "dual" and not self._collapsed
                 and self._dual_hist.isVisible()
-                and abs(global_y - (self._dual_hist_bottom_y(global_coords=True) + 2)) <= 9)
+                and abs(global_y - self._dual_hist_bottom_y(global_coords=True)) <= 9)
 
     def set_dual_hist_h_user(self, h):
         """v2.15.0：历史区用户高度入口（主窗配置恢复/0=回自动分配）。
         拖分割线改的就是这个值——决定历史区与当前句区的高度比例。"""
         self._dual_hist_h_user = int(h) if h and int(h) >= 40 else None
+        if self._layout_mode == "dual" and not self._collapsed:
+            self._relayout()
+
+    def set_dual_src_h_user(self, h):
+        """v2.16.0：原文区用户高度入口（主窗配置恢复/0=回自动贴内容）。
+        拖原文/译文之间的分割线改的就是这个值——原文区想多大拖多大，
+        译文区吃剩余（两者各自可滚动）。"""
+        self._dual_src_h_user = int(h) if h and int(h) >= 30 else None
         if self._layout_mode == "dual" and not self._collapsed:
             self._relayout()
 
@@ -895,10 +935,15 @@ class CaptionOverlay(QWidget):
             # label 被压在旧高度里，终版长译文底部裁切（真机截图实证）
             self._dual_body.setMinimumHeight(0)
             self._dual_body.setMaximumHeight(16777215)
-            body_want = min(max(self._dual_want_height(), 46), 300)
             chrome = 54 + 12                          # 工具条 + outer margins/spacing
+            sep_h = 8                                 # v2.16.0：分割把手抓取带
+            avail_w = max(80, self._dual_body.width() - 24)
+            src_want = ((self._dual_src.heightForWidth(max(40, avail_w - 2)) + 2)
+                        if self._dual_src.isVisible() else 0)
+            tgt_want = self._dual_tgt.heightForWidth(max(40, avail_w - 2)) + 2
+            body_want = src_want + tgt_want + sep_h + 24   # + dl 纵向 margins/spacing
             if self._user_height:
-                # v2.14.1：拉高 = **锁定面板总高**——原文区吃"总高-工具条-
+                # v2.14.1：拉高 = **锁定面板总高**——当前句区吃"总高-工具条-
                 # 历史"的全部剩余（拖动即时反馈，绝不弹回）；历史区最多占
                 # 总高 55%、保底 56px 可滚。历史无行时当前句区独占整板。
                 # v2.15.0：分割线拖出的历史高度（_dual_hist_h_user）优先——
@@ -949,6 +994,15 @@ class CaptionOverlay(QWidget):
                 else:
                     self._dual_hist.setVisible(False)
                     self._dual_hist.setFixedHeight(0)
+            # v2.16.0：当前句区内部——原文区用户高度（拖 sep 分割线得出）
+            # 固定生效，译文区吃剩余（两者各自可滚动，永不互相裁切）
+            if self._dual_src_h_user:
+                self._dual_src_wrap.setFixedHeight(
+                    max(30, min(self._dual_src_h_user,
+                                max(30, body_h - sep_h - 24 - 40))))
+            else:
+                self._dual_src_wrap.setMinimumHeight(0)
+                self._dual_src_wrap.setMaximumHeight(16777215)
         else:
             self._mini.setVisible(False)
             self._dual_body.setVisible(False)
@@ -1220,7 +1274,15 @@ class CaptionOverlay(QWidget):
             QLabel#DualTgt {{ color: {self._text_color.name()}; }}
             QLabel#DualTgt[spec="true"] {{ color: rgba(255,255,255,205); }}
             QLabel#DualTgt[empty="true"] {{ color: rgba(255,255,255,72); }}
-            QFrame#DualSep {{ border: none; max-height: 1px; background: rgba(255,255,255,26); }}
+            QFrame#DualSep {{ background: rgba(255,255,255,14);
+                              border-top: 1px solid rgba(255,255,255,30);
+                              border-bottom: 1px solid rgba(255,255,255,30); }}
+            QScrollArea#DualSrcWrap {{ background: transparent; border: none; }}
+            QScrollArea#DualSrcWrap > QWidget {{ background: transparent; }}
+            QScrollArea#DualSrcWrap > QWidget > QWidget {{ background: transparent; }}
+            QScrollArea#DualTgtWrap {{ background: transparent; border: none; }}
+            QScrollArea#DualTgtWrap > QWidget {{ background: transparent; }}
+            QScrollArea#DualTgtWrap > QWidget > QWidget {{ background: transparent; }}
             QWidget#PanelRow {{ background: rgba(255,255,255,8); border-radius: 8px;
                                 border-left: 3px solid transparent; }}
             QWidget#PanelRowNewest {{ background: rgba(79,140,255,26); border-radius: 8px;
@@ -1320,13 +1382,19 @@ class CaptionOverlay(QWidget):
                 self._v_resizing = True
                 self._v_resize_start = event.globalPosition().toPoint()
                 self._v_resize_start_h = self.height()
-            elif (self._dual_split_hit(event.globalPosition().toPoint().y())):
-                # v2.15.0：分割把手拖拽——历史区/当前句区高度比例自由分配
-                # v2.15.1：命中判定改用全局坐标（传播事件的 position 不重映射，
-                # 相对坐标判定永远错位——"还是不行"的根因）
+            # v2.15.2：分割拖拽由事件过滤器处理（子控件层面拦截，否则
+            # QScrollArea/占位控件会先消费事件）。
+            # v2.15.3（兜底）：分割线可能落在 hist 与 body 之间的**布局缝隙**
+            # （无子控件，widgetAt 返回面板自己、事件直达本方法）——此命中
+            # 分支必须保留（v2.15.2 清理时误删导致缝隙处拖拽失效，用户实测
+            # "还是不行"）；过滤器路径与本路径按同一命中中心双保险。
+            elif self._dual_split_hit(event.globalPosition().toPoint().y()):
                 self._dual_split_drag = True
+                self._dual_split_mode = "hist"
                 self._dual_split_start_y = event.globalPosition().toPoint()
                 self._dual_split_start_h = self._dual_hist.height()
+                event.accept()
+                return
             else:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 # v2.5.0：精简条上"按住=拖、原地点击=展开"的判定锚点
@@ -1352,14 +1420,12 @@ class CaptionOverlay(QWidget):
             self._relayout()
             event.accept()
             return
+        # v2.15.2：分割拖拽由事件过滤器处理（见 eventFilter/_dual_split_watch）——
+        # mouse move 在子控件忽略后不传播给父级，此路径收不到拖拽事件
         if self._dual_split_drag and event.buttons() & Qt.LeftButton:
-            # v2.15.0：分割把手拖拽——上移历史区变小（原文区变大）、下移相反；
-            # 值记忆在 _dual_hist_h_user，_relayout 按它分配两区高度
-            dy = event.globalPosition().toPoint().y() - self._dual_split_start_y
-            new_h = max(40, min(self._dual_split_start_h + dy,
-                                self.height() - 54 - 46))
-            self._dual_hist_h_user = new_h
-            self._relayout()
+            # v2.15.3（兜底路径）：分割线落在布局缝隙时 press/move 直达本方法
+            # （事件过滤器覆盖不到）——与过滤器路径共用 _dual_split_apply_drag
+            self._dual_split_apply_drag(event.globalPosition().toPoint())
             event.accept()
             return
         if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
@@ -1382,11 +1448,19 @@ class CaptionOverlay(QWidget):
             self.setCursor(Qt.ArrowCursor)
 
     def _dual_split_apply_drag(self, g):
-        """v2.15.2：按当前全局鼠标位置应用分割拖拽（历史区高度=起始值+dy）。"""
+        """v2.16.0：按分割模式应用拖拽。
+        "src"（原文/译文分割线）：上移原文区变小、下移变大（译文区让位，
+        各自可滚动不怕挤没）；"hist"（历史区底缘）：上移历史变小、下移变大。"""
         dy = g.y() - self._dual_split_start_y.y()
-        new_h = max(40, min(self._dual_split_start_h + dy,
-                            max(40, self.height() - 54 - 46)))
-        self._dual_hist_h_user = new_h
+        if self._dual_split_mode == "src":
+            body_avail = max(120, self._dual_body.height() - 8 - 24)
+            new_h = max(30, min(self._dual_split_start_h + dy,
+                                max(30, body_avail - 40)))
+            self._dual_src_h_user = new_h
+        else:
+            new_h = max(40, min(self._dual_split_start_h + dy,
+                                max(40, self.height() - 54 - 46)))
+            self._dual_hist_h_user = new_h
         self._relayout()
 
     def eventFilter(self, obj, ev):
@@ -1408,16 +1482,27 @@ class CaptionOverlay(QWidget):
                     self._dual_split_apply_drag(g)
                     return True
                 if hasattr(obj, "setCursor"):
-                    if self._dual_split_hit(g.y()):
+                    if (self._dual_split_hit(g.y())
+                            or (obj is self._dual_sep and not self._collapsed)):
                         obj.setCursor(Qt.SizeVerCursor)
                     else:
                         obj.setCursor(Qt.ArrowCursor)
             elif t == QEvent.Type.MouseButtonPress and ev.button() == Qt.LeftButton:
                 g = ev.globalPosition().toPoint()
-                if self._dual_split_hit(g.y()):
+                # v2.16.0：两个分割目标——sep 本体（原文/译文高度分配）、
+                # 历史区底边（历史/当前句高度分配）
+                mode = None
+                if obj is self._dual_sep:
+                    mode = "src"
+                elif self._dual_split_hit(g.y()):
+                    mode = "hist"
+                if mode:
                     self._dual_split_drag = True
+                    self._dual_split_mode = mode
                     self._dual_split_start_y = g
-                    self._dual_split_start_h = self._dual_hist.height()
+                    self._dual_split_start_h = (self._dual_hist.height()
+                                                if mode == "hist"
+                                                else self._dual_src_wrap.height())
                     return True           # 拦下：防止 QScrollArea 抢走拖拽
             elif t == QEvent.Type.MouseMove and self._dual_split_drag:
                 self._dual_split_apply_drag(ev.globalPosition().toPoint())
@@ -1426,7 +1511,10 @@ class CaptionOverlay(QWidget):
                 self._dual_split_drag = False
                 self._dual_split_apply_drag(ev.globalPosition().toPoint())
                 if getattr(self, "_on_dual_split", None):
-                    self._on_dual_split(self._dual_hist_h_user or 0)
+                    if self._dual_split_mode == "src":
+                        self._on_dual_split("src", self._dual_src_h_user or 0)
+                    else:
+                        self._on_dual_split("hist", self._dual_hist_h_user or 0)
                 return True
         return super().eventFilter(obj, ev)
 

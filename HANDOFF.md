@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 v2.15.2（分割拖拽事件路由重构：事件过滤器，见 CHANGELOG；v2.15.1 坐标错位修复见 CHANGELOG）
+> 最后更新：2026-09-16 v2.15.3（分割线"布局缝隙"路径修复：过滤器+面板兜底双通道，见 CHANGELOG；v2.15.0-2.15.2 分割拖拽三轮修复史见 CHANGELOG 与第十九节追记）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.15.2**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.15.3**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -376,7 +376,6 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **易错点**：_on_translated 里 push_history 后**别忘了 `_dual_current=""`**——首轮实现漏写导致数据层当前句不归零（集成锁当场抓获：'终版沉历史后当前句数据清空'）。
 - **锁**：t_main_partial_preview_alignment 升级（hist_rows==1 / hist_base / current 清空）。单元 78 / 集成 99 全绿。
 - **版本**：v2.14.0（新功能 minor）。CI 不监控（用户既定偏好）。
-- **v2.15.x 追记**：分割把手三轮修复——① v2.15.1 命中坐标错位：**Qt 事件从子控件传播到父级时 position 不重映射**（相对原接收者），overlay 的 mousePress/move 拿子控件系坐标做命中判定必然失败，**凡父子命中判定一律用 globalPosition 与 mapToGlobal 比对**；② QScrollArea 会消费其内部 press（分割带上半不可用）→ 命中带心下移让 body 侧最大化；③ "≥40px 才显示"的历史区门槛在锁定/自动两个分支各有一份，v2.14.1 只修了一处——**同款阈值多分支并存时必须全局搜索同步**。锁：`t_dual_split_hit_global`（钉死局部坐标恒 False 的旧行为）。
-- **v2.15.2 追记（坐标修复后仍不行的最终根因）**：① Qt 的 **mouse move/hover 在子控件忽略后不传播给父级**（只有 press 重新投递）→ 悬停光标反馈永远不工作、拖动中 move 也可能收不到；② 命中带上半在 QScrollArea 内 press 被消费。**最终方案 = 事件过滤器**：`_dual_split_watch`（7 个子控件：hist/viewport/hist_body/body/src/sep/tgt）installEventFilter，过滤器内处理 press(命中→启动拖拽+拦截防 QScrollArea 抢)/move(应用高度)/release(落盘回调)，坐标全用 globalPosition。**验证方法：QMouseEvent + QApplication.sendEvent 按真实路径驱动**（widgetAt 找分割点实际接收控件 → sendEvent → 过滤器先于 widget 处理）——比直接调内部方法真实、比 SendInput 可控，offscreen 可用。锁：`t_overlay_dual_split_real_drag`。
+- **v2.15.x 追记**：分割把手**四轮**修复（v2.15.0 实现 → v2.15.1 坐标错位 → v2.15.2 事件过滤器 → v2.15.3 布局缝隙兜底）。v2.15.2 教训同前述（move/hover 不传播、QScrollArea 消费 press、position 不重映射，最终方案 = 7 子控件事件过滤器 + QTest 式 sendEvent 真实事件流验证）。**v2.15.3 最终一块拼图**：分割线恰好落在 hist 与 body 之间的 **layout spacing 缝隙**（无子控件）——press 时 `widgetAt` 返回面板自身、事件直达 `mousePressEvent`，而该分支在 v2.15.2 清理时误删 → 缝隙路径无主。修复 = 恢复面板级命中兜底分支（与过滤器共用 `_dual_split_apply_drag`），**过滤器（点在子控件上）+ 面板兜底（点在缝隙）双通道**。经验：事件过滤器不是银弹——**布局缝隙上的事件没有子控件可过滤**，面板自身的事件处理必须保留；验证务必用真实坐标（widgetAt 探测接收者）而非假设事件走向。
 - **v2.14.1 追记（同夜）**：用户实测"底缘完全拉不了"——v2.14.0 把拉高增量全分给历史区，历史无行时 hist_h 强制 0、body 固定内容高 → 面板弹回。修正语义：**拉高=锁定面板总高**，原文区吃"总高-工具条-历史"全部剩余，历史最多 55%、保底 56px 可滚（单行内容需求 38px 曾被"≥40 才显示"门槛整条杀掉，一并修）；底缘新增横向三点把手（此前隐形）。锁：`t_overlay_dual_user_height_body`（拉高锁定总高/body 变大/历史不压瘪）。教训：**新增"空间分配"逻辑时，每一类内容状态（空/单行/多行）都要有断言**——v2.14.0 的锁只测了"有历史行"路径，"无历史行"路径的拉高回归漏网。
 
