@@ -500,7 +500,12 @@ class TranslateThread(QThread):
             return cached[0], cached[1]
         engine = ENGINES[self._active_engine]
         source = None
-        if self._active_engine != "google" and detected and detected != "auto":
+        # v2.7.0（T4）：google 也跟随 whisper 判定语言（此前刻意 sl=auto 让
+        # Google 对孤立一句重新猜语种——短句/歧句常被猜错方向，如 "Cheers."
+        # 猜成德语）。whisper 用整段音频判的语言远强于单句文本，MyMemory/
+        # Argos 自 v2.0.1 起就在用它，缓存键也已含语言维度，方向本应一致。
+        # 错锁风险由识别侧语言复检（engine T5）兜底。
+        if detected and detected != "auto":
             source = WHISPER_LANG_MAP.get(detected, detected)
         result = engine.translate(text, source, self.target)
         # v2.6.0（R1）：实体还原后再入缓存——缓存中的译文即上屏所见
@@ -527,6 +532,22 @@ class TranslateThread(QThread):
             self.status_changed.emit(f"主引擎 {self._primary_engine} 已恢复，自动切回")
             self._active_engine = self._primary_engine
 
+    def _preload_argos(self):
+        """后台预载目标语言方向的离线包（v2.7.0 T7）。失败静默——
+        真实翻译调用仍会走原有加载路径；_get_translator 自带缓存+双检锁，
+        与首次真实调用天然幂等合流。"""
+        try:
+            from .offline_pack import _get_translator, list_installed
+            tgt = "zh" if self.target.startswith("zh") else self.target
+            for pair in list_installed():
+                if self._stop:
+                    return
+                src, t = pair[0], pair[1]
+                if t == tgt:
+                    _get_translator(src, tgt)
+        except Exception:
+            pass
+
     def run(self):
         self._active_engine = self.engine_name
         if self.engine_name == "auto":
@@ -547,6 +568,11 @@ class TranslateThread(QThread):
         self._primary_engine = self._active_engine
         self._last_probe_at = time.monotonic()
         app_log.log("translate.engine_selected", engine=self._active_engine, target=self.target)
+        # v2.7.0（T7）：离线包预载——PackTranslator 的 CTranslate2 模型在首次
+        # translate() 同步加载（数秒），期间翻译线程整段冻结、队列（上限 5）
+        # 溢出丢早期字幕。选定引擎后把目标方向已装包后台预载，首句不再等。
+        if self._active_engine == "argos" or self.engine_name == "auto":
+            threading.Thread(target=self._preload_argos, daemon=True).start()
         # v2.6.2（P1-4）：排水式退出——_stop 置位后继续消费余段；队列空且
         # 在宽限期内继续等待（asr 尾句转写 0.5~10s 后才经主窗口转发进来），
         # 收到即翻，宽限超时才退出。旧 while not self._stop 会在尾句到达前

@@ -955,6 +955,152 @@ def test_model_load_mutex():
         eng.AsrThread._construct_model = orig_construct
 
 
+# ---------- v2.7.0 高杠杆批（T1~T7）单元锁 ----------
+
+def test_transcribe_kwargs_hotwords():
+    """v2.7.0（T3）：热词→initial_prompt 注入/截断；空值不注入。"""
+    from app.asr.engine import transcribe_kwargs
+    assert "initial_prompt" not in transcribe_kwargs("fast")
+    assert "initial_prompt" not in transcribe_kwargs("fast", hotwords="   ")
+    kw = transcribe_kwargs("fast", hotwords="Noriega、OpenAI")
+    assert kw["initial_prompt"] == "Noriega、OpenAI"
+    kw2 = transcribe_kwargs("fast", hotwords="词" * 300)
+    assert len(kw2["initial_prompt"]) == 160, "截断防挤占 224 token 解码预算"
+
+
+def test_asr_lang_recheck():
+    """v2.7.0（T5）：auto 锁定后每 20 段复检——高置信不一致切换；
+    低置信不一致丢段维持原锁。"""
+    import numpy as np
+    import app.asr.engine as eng
+
+    class Seg:
+        def __init__(self, t, end=0.8, lp=-0.3):
+            self.text, self.end = t, end
+            self.avg_logprob, self.no_speech_prob = lp, 0.0
+
+    class Info:
+        def __init__(self, lang, prob):
+            self.language, self.language_probability = lang, prob
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = []
+            self.rc_lang, self.rc_prob = "ja", 0.9
+
+        def transcribe(self, audio, **kw):
+            self.calls.append(dict(kw))
+            if "language" not in kw:          # 复检段：无锁重听
+                return [Seg("こんにちは")], Info(self.rc_lang, self.rc_prob)
+            return [Seg("hello world")], Info(kw["language"], 1.0)
+
+    at = eng.AsrThread("tiny", "cpu", "auto")
+    at._model = fm = FakeModel()
+    at._last_lang = "en"
+    events = []
+    at.text_ready.connect(lambda *a: events.append(a))
+    at.status_changed.connect(lambda s: events.append(("status", s)))
+    for _ in range(19):
+        at._transcribe(np.zeros(16000, dtype=np.float32))
+        assert fm.calls[-1]["language"] == "en"
+    at._transcribe(np.zeros(16000, dtype=np.float32))   # 第 20 段：复检
+    assert "language" not in fm.calls[-1], "复检段必须解除语言约束"
+    assert at._last_lang == "ja", "高置信不一致应切换锁"
+    for _ in range(19):
+        at._transcribe(np.zeros(16000, dtype=np.float32))
+    assert fm.calls[-1]["language"] == "ja", "切换后按新锁转写"
+    fm.rc_lang, fm.rc_prob = "ko", 0.5                  # 第 40 段：低置信不一致
+    n_before = len([e for e in events if e != "status" and not (isinstance(e, tuple) and e[0] == "status")])
+    at._transcribe(np.zeros(16000, dtype=np.float32))
+    assert at._last_lang == "ja", "低置信不一致必须维持原锁"
+    assert fm.calls[-1].get("language") is None
+    n_after = len([e for e in events if e != "status" and not (isinstance(e, tuple) and e[0] == "status")])
+    assert n_after == n_before, "不一致复检段必须丢弃不上屏"
+
+
+def test_prewarm_completes_warmup():
+    """v2.7.0（T6）：预热加载成功后必须补跑一次真实转写（_warmup）；
+    加载中被停止则不跑。"""
+    import app.asr.engine as emod
+    hits = {"load": 0, "warm": 0}
+    orig_load = emod.AsrThread.__dict__["_load_model"]
+    orig_warm = emod.AsrThread.__dict__["_warmup"]
+    orig_cached = emod.AsrThread.__dict__["model_cached"]
+
+    def fake_load(self, blocking=True):
+        hits["load"] += 1
+        self._device_used = "cpu"
+        return True
+
+    def fake_warm(self):
+        hits["warm"] += 1
+
+    emod.AsrThread._load_model = fake_load
+    emod.AsrThread._warmup = fake_warm
+    emod.AsrThread.model_cached = staticmethod(lambda s: True)
+    try:
+        emod.PrewarmWorker("tiny", "cpu").run()
+        assert hits == {"load": 1, "warm": 1}, f"预热应补完 warmup: {hits}"
+        # 模拟"加载期间用户停止"：fake 加载过程把 worker 的 _stop 置起
+        w2 = emod.PrewarmWorker("tiny", "cpu")
+
+        def fake_load_stopped(self, blocking=True):
+            w2._stop = True
+            return True
+
+        emod.AsrThread._load_model = fake_load_stopped
+        w2.run()
+        assert hits["warm"] == 1, "加载中被停止不应再跑 warmup"
+    finally:
+        emod.AsrThread._load_model = orig_load
+        emod.AsrThread._warmup = orig_warm
+        emod.AsrThread.model_cached = orig_cached
+
+
+def test_do_translate_google_lang_passthrough():
+    """v2.7.0（T4）：google 也携带 whisper 判定语言（sl=en），不再每句
+    sl=auto 重新猜；无判定结果仍走 auto；zh 归一为 zh-CN。"""
+    import time as _t
+    from app.translate import translator as tr
+    tt = tr.TranslateThread("google", "zh-CN")
+    tt._active_engine = "google"
+    seen = []
+
+    class G:
+        def translate(self, text, source, target):
+            seen.append(source)
+            return ("译文" + text, "en")
+
+    orig = tr.ENGINES["google"]
+    tr.ENGINES["google"] = G()
+    try:
+        stamp = f"{_t.time()}"
+        tt._do_translate(f"hello there {stamp}", "en")
+        tt._do_translate(f"cheers {stamp}", "auto")
+        tt._do_translate(f"bonjour {stamp}", "fr")
+        assert seen == ["en", None, "fr"], seen
+    finally:
+        tr.ENGINES["google"] = orig
+
+
+def test_preload_argos_direction():
+    """v2.7.0（T7）：离线包预载只载目标语言方向，非目标方向不碰。"""
+    from app.translate import translator as tr
+    from app.translate import offline_pack as op
+    calls = []
+    orig_g, orig_l = op._get_translator, op.list_installed
+    op._get_translator = lambda s, t: calls.append((s, t))
+    op.list_installed = lambda: [("en", "zh"), ("ja", "zh"), ("fr", "en")]
+    try:
+        tt = tr.TranslateThread("auto", "zh-CN")
+        tt._stop = False
+        tt._preload_argos()
+        assert ("en", "zh") in calls and ("ja", "zh") in calls
+        assert ("fr", "en") not in calls, "非目标方向不该预载"
+    finally:
+        op._get_translator, op.list_installed = orig_g, orig_l
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -154,7 +154,10 @@ _FIELD_SPECS = {
     "asr_accuracy":         ("pipeline", "combo"),
     "hallucination_filter": ("pipeline", "check"),
     "silero_vad":           ("pipeline", "check"),
+    "lang_recheck":         ("pipeline", "check"),
     "low_latency_mode":     ("pipeline", "check"),
+    "early_flush":          ("pipeline", "check"),
+    "asr_hotwords":         ("pipeline", "text"),
     "prewarm_model":        ("instant", "check"),
     "mishear_map":          ("pipeline", "mishear"),
     "translate_fix_map":    ("pipeline", "mishear"),
@@ -242,6 +245,16 @@ _STD_ROWS = [
      "kind": "check", "title": "低延迟模式（直播/新闻推荐）",
      "desc": "字幕更快上屏（看视频强烈推荐）：分段上限 14 秒→6 秒、静音判停收紧，连续说话时字幕不再攒十几秒才出。v2.3.7 起翻译自动攒整句"
              "（上屏快、译文仍是完整句子，不再半截话各翻各的）；显示上句子可能切短。",
+     "opts": {}},
+    {"key": "early_flush", "attr": "early_flush_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "提前冲句（低延迟增强）",
+     "desc": "说完最后一句后的等待从 3.5 秒缩短到 2 秒即冲整句译文（静默判据不变，只是地板更低）。"
+             "连续说话时译文节奏不受影响（仍按整句成批出）；若发现句子常被切短可关闭。仅低延迟模式生效。",
+     "opts": {}},
+    {"key": "lang_recheck", "attr": "lang_recheck_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "语言复检",
+     "desc": "自动检测下每 20 段临时解除语言锁定重听一次：视频中途换语言、或开头锁错语言时能自动纠正；"
+             "复检不确定时维持原语言，不影响识别。",
      "opts": {}},
     {"key": "prewarm_model", "attr": "prewarm_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "启动时预热模型",
@@ -920,9 +933,19 @@ class SettingsDialog(QDialog):
                   "一键检测显卡、驱动与 CUDA 可用性，附配置教程与注意事项。",
                   self.gpu_check_button)
         self._std_rows(page, "asr", "语言与计算",
-                       keys=("hallucination_filter", "silero_vad", "low_latency_mode",
-                             "prewarm_model"))
+                       keys=("hallucination_filter", "silero_vad", "lang_recheck",
+                             "low_latency_mode", "early_flush", "prewarm_model"))
         self._section(page, "识别质量调优")
+        # v2.7.0（T3）：热词提示——事前纠正专名误听，与事后修正词典互补
+        self.hotwords_edit = QLineEdit()
+        self.hotwords_edit.setPlaceholderText(
+            "人名/地名/产品名等，用逗号分隔，如：Noriega、OpenAI、霍尔木兹海峡（留空=关闭）")
+        self.hotwords_edit.setClearButtonEnabled(True)
+        self._row(page, "热词提示",
+                  "识别前把这些专名提示给模型，专名命中率有改善可能（不保证，效果因内容而异）；"
+                  "对已错识别的历史字幕无效，纠正既有文本请用下方误听修正词典。重启翻译后生效。",
+                  self.hotwords_edit)
+        self.hotwords_edit.editingFinished.connect(self._on_hotwords_changed)
         self.mishear_edit = QPlainTextEdit()
         self.mishear_edit.setPlaceholderText(
             "每行一条误听修正：错误文本=正确文本\n例如：\nfeline=feel in\n芯片组=新奇点")
@@ -1960,6 +1983,7 @@ class SettingsDialog(QDialog):
                                                                      c.get("translate_fix_map"))))
         set_combo(self.proxy_combo, "proxy_mode")
         self.proxy_url_edit.setText(str(values.get("proxy_url", c.get("proxy_url")) or ""))
+        self.hotwords_edit.setText(str(values.get("asr_hotwords", c.get("asr_hotwords")) or ""))
         self.overlay_font_spin.setValue(int(values.get("overlay_font_size", c.get("overlay_font_size"))))
         self.bg_opacity_slider.setValue(int(values.get("overlay_bg_opacity", c.get("overlay_bg_opacity"))))
         self.bg_opacity_label.setText(f"{self.bg_opacity_slider.value()}%")
@@ -2015,6 +2039,12 @@ class SettingsDialog(QDialog):
         url = self.proxy_url_edit.text().strip()
         if url != (self.c.get("proxy_url") or ""):
             self._stage("proxy_url", url)
+
+    def _on_hotwords_changed(self):
+        # v2.7.0（T3）：热词提示（保存并应用后、下次开始翻译生效）
+        v = self.hotwords_edit.text().strip()
+        if v != (self.c.get("asr_hotwords") or ""):
+            self._stage("asr_hotwords", v)
 
     def _update_proxy_manual_enabled(self):
         manual = self.proxy_combo.currentData() == "manual"

@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.6.6"
+APP_VERSION = "2.7.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -52,6 +52,12 @@ DEFAULTS = {
     "low_latency_mode": True,          # v2.3.3（P1）：低延迟分段（6s 上限+收紧判停）；
                                        # v2.5.4 默认开——看视频字幕对延迟敏感（连续语流
                                        # 普通模式攒到 14s 才切句，实测感知"太慢"的主因）
+    "early_flush": True,               # v2.7.0（T2）：低延迟提前冲句——whisper 段内"人声已停多久"
+                                       # +末片置信度为证据时，攒句静默地板 3.5s→1.2s（仅低延迟模式生效）
+    "asr_hotwords": "",                # v2.7.0（T3）：热词提示——人名/专名/术语注入 whisper
+                                       # initial_prompt，事前纠正专名误听（留空=关闭）
+    "lang_recheck": True,              # v2.7.0（T5）：语言锁复检——自动模式下每 20 段解除
+                                       # 锁定重听一次，高置信不一致才切换（防错锁终身）
     "prewarm_model": True,             # v2.3.5（P5）：启动即后台预热已下载模型，消除"开始翻译"后近 1 分钟冷加载
     "mishear_map": {},                 # 误听修正词典 {错: 对}，精确子串替换
     "translate_fix_map": {},           # v2.3.6（P7）：译文修正词典 {错译: 正解}，对翻译结果精确替换

@@ -283,31 +283,77 @@ class CaptionOverlay(QWidget):
         self._schedule_relayout()
         return item
 
+    # ---------- v2.7.0（T1）：待决行按原文配对，杜绝"译文配错原文" ----------
+    # 旧设计全板只有一个"待决槽"：下一句 show_pending 会覆盖槽内容，上一句
+    # 迟到的译文就落到新句的原文行上（用户看到"A 的原文配 B 的翻译"）。
+    # 现允许多条待决行并存，结果只填匹配行；攒句合并的前片由 merged 名单收编。
+
+    @staticmethod
+    def _starts_new_sentence(text):
+        """新句判据（与主窗 _starts_new_sentence 同源）：首字符大写拉丁/CJK/数字。"""
+        t = (text or "").lstrip()
+        if not t:
+            return False
+        ch = t[0]
+        return ch.isupper() or ch.isdigit() or "\u4e00" <= ch <= "\u9fff"
+
+    def _find_pending(self, source_text):
+        key = (source_text or "").strip()
+        if not key:
+            return None
+        for it in reversed(self._rows):
+            if it["pending"] and (it["src_text"] or "").strip() == key:
+                return it
+        return None
+
+    def _merge_pending(self, texts):
+        """收编被并入整句的前片占位行（与主窗卡片 set_merged_away 同语义，
+        面板行直接移除——旧单槽设计里它们本就被覆盖消失，观感一致）。"""
+        if not texts:
+            return
+        tset = {(t or "").strip() for t in texts if (t or "").strip()}
+        if not tset:
+            return
+        for it in list(self._rows):
+            if it["pending"] and (it["src_text"] or "").strip() in tset:
+                self._rows.remove(it)
+                it["row"].setParent(None)
+                it["row"].deleteLater()
+
     def show_pending(self, source_text):
-        """识别文本先上屏，译文占位（两段式，兼容旧主窗调用）。"""
-        if self._pending_row is not None and self._pending_row["pending"]:
-            r = self._pending_row
-            r["src_text"] = source_text
-            r["src"].setText(source_text)
-            r["src"].setVisible(bool(source_text) and self._show_source)
-            r["tgt"].setText("⟳ 识别中…")
+        """识别文本先上屏，译文占位（两段式）。同句重复调用幂等（主窗每段双发）。"""
+        r = self._find_pending(source_text)
+        if r is not None:
+            return
+        last = None
+        for it in reversed(self._rows):
+            if it["pending"]:
+                last = it
+                break
+        if (last is not None and source_text
+                and not self._starts_new_sentence(source_text)):
+            # 延续片：同一句在长行上生长（保持旧"单行生长"观感）
+            last["src_text"] = source_text
+            last["src"].setText(source_text)
             self._relayout()
             self._schedule_relayout()
             return
         self._pending_row = self._add_row(source_text, "⟳ 识别中…", True)
 
-    def show_pending_result(self, source_text, target_text, show_source=True):
-        """译文就绪：补齐占位行或新建完成行。"""
+    def show_pending_result(self, source_text, target_text, show_source=True,
+                            merged_from=None):
+        """译文就绪：补齐**原文匹配**的占位行；无匹配则新建完成行（迟到旧句
+        排到队尾，好过配错行）。merged_from=攒句合并的前片名单（主窗传入）。"""
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
-        r = self._pending_row
-        if r is not None and r["pending"]:
+        self._merge_pending(merged_from)
+        r = self._find_pending(source_text)
+        if r is not None:
             r["pending"] = False
             r["src_text"], r["tgt_text"] = source_text or "", target_text or ""
             r["src"].setText(source_text or "")
             r["src"].setVisible(bool(source_text) and self._show_source)
             r["tgt"].setText(target_text or "")
-            self._pending_row = None
             if self._collapsed:
                 self._update_mini()   # v2.5.0：精简条正在显示这句占位时同步成译文
             self._relayout()

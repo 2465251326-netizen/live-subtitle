@@ -167,6 +167,73 @@ def t_overlay_row_never_flash_window():
     ov.deleteLater()
 check("panel: 行标签永不成顶层窗口（v2.6.6 瞬窗回归）", t_overlay_row_never_flash_window)
 
+def t_overlay_pending_pairing_no_crosstalk():
+    # v2.7.0（T1）：旧"单待决槽"设计里，下一句覆盖槽后上一句迟到译文会
+    # 配到错误原文行。现多待决并存+按原文匹配；merged_from 收编攒句前片。
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_show_source(True)
+    ov.show_pending("Hello world.")
+    ov.show_pending("Another thing happened.")          # 大写开头=新句，并存不覆盖
+    ov.show_pending_result("Hello world.", "你好世界", True)
+    r1 = [r for r in ov._rows if r["src_text"] == "Hello world."][0]
+    r2 = [r for r in ov._rows if r["src_text"] == "Another thing happened."][0]
+    assert r1["tgt"].text() == "你好世界" and not r1["pending"]
+    assert "⟳" in r2["tgt"].text() and r2["pending"], "B 行不得被 A 的译文填走"
+    ov.show_pending_result("Another thing happened.", "另一件事", True)
+    assert r2["tgt"].text() == "另一件事" and not r2["pending"]
+    # 同句双发幂等（主窗每段调两次 show_pending）
+    n0 = len(ov._rows)
+    ov.show_pending("Dup check.")
+    ov.show_pending("Dup check.")
+    assert len(ov._rows) == n0 + 1, "重复调用不得建行"
+    # 延续片在当前待决行上生长
+    ov.show_pending_result("Dup check.", "重复检查", True)
+    ov.show_pending("keep going")
+    ov.show_pending("keep going now")                   # 小写开头=延续→生长
+    assert sum(1 for r in ov._rows if r["pending"]) == 1
+    ov.show_pending_result("keep going now", "继续走", True)
+    # merged_from：整句结果落地时收编被并入的前片占位行
+    ov.show_pending("Alpha.")
+    ov.show_pending("Beta.")
+    ov.show_pending_result("Beta.", "贝塔", True, merged_from=["Alpha."])
+    assert all(r["src_text"] != "Alpha." for r in ov._rows), "前片占位行应被移除"
+    assert not any(r["pending"] for r in ov._rows)
+    ov.deleteLater()
+check("panel: 待决行按原文配对不串线（v2.7.0 T1）", t_overlay_pending_pairing_no_crosstalk)
+
+def t_early_flush_decision():
+    # v2.7.0（T2）：提前冲句判据——开关开时静默 2.0s 地板即送；静默不足不送；
+    # 开关关回 3.5s 旧地板。deadline 拉远隔离兜底路径。
+    # （审计原设想 1.2s+段内尾静音证据——真机证伪：whisper 末片时间戳拉伸到
+    #  音频尾，tail_q 恒≈0；降为纯时间地板一档，定位=末句抢救）
+    import time as _t
+    w = MainWindow()
+    w.config.set("low_latency_mode", True)
+    w.config.set("early_flush", True)
+    w._tgroup = ["hello there."]
+    w._tgroup_start = _t.monotonic()
+    w._tgroup_deadline = _t.monotonic() + 99
+    w._last_level_sound = _t.monotonic() - 2.2          # 静默 2.2s：>2.0 且 <3.5
+    flushed = []
+    w._flush_tgroup = lambda: flushed.append(1)
+    w._tgroup_tick()
+    assert flushed, "开关开+静默 2.2s 应提前冲"
+    flushed.clear()
+    w._last_level_sound = _t.monotonic() - 1.5          # 静默不足 2.0s
+    w._tgroup_tick()
+    assert not flushed, "静默未达地板不得冲"
+    flushed.clear()
+    w._last_level_sound = _t.monotonic() - 2.2
+    w.config.set("early_flush", False)                  # 开关关→旧 3.5s 地板
+    w._tgroup_tick()
+    assert not flushed, "开关关闭必须回到 3.5s 旧行为"
+    tt = getattr(w, "_tgroup_timer", None)
+    if tt is not None:
+        tt.stop()
+    w.deleteLater()
+check("pipeline: 提前冲句判据与开关（v2.7.0 T2）", t_early_flush_decision)
+
 def t_overlay_trim():
     ov = CaptionOverlay()
     for i in range(60):
@@ -1762,7 +1829,7 @@ def t_session_guard_rejects_stale_thread():
     old_asr.status_changed.connect(w._on_asr_status)
     # 旧线程迟到原文/译文/状态：全部拦截
     w._caption_seen = False
-    old_asr.text_ready.emit("stale text", "en", 1.0, -1.0)
+    old_asr.text_ready.emit("stale text", "en", 1.0, -1.0, 0.0, 0.0)
     assert w._caption_seen is False, "旧线程迟到的原文不得上屏"
     before = w.scroll_layout.count()
     old_tr.result_ready.emit("stale text", "旧译文", "argos", "en", "")
@@ -1776,7 +1843,7 @@ def t_session_guard_rejects_stale_thread():
     old_tr.result_ready.emit("stale 2", "x", "argos", "en", "")
     assert w.scroll_layout.count() == before, "旧线程第二次迟到译文仍不得建卡"
     # 新线程信号放行（身份匹配）
-    new_asr.text_ready.emit("fresh text", "en", 1.0, -1.0)
+    new_asr.text_ready.emit("fresh text", "en", 1.0, -1.0, 0.0, 0.0)
     assert w._caption_seen is True, "当前会话线程的原文应正常上屏"
     w._quitting = True
     w._teardown()

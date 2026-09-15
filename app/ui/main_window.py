@@ -1125,6 +1125,8 @@ class MainWindow(QMainWindow):
             mishear_map=dict(c.get("mishear_map") or {}),
             accuracy=str(c.get("asr_accuracy") or "fast"),
             mishear_whole_word=bool(c.get("fix_whole_word")),
+            hotwords=str(c.get("asr_hotwords") or ""),
+            lang_recheck=bool(c.get("lang_recheck")),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(self._on_asr_status)
@@ -1568,7 +1570,8 @@ class MainWindow(QMainWindow):
         else:
             self.engine_status_label.setText(msg)
 
-    def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
+    def _on_asr_text(self, text, detected, duration, t_flush=-1.0,
+                     tail_q=0.0, last_lp=0.0):
         # v2.6.2（P1-4/P1-6）：会话身份守卫替代 running 守卫——停止后旧
         # 会话的尾句仍要放行上屏（排水链最后一步，"说完立刻停"不再丢句），
         # 新会话开始后旧线程迟到信号按身份拦截
@@ -1582,6 +1585,9 @@ class MainWindow(QMainWindow):
             self._set_engine_status(getattr(self, "_engine_status_text", ""))
             self.update_overlay_status()
         self._caption_seen = True
+        # v2.7.0（T2）：暂存末片"段内尾静音/置信度"，供攒句提前冲判据使用
+        self._last_tail_q = float(tail_q or 0.0)
+        self._last_lp = float(last_lp or 0.0)
         # v2.3.20（P26）：识别段延迟——"音频切分完成→原文上屏"（含判停、
         # 排队、转写、上屏全程）。t_flush 由 AsrThread 随 text_ready 第 4 参带来。
         if t_flush and t_flush > 0:
@@ -1666,6 +1672,7 @@ class MainWindow(QMainWindow):
             self._flush_tgroup()
             grp = self._tgroup
         grp.append(text)
+        self._tgroup_last_at = time.monotonic()   # v2.7.0（T2）：攒住时长遥测起点
         if len(grp) == 1:
             # v2.3.18（P23）：组寿命起点——绝对上限用它算，续片无法续命
             self._tgroup_start = time.monotonic()
@@ -1685,7 +1692,7 @@ class MainWindow(QMainWindow):
         t = getattr(self, "_tgroup_timer", None)
         if t is None:
             t = QTimer(self)
-            t.setInterval(1000)
+            t.setInterval(250)   # v2.7.0（T2）：1s→250ms，配合提前冲把判定粒度做细
             t.timeout.connect(self._tgroup_tick)
             self._tgroup_timer = t
         t.start()
@@ -1704,7 +1711,14 @@ class MainWindow(QMainWindow):
         now = time.monotonic()
         quiet_for = now - getattr(self, "_last_level_sound", 0.0)
         final_looking = self._looks_final(self._tgroup[-1])
-        if (quiet_for >= 3.5 and final_looking) or now >= getattr(self, "_tgroup_deadline", 0.0):
+        # v2.7.0（T2）：提前冲句——静默地板 3.5s→2.0s。实测修正：审计设想用
+        # "段内尾静音(whisper seg.end)"做额外证据，但真机验证 whisper 会把末片
+        # 结束时间拉伸补齐到音频尾（tail_q 恒≈0，12:57/13:00 两轮 hold_p50
+        # 5.0/6.0 铁证），故只保留时间地板一档。收益定位=末句抢救：连续语流中
+        # 本句译文由"下一句到达"冲刷（两轨制固有，hold≈6s 不变）；说话结束/
+        # 场景切换后的最后一句，此前要干等 3.5s 静默才冲，现 2.0s。
+        floor = 2.0 if bool(self.config.get("early_flush")) else 3.5
+        if (quiet_for >= floor and final_looking) or now >= getattr(self, "_tgroup_deadline", 0.0):
             self._flush_tgroup()
             t = getattr(self, "_tgroup_timer", None)
             if t is not None:
@@ -1733,6 +1747,8 @@ class MainWindow(QMainWindow):
 
     def _flush_tgroup(self):
         grp = getattr(self, "_tgroup", None) or []
+        hold_at = getattr(self, "_tgroup_last_at", None)   # v2.7.0（T2）遥测
+        self._tgroup_last_at = None
         self._tgroup = []
         self._tgroup_start = None      # v2.3.18（P23）：组起点随组清空
         t = getattr(self, "_tgroup_timer", None)
@@ -1741,6 +1757,10 @@ class MainWindow(QMainWindow):
         tr = self._active_translate()   # v2.6.2（P1-4）：排水期解析到会话身份线程
         if not grp or tr is None:
             return
+        # v2.7.0（T2）："末片到达→整句冲送"的攒住时长入遥测——提前冲是否
+        # 起效，看日志 hold_p50 一行即证（此前"慢"的大头恰好不在任何遥测里）
+        if hold_at is not None:
+            self._lat_add("_lat_hold", max(0.0, time.monotonic() - hold_at))
         joined = " ".join(grp)
         combined = "".join(grp) if any("\u4e00" <= c <= "\u9fff" for c in joined) else joined
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
@@ -1793,7 +1813,8 @@ class MainWindow(QMainWindow):
         一行即可，不必再搭仪器（第十三轮三度折腾的教训）。随后清零。"""
         reco = getattr(self, "_lat_reco", []) or []
         tr = getattr(self, "_lat_tr", []) or []
-        if reco or tr:
+        hold = getattr(self, "_lat_hold", []) or []
+        if reco or tr or hold:
             from app import log as app_log
             app_log.log(
                 "pipeline.latency",
@@ -1803,8 +1824,11 @@ class MainWindow(QMainWindow):
                 n_tr=len(tr),
                 tr_p50=round(_pct(tr, 0.50), 2),
                 tr_p95=round(_pct(tr, 0.95), 2),
-                tr_max=round(max(tr), 2) if tr else 0)
-        self._lat_reco, self._lat_tr, self._submit_ts = [], [], {}
+                tr_max=round(max(tr), 2) if tr else 0,
+                n_hold=len(hold),
+                hold_p50=round(_pct(hold, 0.50), 2) if hold else 0,
+                hold_p95=round(_pct(hold, 0.95), 2) if hold else 0)
+        self._lat_reco, self._lat_tr, self._lat_hold, self._submit_ts = [], [], [], {}
 
     # ---------- v2.3.13（P14）：字幕卡右键一键纠错（词典可达性） ----------
     # 第八轮实测：误听词典做了八轮仍空——不是没工具，是"看到错→查原文→
@@ -1917,8 +1941,10 @@ class MainWindow(QMainWindow):
         # v2.3.6（P9）：低延迟攒句结果——合并译文落组内末卡，
         # 前面的碎片卡只留原文（整句译文不再被拆成半截话各翻各的）
         gmap = getattr(self, "_tgroup_by_src", None)
+        merged_srcs = []
         if gmap and source_text in gmap:
             pieces = gmap.pop(source_text)
+            merged_srcs = list(pieces[:-1])   # v2.7.0（T1）：面板同步收编前片占位行
             for c in pieces[:-1]:
                 pc = self._take_pending(c)
                 if pc is not None:
@@ -1986,8 +2012,10 @@ class MainWindow(QMainWindow):
         if self.overlay.isVisible():
             # v2.1.8：三档路由统一由 overlay.show_pending_result 内部分派
             # （跑马灯=淡入最新句；列表=占位补齐；单条=直接刷新）
+            # v2.7.0（T1）：merged_from=攒句前片名单，面板据此收编对应占位行
             self.overlay.show_pending_result(
-                source_text, translated or ("[" + engine + " 翻译失败]"), show_source)
+                source_text, translated or ("[" + engine + " 翻译失败]"), show_source,
+                merged_from=merged_srcs)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         evicted = []

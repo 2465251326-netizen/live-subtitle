@@ -207,14 +207,22 @@ ACCURACY_PROFILES = {
 }
 
 
-def transcribe_kwargs(accuracy, silero_vad=False):
-    """识别参数按精度档组装（纯函数，便于回归锁）。未知档位回退 fast。"""
+def transcribe_kwargs(accuracy, silero_vad=False, hotwords=""):
+    """识别参数按精度档组装（纯函数，便于回归锁）。未知档位回退 fast。
+
+    v2.7.0（T3）：hotwords 非空时注入 initial_prompt——whisper 官方支持的
+    事前提示，专名/术语命中率受益（对比事后词典：无需选"长到不歧义的键"）。
+    截断到 160 字符，防挤占 224 token 解码预算；fast/balanced 档
+    condition_on_previous_text=False，无 prompt 链式复读滚雪球风险。"""
     profile = ACCURACY_PROFILES.get(str(accuracy or "fast"), ACCURACY_PROFILES["fast"])
     kwargs = dict(profile)
     kwargs.update(
         no_speech_threshold=0.6,
         log_prob_threshold=-1.0,
     )
+    hw = str(hotwords or "").strip()
+    if hw:
+        kwargs["initial_prompt"] = hw[:160]
     if silero_vad:
         kwargs["vad_filter"] = True
         kwargs["vad_parameters"] = {"min_silence_duration_ms": 300}
@@ -227,14 +235,18 @@ class AsrThread(QThread):
     # _on_asr_text/_asr_timing 按秒 float()。
     # v2.3.20（P26）：追加第 4 参 t_flush_mono（浮点 monotonic 秒）——该音频段
     # 在采集线程"切分完成"的时刻，用于测"话音落→原文上屏"识别段延迟；-1=未知。
-    text_ready = Signal(str, str, str, float)  # text, whisper_lang, duration, t_flush_mono
+    # v2.7.0（T2）：追加第 5/6 参 tail_quiet_s（该段音频内**最后一片结束到段尾**
+    # 的静音秒数，=说话人已停多久）、last_logprob（末片置信度，越高越可信）——
+    # 攒句"提前冲"判据用；仅组内最后一条携带真值，其余 0.0。
+    text_ready = Signal(str, str, str, float, float, float)
     status_changed = Signal(str)
     model_ready = Signal()
     error_occurred = Signal(str)
 
     def __init__(self, model_size: str, device: str, language: str, parent=None,
                  hallucination_filter=True, silero_vad=False, mishear_map=None,
-                 accuracy="fast", mishear_whole_word=False):
+                 accuracy="fast", mishear_whole_word=False,
+                 hotwords="", lang_recheck=True):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
@@ -245,6 +257,10 @@ class AsrThread(QThread):
         self.mishear_map = dict(mishear_map or {})
         # v2.6.0（R2）：词典全词匹配开关快照
         self._mishear_whole_word = bool(mishear_whole_word)
+        # v2.7.0（T3/T5）：热词提示 + 语言锁复检
+        self.hotwords = str(hotwords or "")
+        self.lang_recheck = bool(lang_recheck)
+        self._seg_count = 0
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
         self._model = None
@@ -641,20 +657,30 @@ class AsrThread(QThread):
     def _transcribe(self, audio, t_flush=-1.0):
         duration = len(audio) / 16000.0
         kwargs = transcribe_kwargs(getattr(self, "accuracy", "fast") or "fast",
-                                   bool(self.silero_vad and _silero_assets_ok()))
+                                   bool(self.silero_vad and _silero_assets_ok()),
+                                   getattr(self, "hotwords", ""))
         # Silero VAD（建议5）：faster-whisper 内置，对段内非语音再过滤一道；
         # 与能量 VAD 分工——能量 VAD 管切句，Silero 管段内净化，双保险。
         # 打包环境资产缺失时自动回退能量 VAD，不让 ONNXRuntime 报错冒给用户
         with self._lang_lock:
             lang = self._last_lang
+        # v2.7.0（T5）：语言锁复检——auto+已锁定每 20 段解除语言约束重听一次。
+        # 此前锁定即终身（传 language 后 whisper 概率恒为 1，conf<0.6 自愈支路
+        # 永不触发），锁错语言或中途换语言的视频整场坏，仅"整段被过滤器
+        # 清空"才偶然复位。复检零额外成本（语言检测本就随转写进行）。
+        self._seg_count += 1
+        recheck = bool(getattr(self, "lang_recheck", True)
+                       and self.language == "auto" and lang
+                       and self._seg_count % 20 == 0)
         if self.language != "auto":
             kwargs["language"] = self.language
             lang = self.language
-        elif lang:
+        elif lang and not recheck:
             kwargs["language"] = lang
 
         segments, info = self._model.transcribe(audio, **kwargs)
         segs = []
+        seg_end = 0.0
         for seg in segments:
             # v2.0.1：协作取消点——segments 是惰性生成器，此前一旦开始消费
             # 就无法中断（14s 音频 CPU 大模型可达数十秒），停止超时后成僵尸线程
@@ -663,6 +689,10 @@ class AsrThread(QThread):
             t = (seg.text or "").strip()
             if not t or not has_content(t):
                 continue
+            try:    # v2.7.0（T2）：末片结束时刻——"说话人在段内已停了多久"
+                seg_end = max(seg_end, float(getattr(seg, "end", 0.0) or 0.0))
+            except Exception:
+                pass
             segs.append((t, float(getattr(seg, "avg_logprob", 0.0) or 0.0),
                          float(getattr(seg, "no_speech_prob", 0.0) or 0.0)))
         if self.hallucination_filter:
@@ -692,6 +722,17 @@ class AsrThread(QThread):
         text = self._postprocess(text)
         detected = info.language or ""
         conf = info.language_probability or 0.0
+        if recheck:
+            # v2.7.0（T5）：复检裁决——高置信且不一致才切换（保守防抖动）；
+            # 低置信不一致=本段丢弃、维持原锁（错误语言解码的"流利胡话"不上屏）
+            if conf >= 0.8 and detected and detected != lang:
+                with self._lang_lock:
+                    self._last_lang = detected
+                lang = detected
+                self.status_changed.emit("语言复检：检测到说话语言变化，已切换")
+            elif detected and detected != lang:
+                self.status_changed.emit("语言复检结果不一致，本段保守丢弃，下段按原语言继续")
+                return
         if self.language == "auto" and conf < 0.6:
             with self._lang_lock:
                 self._last_lang = None
@@ -711,9 +752,16 @@ class AsrThread(QThread):
         # v2.2.3：切分时把短句合并到下一句（尾句不再单独成段），字幕节奏更自然
         # v2.3.4：切分发生在内容过滤之后——切出的纯标点尾巴（实测 ".."）会漏网，
         # 逐片再过一次 has_content（CBS 新闻体验轮抓到的过滤器漏洞）
-        for piece in split_long_caption(text):
-            if has_content(piece):
-                self.text_ready.emit(piece, detected, f"{duration:.1f}", t_flush)
+        # v2.7.0（T2）：tail_quiet=段内"人声结束→音频段尾"静音秒数（说话人已停了多久），
+        # 仅末片携带真值——攒句侧作为"已说完"的提前冲句证据
+        tail_q = max(0.0, duration - seg_end) if seg_end > 0 else 0.0
+        last_lp = segs[-1][1] if segs else 0.0
+        pieces = [p for p in split_long_caption(text) if has_content(p)]
+        for i, piece in enumerate(pieces):
+            is_last = i == len(pieces) - 1
+            self.text_ready.emit(piece, detected, f"{duration:.1f}", t_flush,
+                                 tail_q if is_last else 0.0,
+                                 last_lp if is_last else 0.0)
 
 
 class PrewarmWorker(QThread):
@@ -755,6 +803,12 @@ class PrewarmWorker(QThread):
             # v2.6.4（P2）：non-blocking 让位——真实管线正在加载时预热立即
             # 放弃（真实加载完成即入池，预热目的已达成），避免双份构造
             ok = loader._load_model(blocking=False)
+            # v2.7.0（T6）：预热补完最后一公里——首次 transcribe() 触发 cuBLAS
+            # 算法选择/内核载入（实测比后续慢 1~3s），此前这时间仍要用户在
+            # 「开始翻译」后付；现由预热线程跑一次 0.5s 静音转写，_ls_warmed
+            # 标在共享池实例上，真实管线直接复用
+            if ok and not self._stop:
+                loader._warmup()
             dev = getattr(loader, "_device_used", "?")
             app_log.log("asr.prewarm_done", model=self.model_size, ok=bool(ok),
                         device=dev, seconds=round(time.time() - t0, 1))
