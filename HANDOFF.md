@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 v2.7.1 发布（识别+翻译优化批：配对修复/提前冲句/热词/语言复检/预载/预热补完/语种跟随/自动切换开关；详见第十节）
+> 最后更新：2026-09-15 v2.7.2 发布（引擎自动切换开关 + 榨干模式；见第十一节快照）
 
 ---
 
@@ -11,7 +11,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.7.1**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.7.2**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -149,6 +149,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 - 关注视觉细节与文案准确性：**文案不许承诺未实现的功能**（Ctrl+Alt+O 与托盘"切换输入来源"两次因此被批评）
 - 反馈直接、要求高：会实测并截图指出问题，测试必须**真实验证**而非调用内部函数自证
 - 中文沟通
+- **开发前有任何疑问随时问用户**（2026-09-15 用户给予常设授权）——需求边界、方案取舍、是否动系统/用户配置，先问后做，别自己猜
 
 ## 六、仓库结构速查
 
@@ -212,4 +213,12 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **挂起案根因已明（仍未修，用户裁决先放着）**：`orphan_thread|TranslateThread` 每次停止必现的机制=`DRAIN_GRACE=15s`（v2.6.2 排水宽限）与 stop 等待 3s 结构性错配——队列空时线程也要等满 15s 宽限才退，3s 处必判孤儿。修法方向：宽限只对"等尾句到达"生效（asr 已退且队列空→立即退），或对齐两处时限。
 - **审计证伪记录（防再犯）**：审计提出"whisper seg.end 段内尾静音"做提前冲证据——真机证伪：**whisper 把末片结束时间拉伸补齐到音频尾，tail_q 恒≈0**，信号不存在；text_ready 现仍携带 tail_q/last_lp 两参（无害，留作后用），判据只用时间地板。
 - **本轮新坑**：`Config.get()` 只收一个键参（无 default 位）——写 `c.get("k", True)` 在 start_pipeline 里抛 TypeError，PySide6 吞槽异常只打 stderr（分离进程不可见），症状=asr/capture 线程根本没建、会话静默零字幕、日志只有 translate 活着；**构造参数改动必须活体跑一轮**，纯单测抓不到（既有测试全用单参 get）。`Start-Process` PS5.1 无 `-Environment` 参数（用 `$env:` 继承）。隔离实例做 A/B 的标准姿势再证：`LIVETRANSLATE_HOME`+`HF_HOME` 注入 + 隔离 config 预写 `wizard_done/auto_start`，翻译失败时**fallback 请求 URL 的 q= 参数就是识别原文**——白嫖识别结果取证通道。
+
+## 十一、会话快照（2026-09-15 下午 v2.7.1/v2.7.2）
+
+- **v2.7.1**：`engine_auto_fallback` 开关（用户点名"引擎是否自动切换"）——关=固定引擎失败只报错不降级备援；双向单元锁。
+- **v2.7.2**：`perf_turbo` 榨干模式捆绑开关（用户："还想更快，榨干硬件"）=GPU INT8（int8_float16，显存约半、识别中位 0.44→0.41s 实测有限提速，文案如实）+ 运行期进程 HIGH 优先级（start/stop 挂 `_apply_process_priority`）+ 连续语流切段 6s→4s（25s 语流交付 3→4 段）+ 冲句地板 2.0→1.2s；**PrewarmWorker 必须透传 turbo**（池键含 compute_type，不透传=预热白建 fp16 实例）。套件 65/84。
+- **硬件基线**：i5-10600KF 6C12T / RTX 2060 6GB（空闲 1365/2100MHz）/ 16G / NVMe；**电源计划=平衡**（在压频，切高性能是用户侧待办，命令已给）。用户当前 asr_accuracy=quality（三档最慢）——已建议看直播切 fast，用户未表态。
+- **A/B 基准方法（留档）**：隔离实例+无停顿长句单条 wav（25.6s）跑两轮，`CloseMainWindow` 优雅退出保 `pipeline.latency` 落盘（Stop-Process 会跳过遥测汇总——踩过）；对比 n_reco/reco_p50/hold_p50。
+- **常设授权（新）**：开发前有任何问题随时问用户，先问后做不猜。
 
