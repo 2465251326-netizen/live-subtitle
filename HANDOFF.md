@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-14 v2.6.6 发布（瞬窗修复：行标签未收编即 setVisible 弹原生小窗；详见第九节会话快照与两条挂起线索）
+> 最后更新：2026-09-15 v2.7.1 发布（识别+翻译优化批：配对修复/提前冲句/热词/语言复检/预载/预热补完/语种跟随/自动切换开关；详见第十节）
 
 ---
 
@@ -11,7 +11,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.6.6**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.7.1**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -204,3 +204,12 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
   2. 集成测试环境脆弱：`tests/itest_home/config.json` 缺 `wizard_done` 标记时，构造 MainWindow 后排的 400ms 向导会在后续 `processEvents()` 处弹**模态阻塞挂死**（瘦身误删该目录时踩过，补 `{"wizard_done": true}` 即愈）；另 `TOTAL` 行只打 stdout 不落 `test_report.txt`。均为工具箱问题，不影响产品。
 - **本轮工具坑（勿重踩）**：本会话 pwsh 是 5.1——`&&` 不可用、`if (git xx --is-ancestor)` 判 stdout 不判退出码（要单独读 `$LASTEXITCODE`）；`time.strftime` 无 `%f` 秒毫秒指令（Windows 直接 ValueError）；控制台 GBK 打 `✕` 崩 print——跑测试套件带 `PYTHONIOENCODING=utf-8`；PowerShell 管道下 git 进度走 stderr 显示为红字异常，非失败。
 - **代理坑（重要）**：本机代理(127.0.0.1:10808)会**随机掐断大流量 git fetch 尾部**（curl 56），且"还差 N bytes"只指当前分片——曾据此误判"快成了"连打 30 次重试，白灌 ~4GB（`tmp_pack_*` 残骸堆进 .git，删残骸即愈）。大传输失败别再硬刷重试，先想包体多大。
+
+## 十、会话快照（2026-09-15 v2.7.0/v2.7.1 识别+翻译优化批）
+
+- **v2.7.0 七项**（用户只关心识别与翻译；子代理全链路审计→逐条实现→真机验证）：①面板译文配对修复（多待决行并存、按原文精确匹配、merged_from 收编攒句前片——旧"单待决槽"会被下一句覆盖导致迟到译文配错行）②提前冲句 early_flush（静默地板 3.5s→2.0s，实测 hold_p50 6.0→1.5s；定位=末句抢救，连续语流中本句译文仍由下一句到达冲刷=两轨制固有）③热词 asr_hotwords（whisper initial_prompt，真机 A/B：无提示自造专名错听成 Thragedem/Veselon，有提示 3/3 全对）④语言锁复检 lang_recheck（auto 锁定后每 20 段解除约束重听，高置信≥0.8 不一致才切换；旧锁定=终身，conf<0.6 自愈支路在传 language 后永不触发——whisper 锁定返回概率恒 1）⑤argos 包后台预载（首句翻译不再现场加载数秒冻结队列）⑥预热补完 _warmup 最后一公里（首句不再慢 1~3s）⑦google 跟随 whisper 语言（不再逐句 sl=auto 重猜）。套件 61/84→加 v2.7.1 后 62/84。
+- **v2.7.1**：engine_auto_fallback 开关（用户点名要"是否启动自动切换"）——关=固定引擎失败只报错不降级，双向单元锁。
+- **挂起案根因已明（仍未修，用户裁决先放着）**：`orphan_thread|TranslateThread` 每次停止必现的机制=`DRAIN_GRACE=15s`（v2.6.2 排水宽限）与 stop 等待 3s 结构性错配——队列空时线程也要等满 15s 宽限才退，3s 处必判孤儿。修法方向：宽限只对"等尾句到达"生效（asr 已退且队列空→立即退），或对齐两处时限。
+- **审计证伪记录（防再犯）**：审计提出"whisper seg.end 段内尾静音"做提前冲证据——真机证伪：**whisper 把末片结束时间拉伸补齐到音频尾，tail_q 恒≈0**，信号不存在；text_ready 现仍携带 tail_q/last_lp 两参（无害，留作后用），判据只用时间地板。
+- **本轮新坑**：`Config.get()` 只收一个键参（无 default 位）——写 `c.get("k", True)` 在 start_pipeline 里抛 TypeError，PySide6 吞槽异常只打 stderr（分离进程不可见），症状=asr/capture 线程根本没建、会话静默零字幕、日志只有 translate 活着；**构造参数改动必须活体跑一轮**，纯单测抓不到（既有测试全用单参 get）。`Start-Process` PS5.1 无 `-Environment` 参数（用 `$env:` 继承）。隔离实例做 A/B 的标准姿势再证：`LIVETRANSLATE_HOME`+`HF_HOME` 注入 + 隔离 config 预写 `wizard_done/auto_start`，翻译失败时**fallback 请求 URL 的 q= 参数就是识别原文**——白嫖识别结果取证通道。
+
