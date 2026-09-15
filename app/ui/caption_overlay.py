@@ -26,6 +26,49 @@ from PySide6.QtWidgets import (
 )
 
 
+class _DualSepHandle(QWidget):
+    """v2.16.1：原文/译文分割把手的自绘本体。
+
+    视觉（用户实测 8px 实心灰带"太生硬、难看"后的重设计）：
+    - 平时：仅中央一条**极淡**的 1px 细线（几乎隐形，不破坏空态观感）
+    - 悬停：细线提亮 + 中央浮现 40×4 圆角小胶囊（可拖暗示）
+    - 拖拽中：胶囊提亮至最明显
+    抓取带高度仍为 8px（命中判定不变），只是视觉收敛到中心线。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("DualSep")
+        self.setFixedHeight(8)
+        self.setMouseTracking(True)
+        self._hover = False
+        self._drag = False
+
+    def set_hover(self, on):
+        if self._hover != bool(on):
+            self._hover = bool(on)
+            self.update()
+
+    def set_drag(self, on):
+        if self._drag != bool(on):
+            self._drag = bool(on)
+            self.update()
+
+    def paintEvent(self, event):
+        from PySide6.QtGui import QPainter, QColor
+        p = QPainter(self)
+        active = self._hover or self._drag
+        # 全宽中央细线：平时极淡，悬停/拖拽提亮
+        line = QColor(255, 255, 255, 64 if active else 26)
+        p.fillRect(0, self.height() // 2, self.width(), 1, line)
+        # 中央胶囊：仅悬停/拖拽时浮现（平时完全隐形）
+        if active:
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 150 if self._drag else 80))
+            p.drawRoundedRect(int(self.width() / 2) - 20,
+                              int(self.height() / 2) - 2, 40, 4, 2, 2)
+
+
 class CaptionOverlay(QWidget):
     MIN_W = 360
     RESIZE_EDGE = 14   # v2.4.1：右缘调宽命中带（10px 太窄且无光标反馈→普通人找不到）
@@ -299,10 +342,7 @@ class CaptionOverlay(QWidget):
         self._dual_src.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self._dual_src.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._dual_src_wrap.setWidget(self._dual_src)
-        self._dual_sep = QFrame(self._dual_body)
-        self._dual_sep.setObjectName("DualSep")
-        self._dual_sep.setFixedHeight(8)     # 抓取带：内画 1px 线，好抓
-        self._dual_sep.setCursor(Qt.SizeVerCursor)
+        self._dual_sep = _DualSepHandle(self._dual_body)
         self._dual_tgt_wrap = QScrollArea(self._dual_body)
         self._dual_tgt_wrap.setObjectName("DualTgtWrap")
         self._dual_tgt_wrap.setWidgetResizable(True)
@@ -1274,9 +1314,8 @@ class CaptionOverlay(QWidget):
             QLabel#DualTgt {{ color: {self._text_color.name()}; }}
             QLabel#DualTgt[spec="true"] {{ color: rgba(255,255,255,205); }}
             QLabel#DualTgt[empty="true"] {{ color: rgba(255,255,255,72); }}
-            QFrame#DualSep {{ background: rgba(255,255,255,14);
-                              border-top: 1px solid rgba(255,255,255,30);
-                              border-bottom: 1px solid rgba(255,255,255,30); }}
+            # v2.16.1：DualSep 把手为自绘（_DualSepHandle：平时仅一条极淡
+            # 细线，悬停浮现中央胶囊）——旧的 8px 实心灰带"太生硬、难看"
             QScrollArea#DualSrcWrap {{ background: transparent; border: none; }}
             QScrollArea#DualSrcWrap > QWidget {{ background: transparent; }}
             QScrollArea#DualSrcWrap > QWidget > QWidget {{ background: transparent; }}
@@ -1480,13 +1519,18 @@ class CaptionOverlay(QWidget):
                 g = ev.globalPosition().toPoint()
                 if self._dual_split_drag:
                     self._dual_split_apply_drag(g)
+                    self._dual_sep.set_drag(True)
                     return True
+                hover = self._dual_split_hit(g.y()) or obj is self._dual_sep
+                self._dual_sep.set_hover(hover)
                 if hasattr(obj, "setCursor"):
-                    if (self._dual_split_hit(g.y())
-                            or (obj is self._dual_sep and not self._collapsed)):
+                    if hover:
                         obj.setCursor(Qt.SizeVerCursor)
                     else:
                         obj.setCursor(Qt.ArrowCursor)
+            elif t == QEvent.Type.Leave and obj is self._dual_sep:
+                if not self._dual_split_drag:
+                    self._dual_sep.set_hover(False)
             elif t == QEvent.Type.MouseButtonPress and ev.button() == Qt.LeftButton:
                 g = ev.globalPosition().toPoint()
                 # v2.16.0：两个分割目标——sep 本体（原文/译文高度分配）、
@@ -1503,12 +1547,14 @@ class CaptionOverlay(QWidget):
                     self._dual_split_start_h = (self._dual_hist.height()
                                                 if mode == "hist"
                                                 else self._dual_src_wrap.height())
+                    self._dual_sep.set_drag(True)
                     return True           # 拦下：防止 QScrollArea 抢走拖拽
             elif t == QEvent.Type.MouseMove and self._dual_split_drag:
                 self._dual_split_apply_drag(ev.globalPosition().toPoint())
                 return True
             elif t == QEvent.Type.MouseButtonRelease and self._dual_split_drag:
                 self._dual_split_drag = False
+                self._dual_sep.set_drag(False)
                 self._dual_split_apply_drag(ev.globalPosition().toPoint())
                 if getattr(self, "_on_dual_split", None):
                     if self._dual_split_mode == "src":
