@@ -332,10 +332,17 @@ class CaptionOverlay(QWidget):
         self._dual_src_wrap = QScrollArea(self._dual_body)
         self._dual_src_wrap.setObjectName("DualSrcWrap")
         self._dual_src_wrap.setWidgetResizable(True)
+        self._dual_src_wrap.setFrameShape(QFrame.NoFrame)
         self._dual_src_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._dual_src_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # v2.16.2：防白底"三保险"——viewport 是独立子控件、**不吃父级 QSS
+        # 选择器链**，且真实 Windows 渲染下 QAbstractScrollArea 会用
+        # palette.base（白）填充，仅 QSS/属性单层防护真机上仍露白块
+        # （用户截图实证）。① NoFrame ② viewport 透明属性 ③ viewport
+        # 直接内联 styleSheet（对自身生效，绕过选择器链）
         self._dual_src_wrap.viewport().setAutoFillBackground(False)
         self._dual_src_wrap.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dual_src_wrap.viewport().setStyleSheet("background: transparent;")
         self._dual_src = QLabel("", self._dual_src_wrap)
         self._dual_src.setObjectName("DualSrc")
         self._dual_src.setWordWrap(True)
@@ -346,10 +353,12 @@ class CaptionOverlay(QWidget):
         self._dual_tgt_wrap = QScrollArea(self._dual_body)
         self._dual_tgt_wrap.setObjectName("DualTgtWrap")
         self._dual_tgt_wrap.setWidgetResizable(True)
+        self._dual_tgt_wrap.setFrameShape(QFrame.NoFrame)
         self._dual_tgt_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._dual_tgt_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._dual_tgt_wrap.viewport().setAutoFillBackground(False)
         self._dual_tgt_wrap.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
+        self._dual_tgt_wrap.viewport().setStyleSheet("background: transparent;")
         self._dual_tgt = QLabel("", self._dual_tgt_wrap)
         self._dual_tgt.setObjectName("DualTgt")
         self._dual_tgt.setWordWrap(True)

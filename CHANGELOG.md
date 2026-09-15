@@ -2,6 +2,14 @@
 
 最新版本说明见 [Releases](https://github.com/2465251326-netizen/live-subtitle/releases)；本文件保留完整历史（v1.6 起）。
 
+### v2.16.2
+
+**修复·dual 原文/译文区白块**（用户实测截图：两区变成两块大白板，文字不可见）
+
+- **根因**：v2.16.0 把原文/译文放进 QScrollArea 时，透明处理只做了 QSS 规则和 viewport 属性的一部分——**真实 Windows 渲染下 QAbstractScrollArea 会用 palette.base（白）填充**，且 viewport 不吃父级 QSS 选择器链，多层防护差一层就露白（v2.4.1 在列表区修过的同款坑第三次重演）
+- **修复（三保险）**：① `setFrameShape(NoFrame)` 关闭自带边框；② viewport 透明属性；③ viewport **直接内联 styleSheet**（对自身生效，绕过一切选择器链）
+- 真机渲染验证（隔离实例 + 全屏截图 + 播放语音）：无白块、原文/译文/历史区全部深色透明底正常显示；单元 78 / 集成 103 全绿
+
 ### v2.16.1
 
 **美化·分割把手重设计**（用户实测："这也太生硬了吧，难看"——指 v2.16.0 的 8px 实心灰带）
