@@ -202,6 +202,69 @@ def t_overlay_pending_pairing_no_crosstalk():
     ov.deleteLater()
 check("panel: 待决行按原文配对不串线（v2.7.0 T1）", t_overlay_pending_pairing_no_crosstalk)
 
+def t_registration_bidirectional():
+    # v2.7.4：登记完整性双向断言——旧测试只测 SPECS⊇STD 方向，DEFAULTS 里
+    # "有读有写却漏登记"的键（曾藏 overlay_w/h/pin/collapsed/hint_shown 5 个）
+    # 永远不会被抓出来。现补 DEFAULTS ⊆ SPECS 方向。
+    from app.config import DEFAULTS
+    from app.ui.settings_dialog import _FIELD_SPECS
+    missing = set(DEFAULTS) - set(_FIELD_SPECS)
+    assert not missing, f"DEFAULTS 有键未登记 _FIELD_SPECS: {missing}"
+check("settings: 登记完整性双向断言（v2.7.4）", t_registration_bidirectional)
+
+def t_config_type_sanitizer():
+    # v2.7.4（A-2 活体实锤）：手编配置逐键消毒——"18px"型毒药启动即崩、
+    # list 型词典值每段抛全场零字幕，load 后必须回落到可用值
+    import json
+    from app.config import Config, DEFAULTS
+    from app import config as cfgmod
+    p = cfgmod.CONFIG_FILE
+    backup = p.read_text(encoding="utf-8") if p.exists() else None
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "overlay_font_size": "18px",   # int 原型 + 坏字符串 → 回默认
+            "max_history": "200",          # int 原型 + 数字字符串 → 挽救成 200
+            "mishear_map": {"a": ["b"]},   # dict[str,str] 原型 + 坏值 → 整键回默认
+            "show_source": "yes",          # bool 原型 + 字符串 → 回默认
+            "engine": 42,                  # str 原型 + 数字 → 回默认
+        }), encoding="utf-8")
+        c = Config()
+        assert c.get("overlay_font_size") == DEFAULTS["overlay_font_size"]
+        assert c.get("max_history") == 200
+        assert c.get("mishear_map") == {}
+        assert isinstance(c.get("show_source"), bool)
+        assert c.get("engine") == DEFAULTS["engine"]
+    finally:
+        if backup is not None:
+            p.write_text(backup, encoding="utf-8")
+        elif p.exists():
+            p.unlink()
+check("config: 手编毒药逐键消毒（v2.7.4 A-2）", t_config_type_sanitizer)
+
+def t_export_filters_placeholder():
+    # v2.7.4（B-12）：txt 导出与 SRT 同一过滤集——"⟳ …"占位与失败卡不得混进导出
+    from app.ui.main_window import build_export_text
+
+    class FakeLabel:
+        def __init__(self, t): self._t = t
+        def text(self): return self._t
+        def isVisible(self): return bool(self._t)
+        def isVisibleTo(self, _w): return bool(self._t)
+
+    class FakeCard:
+        def __init__(self, meta, src, tgt):
+            self.meta_label, self.source_label, self.target_label = (
+                FakeLabel(meta), FakeLabel(src), FakeLabel(tgt))
+    cards = [FakeCard("12:00:00 · en", "hello", "你好"),
+             FakeCard("12:00:05 · en", "world", "⟳ …"),
+             FakeCard("12:00:10 · en", "boom", "[翻译失败]")]
+    txt, n = build_export_text(cards, "txt")
+    assert "你好" in txt and "⟳" not in txt and "翻译失败" not in txt, txt
+    srt, _ = build_export_text(cards, "srt")
+    assert "⟳" not in srt
+check("export: 占位与失败卡双出口过滤（v2.7.4 B-12）", t_export_filters_placeholder)
+
 def t_early_flush_decision():
     # v2.7.0（T2）：提前冲句判据——开关开时静默 2.0s 地板即送；静默不足不送；
     # 开关关回 3.5s 旧地板。deadline 拉远隔离兜底路径。
@@ -253,6 +316,9 @@ def t_asr_finished_closes_translate_input():
         def submit(self, text, lang):
             events.append(("submit", text))
             return []
+
+        def isRunning(self):
+            return True   # v2.7.4（B-1）：_flush_tgroup 新增死队列检查，stub 须可运行
 
         def close_input(self):
             events.append(("close",))
@@ -482,20 +548,34 @@ check("status: 正在聆听呼吸反馈起停时机", t_listen_pulse)
 
 def t_overlay_status_row():
     # v2.3.2（G1）：速览卡"悬浮字幕条"状态行跟随显隐（用户痛点：关了没人说）
+    # v2.7.4（B-9）：文案改"配置真值+注册实况"三分支——本测试同时锁三态
+    from app import hotkey as hk
     w = MainWindow()
     w.show()
     lab = w._quick_labels["字幕面板"]
     w.overlay.hide()
-    w._refresh_quick_panel()
-    assert "已关闭" in lab.text() and "Ctrl+Alt+O" in lab.text(), lab.text()
-    assert "fbbf24" in lab.styleSheet()
+    orig = hk.overlay_text
+    try:
+        hk.overlay_text = lambda: "Ctrl+Alt+O"          # 已注册：如实给组合键
+        w._refresh_quick_panel()
+        assert "已关闭" in lab.text() and "按 Ctrl+Alt+O 打开" in lab.text(), lab.text()
+        assert "fbbf24" in lab.styleSheet()
+        hk.overlay_text = lambda: ""                    # 配置了但没注册成功：不谎称可用
+        w._refresh_quick_panel()
+        assert "未生效" in lab.text(), lab.text()
+        w.config.set("hotkey_overlay", "")              # 压根没配：指路设置页
+        w._refresh_quick_panel()
+        assert "设置-显示可重新开启" in lab.text(), lab.text()
+    finally:
+        hk.overlay_text = orig
+        w.config.set("hotkey_overlay", "Ctrl+Alt+O")
     w.overlay.show()
     w._refresh_quick_panel()
     assert "已开启" in lab.text() and lab.styleSheet() == "", (lab.text(), lab.styleSheet())
     w.overlay.hide()
     w._quitting = True
     w._teardown()
-check("quickpanel: 悬浮字幕条状态行跟随显隐（G1）", t_overlay_status_row)
+check("quickpanel: 悬浮字幕条状态行跟随显隐（G1+B-9 三分支）", t_overlay_status_row)
 
 def t_engine_fallback_banner():
     # v2.3.2（G2）：在线引擎不可达→事前横幅，且不被后续常规状态覆盖
@@ -1382,6 +1462,9 @@ def t_low_latency_group():
     class FakeT:
         def submit(self, text, detected):
             submitted.append(text)
+
+        def isRunning(self):
+            return True   # v2.7.4（B-1）：死队列守卫要求可查询存活
     real_tt = w.translate_thread
     w.translate_thread = FakeT()
     w._on_asr_text("and authorities to understand", "en", "2.0")
@@ -1437,6 +1520,9 @@ def t_tgroup_silent_early_flush():
     class FakeT:
         def submit(self, text, detected):
             submitted.append(text)
+
+        def isRunning(self):
+            return True   # v2.7.4（B-1）：死队列守卫要求可查询存活
     real_tt = w.translate_thread
     w.translate_thread = FakeT()
     # ① 收尾完整但音频活跃 → 不送

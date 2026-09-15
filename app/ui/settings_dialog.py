@@ -186,6 +186,13 @@ _FIELD_SPECS = {
     "instant_caption":      ("instant", "check"),
     "overlay_x":            ("internal", "hidden"),
     "overlay_y":            ("internal", "hidden"),
+    # v2.7.4：5 个面板运行态键补登记——此前"有读有写却不在登记表"，
+    # 恢复默认漏网（v2.0.1"漏 4 键"同族病），且 docstring 与实现不符
+    "overlay_w":            ("internal", "hidden"),
+    "overlay_h":            ("internal", "hidden"),
+    "overlay_pin":          ("internal", "hidden"),
+    "overlay_collapsed":    ("internal", "hidden"),
+    "overlay_hint_shown":   ("internal", "hidden"),
     "storage_root":         ("internal", "hidden"),
     "wizard_done":          ("internal", "hidden"),
 }
@@ -224,7 +231,7 @@ _STD_ROW_ITEMS = {
 _STD_ROWS = [
     {"key": "asr_language", "attr": "asr_lang_combo", "page": "asr", "section": "语言与计算",
      "kind": "combo", "title": "识别语言",
-     "desc": "「自动检测」会在第一句话后锁定说话语言，换语言视频无感切换；已知语言时手动锁定更快更稳。",
+     "desc": "「自动检测」会在第一句话后锁定说话语言，并配合下方「语言复检」定期纠偏；已知语言时手动锁定更快更稳。",
      "opts": {"items": _STD_ROW_ITEMS["asr_lang"]}},
     {"key": "asr_device", "attr": "compute_combo", "page": "asr", "section": "语言与计算",
      "kind": "combo", "title": "计算方式",
@@ -263,7 +270,7 @@ _STD_ROWS = [
     {"key": "lang_recheck", "attr": "lang_recheck_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "语言复检",
      "desc": "自动检测下每 20 段临时解除语言锁定重听一次：视频中途换语言、或开头锁错语言时能自动纠正；"
-             "复检不确定时维持原语言，不影响识别。",
+             "复检结果与当前锁定不一致且不够可信时，维持原语言、该复检段保守丢弃不上屏。",
      "opts": {}},
     {"key": "prewarm_model", "attr": "prewarm_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "启动时预热模型",
@@ -1113,7 +1120,9 @@ class SettingsDialog(QDialog):
         slider_row = QHBoxLayout()
         slider_row.setSpacing(8)
         self.bg_opacity_slider = ClickableSlider(Qt.Horizontal)
-        self.bg_opacity_slider.setRange(0, 95)
+        self.bg_opacity_slider.setRange(0, 100)   # v2.7.4（B-7）：0-95→0-100，
+        # 与 DEFAULTS 注释（0-100）及面板快捷档（30-100）统一量程——旧 95 上限
+        # 会让面板上设到 >95 的值一进设置页保存就被静默压回 95
         self.bg_opacity_label = QLabel("92%")
         self.bg_opacity_label.setObjectName("SettingDesc")
         slider_row.addWidget(self.bg_opacity_slider)
@@ -1202,7 +1211,7 @@ class SettingsDialog(QDialog):
         self.hotkey_check.toggled.connect(self._on_hotkey_enabled_changed)
         self.hotkey_edit.keySequenceChanged.connect(self._on_hotkey_sequence_changed)
         self.hotkey_overlay_edit.keySequenceChanged.connect(self._on_hotkey_overlay_changed)
-        self.hotkey_overlay_edit.keySequenceChanged.connect(self._on_hotkey_overlay_changed)
+        # v2.7.4（C-5）：删除同槽双连接残留（幂等无害但误导维护者）
         page._inner_layout.addStretch()
         return page
 
@@ -1538,9 +1547,13 @@ class SettingsDialog(QDialog):
                 from app import gpu as gpu_mod
                 self.done.emit(gpu_mod.detect())
 
-        self._gpu_worker = _GpuDetectWorker()
-        self._gpu_worker.done.connect(_apply)
-        self._gpu_worker.start()
+        # v2.7.4（B-3）：检测进行中再点=旧 worker 引用被顶掉，运行中 QThread
+        # 失去最后引用 → destroyed-while-running 崩溃（对照 _change_storage_root 的守卫）
+        _pw = getattr(self, "_gpu_worker", None)
+        if _pw is None or not _pw.isRunning():
+            self._gpu_worker = _GpuDetectWorker()
+            self._gpu_worker.done.connect(_apply)
+            self._gpu_worker.start()
         dlg.exec()
 
     def _sep(self):
@@ -1562,9 +1575,11 @@ class SettingsDialog(QDialog):
             return
         btn.setEnabled(False)
         btn.setText("正在安装…")
-        self._cuda_worker = _CudaInstallWorker()
-        self._cuda_worker.done.connect(lambda ok, msg, b=btn: self._on_cuda_done(ok, msg, b))
-        self._cuda_worker.start()
+        _pc = getattr(self, "_cuda_worker", None)   # v2.7.4（B-3 同型）
+        if _pc is None or not _pc.isRunning():
+            self._cuda_worker = _CudaInstallWorker()
+            self._cuda_worker.done.connect(lambda ok, msg, b=btn: self._on_cuda_done(ok, msg, b))
+            self._cuda_worker.start()
 
     def _on_cuda_done(self, ok, msg, btn):
         btn.setEnabled(True)
@@ -2167,8 +2182,10 @@ class SettingsDialog(QDialog):
             else:
                 seen.add(key)
         if source_type == "system":
-            if not devices:
-                self.device_combo.addItem("默认输出设备（自动）", -1)
+            # v2.7.4（B-6）："默认输出（自动）"恒在首位——旧实现只在枚举不到
+            # 回环设备时才追加，用户选过具体设备后就再也回不去自动跟随默认输出
+            # （麦克风分支一直有默认项，两分支行为分叉）
+            self.device_combo.insertItem(0, "默认输出设备（自动）", -1)
         else:
             self.device_combo.addItem("默认麦克风（自动）", -1)
             # 去重：不同 Host API 会暴露同名设备，只保留首个（倒序删除避免索引跳动）

@@ -216,7 +216,8 @@ def build_export_text(cards, fmt="txt"):
         lines.append(f"[{meta}]")
         if source:
             lines.append(source)
-        if target and target != "...":
+        if target and target not in ("...", "⟳ …", "[翻译失败]"):
+            # v2.7.4（B-12）：与 SRT 侧同一过滤集——占位/失败卡不得混进导出
             lines.append(target)
         lines.append("")
         n += 1
@@ -284,6 +285,13 @@ class MainWindow(QMainWindow):
         from app.ui.first_run import FirstRunWizard
         dlg = FirstRunWizard(self)
         dlg.exec()
+        # v2.7.4（QA-02 活体实锤）：向导会改 source/model/engine——
+        # 完成后必须刷速览卡，否则仪表盘停在旧值（实测向导选 turbo，
+        # 卡片仍显示 small(CPU)，直到下次保存设置才跟正）
+        try:
+            self._refresh_quick_panel()
+        except Exception:
+            pass
 
     def _build_ui(self):
         central = QWidget()
@@ -809,7 +817,15 @@ class MainWindow(QMainWindow):
             # v2.2.8：连接保存信号——保存后速览卡/托盘文案实时刷新
             # （此前信号从未被连接，改了模型/引擎/热键速览卡一直显示旧值）
             dlg.settings_saved.connect(self._refresh_quick_panel)
-        dlg.load_from_config()
+            dlg.load_from_config()
+        elif getattr(dlg, "_staged", None):
+            # v2.7.4（B-4）：对话框开着且有未保存改动时重入（面板⋯菜单"打开设置"、
+            # 双击快捷键等都会走这里）——无条件 reload 会静默吞掉暂存改动并谎报
+            # "所有改动已保存"；closeEvent 有 _confirm_discard 守卫，重入此前没有。
+            # 现只把窗口带到前台，不碰内容
+            pass
+        else:
+            dlg.load_from_config()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -837,7 +853,15 @@ class MainWindow(QMainWindow):
             labels["字幕面板"].setText("已开启（可拖动位置）")
             labels["字幕面板"].setStyleSheet("")
         else:
-            labels["字幕面板"].setText("已关闭 · 按 Ctrl+Alt+O 打开")
+            # v2.7.4（B-9）：不再硬编码 Ctrl+Alt+O——改键/禁用/注册失败时谎报指引；
+            # 用配置真值 + 注册实况组合文案（文案不许承诺做不到的事）
+            o_cfg = str(c.get("hotkey_overlay") or "").strip()
+            if not o_cfg:
+                labels["字幕面板"].setText("已关闭 · 设置-显示可重新开启")
+            elif hotkey.overlay_text():
+                labels["字幕面板"].setText(f"已关闭 · 按 {o_cfg} 打开")
+            else:
+                labels["字幕面板"].setText(f"已关闭 · 显隐热键未生效（可在设置-通用改键）")
             labels["字幕面板"].setStyleSheet("color: #fbbf24;")
         # v2.2.11：热键行以“实际注册成功”为准显示——配置了但被占用未注册时
         # 标红“（未生效）”，不再拿配置值谎称可用（文案不许承诺做不到的事）
@@ -1048,6 +1072,10 @@ class MainWindow(QMainWindow):
         now = time.monotonic()
         if now - getattr(self, "_last_toggle_at", 0.0) < 0.25:
             return
+        # v2.7.4（A-3）：teardown 阻塞期排队的热键不得在退出前把管线重拉起来
+        # （重拉的线程逃过孤儿清理，随进程终结被硬杀）
+        if getattr(self, "_quitting", False):
+            return
         self._last_toggle_at = now
         was_running = self.running
         if was_running:
@@ -1070,7 +1098,8 @@ class MainWindow(QMainWindow):
                     QSystemTrayIcon.Information, 2000)
 
     def start_pipeline(self):
-        if self.running:
+        if self.running or getattr(self, "_quitting", False):
+            # v2.7.4（A-3）：_quitting 守卫同 toggle_running
             return
         timer = getattr(self, "_auto_start_timer", None)
         if timer is not None:
@@ -1212,7 +1241,8 @@ class MainWindow(QMainWindow):
         self._stop_model_download_feedback()
         self._dl_start = None  # v2.2.11：慢速探测基线（首次 tick 建立）
         self._model_dl_timer = QTimer(self)
-        self._model_dl_timer.setInterval(600)
+        self._model_dl_timer.setInterval(1500)   # v2.7.4（C-10）：600ms→1.5s，
+        # 反馈要 rglob+stat 整个缓存树，下载大模型期间高频扫盘白耗 IO
         self._model_dl_timer.timeout.connect(self._tick_model_download_feedback)
         self._model_dl_timer.start()
         self._tick_model_download_feedback()
@@ -1478,6 +1508,13 @@ class MainWindow(QMainWindow):
         if getattr(self, "_pending", None):
             # v2.2.0：停止时清空流式占位配对——队列里未及翻译的卡片不再等
             # 迟到译文（下次会话不复用旧卡片）
+            # v2.7.4（B-12）：先终态化再清配对——此前"⟳ …"永久悬挂在屏，
+            # 且 txt 导出会把占位行一起带出去（SRT 侧已过滤，两出口分叉）
+            for _txt, _card in list(self._pending):
+                try:
+                    _card.set_failed("已停止 · 该句未完成翻译")
+                except Exception:
+                    pass
             self._pending.clear()
         # v2.3.6（P9）：低延迟攒句缓冲随会话清零（未送出的碎片不等迟到译文）
         self._tgroup = []
@@ -1809,6 +1846,12 @@ class MainWindow(QMainWindow):
         tr = self._active_translate()   # v2.6.2（P1-4）：排水期解析到会话身份线程
         if not grp or tr is None:
             return
+        if not tr.isRunning():
+            # v2.7.4（B-1）：翻译线程已自然退出（asr 排水超过 15s 宽限等场景）——
+            # 投进死队列的尾组会让占位卡永久悬挂"⟳ …"，直接整组终态化
+            for piece in grp:
+                self._drop_translation(piece)
+            return
         # v2.7.0（T2）："末片到达→整句冲送"的攒住时长入遥测——提前冲是否
         # 起效，看日志 hold_p50 一行即证（此前"慢"的大头恰好不在任何遥测里）
         if hold_at is not None:
@@ -1960,8 +2003,14 @@ class MainWindow(QMainWindow):
         m = dict(self.config.get(dict_key) or {})
         m[wrong] = right
         self.config.set(dict_key, m)   # Config.set 原子落盘
+        # v2.7.4（C-11）：与设置页同一热更路径——此前卡片入口要"下次开始翻译"
+        # 才生效，两入口行为分叉；现在运行中管线即时吃到新词条
+        try:
+            self.apply_pipeline_hotfix()
+        except Exception:
+            pass
         tip = "误听词典" if dict_key == "mishear_map" else "译文修正词典"
-        self._set_alert(f"已保存到{tip}：「{wrong[:16]}」→「{right[:16]}」· 下次开始翻译生效")
+        self._set_alert(f"已保存到{tip}：「{wrong[:16]}」→「{right[:16]}」· 已即时生效")
 
     def _take_pending(self, source_text):
         """按原文取出最早的待补齐卡片（流式两段式配对，v2.1.4）。"""
@@ -1994,7 +2043,9 @@ class MainWindow(QMainWindow):
         # 前面的碎片卡只留原文（整句译文不再被拆成半截话各翻各的）
         gmap = getattr(self, "_tgroup_by_src", None)
         merged_srcs = []
+        combined_src = ""
         if gmap and source_text in gmap:
+            combined_src = source_text       # v2.7.4（B-8）：面板收整句原文（与主窗卡片一致）
             pieces = gmap.pop(source_text)
             merged_srcs = list(pieces[:-1])   # v2.7.0（T1）：面板同步收编前片占位行
             for c in pieces[:-1]:
@@ -2065,8 +2116,11 @@ class MainWindow(QMainWindow):
             # v2.1.8：三档路由统一由 overlay.show_pending_result 内部分派
             # （跑马灯=淡入最新句；列表=占位补齐；单条=直接刷新）
             # v2.7.0（T1）：merged_from=攒句前片名单，面板据此收编对应占位行
+            # v2.7.4（B-8）：source 用合并整句（与主窗卡片一致）——旧实现只给
+            # 末片，面板行显示"半句话的原文配整句译文"，与主窗分叉
             self.overlay.show_pending_result(
-                source_text, translated or ("[" + engine + " 翻译失败]"), show_source,
+                combined_src or source_text,
+                translated or ("[" + engine + " 翻译失败]"), show_source,
                 merged_from=merged_srcs)
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -2090,6 +2144,17 @@ class MainWindow(QMainWindow):
         hotkey.unregister()
         self._save_settings()
         self.stop_pipeline()
+        # v2.7.4（A-3）：退出场景主循环不再泵事件，stop 路径的
+        # asr.finished→_on_asr_finished→close_input 链永不执行——
+        # 翻译线程过去每次退出都被下面的孤儿 terminate 硬杀（持锁强杀
+        # 有挂死向量，且攒批缓存 save 丢失）。手动关门+短等待其自然排水
+        try:
+            tr = self._active_translate()
+            if tr is not None and tr.isRunning():
+                tr.close_input()
+                tr.wait(2000)
+        except Exception:
+            pass
         self._stop_prewarm()  # v2.6.1（P0-2）：预热线程随退出收尾
         # v2.0.3：对仍存活的孤儿线程 terminate 兜底——运行中的 QThread 随
         # MainWindow 析构会 qFatal 崩溃，宁可强杀

@@ -62,22 +62,12 @@ class TranslationCache:
                 self._data = data if isinstance(data, dict) else {}
         except Exception:
             self._data = {}
-
-    def save(self):
-        # v2.0.1：原子写 + 在锁内调用——此前直接 open("w")，写一半崩溃会截断
-        # 缓存文件；翻译线程 put 与 UI 清缓存并发时可能交叉写坏
-        with self._lock:
-            self._loaded = True
-            try:
-                f = self._path()
-                f.parent.mkdir(parents=True, exist_ok=True)
-                tmp = f.with_suffix(".json.tmp")
-                with open(tmp, "w", encoding="utf-8") as fp:
-                    json.dump(self._data, fp, ensure_ascii=False)
-                import os
-                os.replace(tmp, f)
-            except Exception:
-                pass
+        # v2.7.4（C 级）：清理上次崩溃可能残留的 .json.tmp——缓存 tmp 没有
+        # 读取侧兜底路径，不清就会永久占盘（config 侧同类残留有双路径清理）
+        try:
+            self._path().with_suffix(".json.tmp").unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def get(self, key):
         with self._lock:
@@ -574,7 +564,12 @@ class TranslateThread(QThread):
                 self.engine_fallback.emit(self.engine_name, detail)
         # v2.0.6：记录"主引擎"——auto 的主选结果或用户显式指定的引擎；
         # 备援期间队列空闲时定期重探，恢复即切回（见 _maybe_reprobe_primary）
-        self._primary_engine = self._active_engine
+        # v2.7.4（C-9）：auto 的主引擎恒为 google（探测意图），不是探测结果——
+        # 旧实现全失败时 primary=mymemory(死)，重探循环永远只探死的、永不回 google
+        if self.engine_name == "auto":
+            self._primary_engine = "google"
+        else:
+            self._primary_engine = self._active_engine
         self._last_probe_at = time.monotonic()
         app_log.log("translate.engine_selected", engine=self._active_engine, target=self.target)
         # v2.7.0（T7）：离线包预载——PackTranslator 的 CTranslate2 模型在首次

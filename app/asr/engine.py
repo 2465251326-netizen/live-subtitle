@@ -383,6 +383,14 @@ class AsrThread(QThread):
         切分时刻），或裸 ndarray（deep_windows/smoke 直接 submit 的旧格式，
         t_flush 记 -1）。入队元素统一为二元组。
         """
+        # v2.7.4（B-2）：尾段双通道去重——停止时 capture 的尾段会经"排队信号 +
+        # stop_pipeline 直塞"两条路进同一队列（同一 tuple 对象）；慢机上 asr
+        # 仍在排水时信号路先被消费、直塞路再入队一次 → 同句二次转写上屏。
+        # 身份比对+强引用（防 id 复用误伤），正常段每对象仅出现一次不受影响
+        if isinstance(audio, tuple) and audio is getattr(self, "_tail_seen", None):
+            return []
+        if isinstance(audio, tuple):
+            self._tail_seen = audio
         if isinstance(audio, tuple):
             audio, t_flush = audio
         else:
@@ -809,8 +817,9 @@ class PrewarmWorker(QThread):
                 return
             app_log.log("asr.prewarm_start", model=self.model_size, device=self.device)
             t0 = time.time()
+            # v2.7.4（C-2）：不再 getattr(self,"accuracy")——PrewarmWorker 无此属性
+            # 恒取默认值属自欺；accuracy 只影响 transcribe_kwargs，与模型构造无关
             loader = AsrThread(self.model_size, self.device, "auto", None,
-                               accuracy=getattr(self, "accuracy", "fast"),
                                turbo=self.turbo)
             # v2.6.4（P2）：non-blocking 让位——真实管线正在加载时预热立即
             # 放弃（真实加载完成即入池，预热目的已达成），避免双份构造

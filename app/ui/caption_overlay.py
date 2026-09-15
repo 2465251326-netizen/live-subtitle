@@ -301,10 +301,18 @@ class CaptionOverlay(QWidget):
         key = (source_text or "").strip()
         if not key:
             return None
+        suffix_hit = None
         for it in reversed(self._rows):
-            if it["pending"] and (it["src_text"] or "").strip() == key:
+            if not it["pending"]:
+                continue
+            s = (it["src_text"] or "").strip()
+            if s == key:
                 return it
-        return None
+            # v2.7.4（B-8）：合并整句→末片占位行的后缀匹配（combined 以末片
+            # 结尾），命中后由补齐路径把行文本升级为整句，与主窗卡片对齐
+            if s and key.endswith(s) and suffix_hit is None:
+                suffix_hit = it
+        return suffix_hit
 
     def _merge_pending(self, texts):
         """收编被并入整句的前片占位行（与主窗卡片 set_merged_away 同语义，

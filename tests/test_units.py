@@ -4,6 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# v2.7.4（C-12）：测试家目录隔离——test_cache_persist 等曾直写用户真实
+# trans_cache.json（对照 integration 头部已有隔离）；统一指向临时家目录
+import tempfile as _tf0
+os.environ.setdefault("LIVETRANSLATE_HOME", _tf0.mkdtemp(prefix="ls_ut_home_"))
 
 import numpy as np
 
@@ -1208,6 +1212,54 @@ def test_segmenter_turbo_cap():
     assert Segmenter(low_latency=True).max_seg == 6.0
     assert Segmenter(low_latency=True, turbo=True).max_seg == 4.0
     assert Segmenter(low_latency=False, turbo=True).max_seg == 14.0, "普通模式不掺和"
+
+
+def test_storage_pointer_roundtrip():
+    """v2.7.4（A-1）：storage_root 迁移重启往返——指针收敛单键、运行期改动
+    写新根、重启读指针后回读新根，不得回滚不得反灌。"""
+    import json
+    import tempfile
+    import shutil
+    from pathlib import Path
+    import app.config as cfgmod
+    root = Path(tempfile.mkdtemp(prefix="ls_a1_"))
+    home, newroot = root / "home", root / "new"
+    home.mkdir(parents=True)
+    saved = (cfgmod.CONFIG_DIR, cfgmod.CONFIG_FILE, cfgmod.POINTER_CONFIG_FILE)
+    try:
+        cfgmod.CONFIG_DIR = home
+        cfgmod.CONFIG_FILE = home / "config.json"
+        cfgmod.POINTER_CONFIG_FILE = cfgmod.CONFIG_FILE
+        c = cfgmod.Config()
+        c.set("max_history", 300)
+        c.relocate(newroot)
+        c.set("target_lang", "en")            # 运行期改动只写新根
+        # 模拟重启：模块全局回到默认根，Config 初始化读指针→relocate→回读新根
+        cfgmod.CONFIG_DIR = home
+        cfgmod.CONFIG_FILE = home / "config.json"
+        c2 = cfgmod.Config()
+        assert c2.get("max_history") == 300
+        assert c2.get("target_lang") == "en", "运行期改动被指针旧快照回滚（A-1 复发）"
+        ptr = json.loads((home / "config.json").read_text(encoding="utf-8-sig"))
+        assert set(ptr) == {"storage_root"}, f"指针应只存单键: {sorted(ptr)}"
+    finally:
+        cfgmod.CONFIG_DIR, cfgmod.CONFIG_FILE, cfgmod.POINTER_CONFIG_FILE = saved
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_asr_submit_tail_dedup():
+    """v2.7.4（B-2）：停止尾段双通道（排队信号+直塞）身份去重——
+    同一 tuple 对象只收一次，不同对象不误伤。"""
+    import numpy as np
+    from app.asr.engine import AsrThread
+    at = AsrThread("tiny", "cpu", "auto")
+    seg = (np.zeros(1600, dtype=np.float32), 123.0)
+    at.submit(seg)
+    at.submit(seg)                              # 同对象第二路 → 吞掉
+    assert at.queue_in.qsize() == 1, at.queue_in.qsize()
+    seg2 = (np.zeros(1600, dtype=np.float32), 456.0)
+    at.submit(seg2)
+    assert at.queue_in.qsize() == 2, "正常新段不得被误去重"
 
 
 def test_asr_turbo_compute_type():

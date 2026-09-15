@@ -12,6 +12,7 @@ tests/itest_home/
 tests/test_report.txt
 scripts/probe_*.txt
 scripts/probe_home*/
+scripts/qa/
 tests/test_*.png
 
 # 会话归档（可能含令牌等敏感信息，绝不入库）

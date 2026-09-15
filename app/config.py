@@ -4,16 +4,17 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.7.3"
+APP_VERSION = "2.7.4"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
 CACHE_FILE = CONFIG_DIR / "trans_cache.json"
 HF_HOME = CONFIG_DIR / "hf"
 ARGOS_DATA = CONFIG_DIR / "argos"
-# v2.0.1：启动"指针"快照——storage_root 的唯一可信来源。relocate 会把
-# CONFIG_FILE 指向新根，但重启时只从本指针文件读 storage_root；
-# 此前 relocate 忘了回写指针，导致迁移在重启后失效（数据判未缓存重下）
+# v2.0.1：启动"指针"快照——storage_root 的唯一可信来源。
+# v2.7.4（A-1）：指针语义收敛为「只存 storage_root 单键」且 save 时全量回写——
+# 旧实现指针是全量快照、只在 relocate 时写一次，运行期更新只落新根：
+# 重启读旧指针 → 设置回滚 + relocate 把旧快照反写新根摧毁最新配置。
 POINTER_CONFIG_FILE = CONFIG_FILE
 
 DEFAULTS = {
@@ -54,8 +55,8 @@ DEFAULTS = {
     "low_latency_mode": True,          # v2.3.3（P1）：低延迟分段（6s 上限+收紧判停）；
                                        # v2.5.4 默认开——看视频字幕对延迟敏感（连续语流
                                        # 普通模式攒到 14s 才切句，实测感知"太慢"的主因）
-    "early_flush": True,               # v2.7.0（T2）：低延迟提前冲句——whisper 段内"人声已停多久"
-                                       # +末片置信度为证据时，攒句静默地板 3.5s→1.2s（仅低延迟模式生效）
+    "early_flush": True,               # v2.7.0（T2）：低延迟提前冲句——攒句静默地板 3.5s→2.0s
+                                       # （仅低延迟模式生效；榨干模式再压到 1.2s）
     "perf_turbo": False,               # v2.7.2：榨干模式——GPU INT8 推理 + 进程高优先级 +
                                        # 分段上限 6s→4s + 冲句地板 2.0s→1.2s（捆绑开关，默认关=一切照旧）
     "asr_hotwords": "",                # v2.7.0（T3）：热词提示——人名/专名/术语注入 whisper
@@ -63,7 +64,7 @@ DEFAULTS = {
     "lang_recheck": True,              # v2.7.0（T5）：语言锁复检——自动模式下每 20 段解除
                                        # 锁定重听一次，高置信不一致才切换（防错锁终身）
     "prewarm_model": True,             # v2.3.5（P5）：启动即后台预热已下载模型，消除"开始翻译"后近 1 分钟冷加载
-    "mishear_map": {},                 # 误听修正词典 {错: 对}，精确子串替换
+    "mishear_map": {},                 # 误听修正词典 {错: 对}；匹配方式随 fix_whole_word（拉丁整词/其余子串）
     "translate_fix_map": {},           # v2.3.6（P7）：译文修正词典 {错译: 正解}，对翻译结果精确替换
     "fix_whole_word": True,            # v2.6.0（R2）：词典全词匹配——纯拉丁词条整词替换，
                                        # 多义词（strikes=罢工）不再误伤专名；CJK 词条始终子串替换
@@ -75,8 +76,9 @@ DEFAULTS = {
     "overlay_h": 0,                    # v2.5.3：手动高度回归（拖底缘拉长后锁定；0=自动贴内容）
     "overlay_hint_shown": False,       # v2.4.3：面板手势引导只弹一次（首次显示面板后置 True）
     # v2.4.0 删除：overlay_list_mode/overlay_list_max/overlay_stream（面板天生历史滚动）、
-    # overlay_h（高度贴内容）、overlay_click_through（不透明板无空区）、
+    # overlay_click_through（不透明板无空区）、
     # overlay_outline/_width/_color（描边是透明玻璃时代的可读性补丁，面板不需要）
+    # （overlay_h 曾随透明玻璃退役，v2.5.3 手动高度回归后重新启用——见上）
 }
 
 LANGUAGES = {
@@ -192,18 +194,10 @@ class Config:
         os.environ["ARGOS_DATA_HOME"] = str(ARGOS_DATA)
         os.environ["ARGOS_TRANSLATE_PACKAGES_DIR"] = str(ARGOS_DATA / "packages")
         self._data["storage_root"] = str(new_root)
-        # v2.0.1：先把新 storage_root 写回启动指针文件（默认根下的 config.json）。
-        # 启动时只从指针文件读 storage_root，此前漏写导致迁移重启后失效
-        try:
-            pointer = POINTER_CONFIG_FILE
-            if pointer.resolve() != CONFIG_FILE.resolve():
-                pointer.parent.mkdir(parents=True, exist_ok=True)
-                tmp = pointer.with_suffix(".json.tmp")
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, pointer)
-        except Exception:
-            pass
+        # v2.7.4（A-1）：指针只存单键即刻回写；**先读回新根最新版再统一保存**——
+        # 顺序反了会用指针旧快照覆盖新根运行期配置（load 在 save 前）
+        self._write_pointer()
+        self.load()
         self.save()
         try:
             from app.translate import offline_pack as _op
@@ -218,15 +212,49 @@ class Config:
         except Exception:
             pass
 
+    @staticmethod
+    def _coerce(key, val):
+        """v2.7.4（A-2）：手编配置逐键消毒——类型不符按 DEFAULTS 原型挽救或丢弃。
+        零校验时代的实锤事故（全量测试活体复现）："overlay_font_size":"18px"
+        启动即崩；"max_history":"200" 运行中崩；词典值设 list → 每段抛全场零字幕。"""
+        proto = DEFAULTS.get(key)
+        try:
+            if isinstance(proto, bool):
+                return val if isinstance(val, bool) else proto
+            if isinstance(proto, int):
+                if isinstance(val, bool):
+                    return proto
+                if isinstance(val, int):
+                    return val
+                if isinstance(val, float):
+                    return int(val)
+                if isinstance(val, str):
+                    return int(float(val.strip()))   # "200" 挽救；"18px" 抛→原型
+                return proto
+            if isinstance(proto, str):
+                return val if isinstance(val, str) else proto
+            if isinstance(proto, dict):
+                if isinstance(val, dict) and all(
+                        isinstance(k, str) and isinstance(v, str) for k, v in val.items()):
+                    return val
+                return proto
+            if isinstance(proto, list):
+                return val if isinstance(val, list) else proto
+            return val
+        except Exception:
+            return proto
+
     def load(self):
         if CONFIG_FILE.exists():
             try:
                 # utf-8-sig 兼容手工编辑（如记事本）可能带入的 BOM
                 with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
                     saved = json.load(f)
+                if not isinstance(saved, dict):
+                    raise ValueError("config root not object")
                 for k in self._data:
                     if k in saved:
-                        self._data[k] = saved[k]
+                        self._data[k] = self._coerce(k, saved[k])
             except Exception:
                 # v2.0.1：损坏配置不再无声吞掉——改名留存供排查/恢复，
                 # 否则 storage_root 丢失会让已下载模型被判未缓存全部重下
@@ -237,6 +265,27 @@ class Config:
                     app_log.log("config.corrupt_kept_as_bad", path=str(bad))
                 except Exception:
                     pass
+
+    def _write_pointer(self):
+        """v2.7.4（A-1）：指针文件只存 storage_root 单键，且每次 save 全量同步——
+        旧实现的全量快照只在 relocate 时写一次，运行期脱节后重启回滚全部设置，
+        且 relocate 会把这份旧快照反灌新根摧毁最新配置。"""
+        try:
+            pointer = POINTER_CONFIG_FILE
+            try:
+                if pointer.resolve() == CONFIG_FILE.resolve():
+                    return          # 未迁移：CONFIG_FILE 本身就是指针，全量写即可
+            except Exception:
+                pass
+            pointer.parent.mkdir(parents=True, exist_ok=True)
+            tmp = pointer.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"storage_root": str(CONFIG_DIR)}, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, pointer)
+        except Exception:
+            pass
 
     def save(self):
         try:
@@ -249,6 +298,7 @@ class Config:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, CONFIG_FILE)
+            self._write_pointer()   # v2.7.4（A-1）：指针随每次保存同步，永不过期
         except Exception:
             try:
                 CONFIG_FILE.with_suffix(".json.tmp").unlink(missing_ok=True)
