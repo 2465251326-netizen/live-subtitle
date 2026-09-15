@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 v2.17.0（dual 拉高分配重构：历史区吃剩余+总高显式锁定，见 CHANGELOG；v2.16.x 见 CHANGELOG）
+> 最后更新：2026-09-16 v2.18.0（dual 简化：只保留原文/译文一条分割线，历史区自动——用户"为什么会有三条线"，见 CHANGELOG）
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.17.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.18.0**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -167,7 +167,7 @@ app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      78 项单元测试
-tests/test_integration.py 103 项集成测试
+tests/test_integration.py 102 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -376,6 +376,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **易错点**：_on_translated 里 push_history 后**别忘了 `_dual_current=""`**——首轮实现漏写导致数据层当前句不归零（集成锁当场抓获：'终版沉历史后当前句数据清空'）。
 - **锁**：t_main_partial_preview_alignment 升级（hist_rows==1 / hist_base / current 清空）。单元 78 / 集成 99 全绿。
 - **版本**：v2.14.0（新功能 minor）。CI 不监控（用户既定偏好）。
+- **v2.18.0 追记**：用户"为什么会有三条线"——v2.14~2.15 的三轮迭代堆出了三个横向把手（历史分割/原文译文分割/底缘拉伸），**交互过载**。简化裁决：历史区自动吃剩余本就是合理默认，历史手动分割是伪需求 → 删（`_dual_split_hit`/hist 模式/面板兜底/三点把手全清），只留 sep 一条 + 底缘。`overlay_dual_hist_h` 键保留兼容但不再读取。**教训：连续迭代同一个界面时，每隔几轮要退一步看"面板上共有几个交互把手"——功能正确≠交互正确。**
 - **v2.17.0 追记**：dual 高度分配的**第三次重构**（v2.14.1"拉高全给当前句"→ v2.17.0"历史吃剩余"）——空间分配策略要随布局演进重审：历史区从无到有后，"当前句优先"就变成"巨幅留白+历史被挤"。同场修掉 **adjustSize 缩回**：QScrollArea 默认 sizeHint 192px 会把 fixed 高度的子控件在 adjustSize 时"缩水"（面板总高锁不住），dual 模式跳过 adjustSize、用 `_dual_total_h` 显式 resize。**dual 分配现行语义**：当前句贴内容（≤45% 总高）→ 历史吃剩余 → 分割线拖过的 hist 值最优先（body 保底 46 让位）。
 - **v2.16.2 追记**：**QScrollArea 白底是三重坑**——QSS 选择器链不命中 viewport、viewport 需直接挂透明属性、真实 Windows 渲染下 QAbstractScrollArea 还会用 palette.base 填充。**新增任何 QScrollArea 必须三保险一次到位**：NoFrame + viewport.setAutoFillBackground(False)+WA_TranslucentBackground + viewport.setStyleSheet("background: transparent;")（参照 _dual_src_wrap/_dual_tgt_wrap 构建）。另：QWidget.grab() 的渲染 palette 与真实屏幕不同（白底在 grab 里可能不刺眼导致漏检）——**视觉回归验证一律用全屏 CopyFromScreen 真实渲染**。
 - **v2.15.x 追记**：分割把手**四轮**修复（v2.15.0 实现 → v2.15.1 坐标错位 → v2.15.2 事件过滤器 → v2.15.3 布局缝隙兜底）。v2.15.2 教训同前述（move/hover 不传播、QScrollArea 消费 press、position 不重映射，最终方案 = 7 子控件事件过滤器 + QTest 式 sendEvent 真实事件流验证）。**v2.15.3 最终一块拼图**：分割线恰好落在 hist 与 body 之间的 **layout spacing 缝隙**（无子控件）——press 时 `widgetAt` 返回面板自身、事件直达 `mousePressEvent`，而该分支在 v2.15.2 清理时误删 → 缝隙路径无主。修复 = 恢复面板级命中兜底分支（与过滤器共用 `_dual_split_apply_drag`），**过滤器（点在子控件上）+ 面板兜底（点在缝隙）双通道**。经验：事件过滤器不是银弹——**布局缝隙上的事件没有子控件可过滤**，面板自身的事件处理必须保留；验证务必用真实坐标（widgetAt 探测接收者）而非假设事件走向。

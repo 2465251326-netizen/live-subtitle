@@ -1000,18 +1000,14 @@ class MainWindow(QMainWindow):
         self._maybe_start_stream_preview()
 
     def _on_panel_dual_split(self, mode, value):
-        """v2.16.0：分割线拖拽结束 → 按目标落盘：
-        "hist" → overlay_dual_hist_h（历史区高度）
-        "src"  → overlay_dual_src_h（原文区高度，0=回自动分配）
-        均为 internal 键，恢复默认归零回自动。"""
+        """v2.16.0：分割线拖拽结束 → 原文区高度落盘 overlay_dual_src_h
+        （0=回自动贴内容；internal 键，恢复默认归零）。
+        v2.18.0：历史区分割交互已移除（历史自动吃剩余），仅 src 一种。"""
         try:
             v = int(value or 0)
         except (TypeError, ValueError):
             v = 0
-        if str(mode) == "src":
-            self.config.set("overlay_dual_src_h", v)
-        else:
-            self.config.set("overlay_dual_hist_h", v)
+        self.config.set("overlay_dual_src_h", v)
 
     def apply_overlay_from_config(self):
         c = self.config
@@ -1027,12 +1023,12 @@ class MainWindow(QMainWindow):
         # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复；
         # v2.13.0：恢复后按闸门热启/暂停流式预览（设置页保存路径同样生效）
         # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复
-        # v2.15.0：分割线拖出的历史区高度随配置恢复（0=自动）
-        # v2.16.0：原文区高度（拖原文/译文分割线）同
-        # v2.15.2 教训：以下各行存在顺序依赖——布局必须先恢复，再恢复分割
-        # 高度（_relayout 依赖布局模式），最后热启流式预览
+        # v2.11.0：面板布局（list/dual）随配置恢复——**必须最先**（后续
+        # 分割高度恢复与 _relayout 都依赖布局模式）
+        # v2.16.0：原文区高度（拖原文/译文分割线）随配置恢复（0=自动）
+        # v2.18.0：历史区分割已移除（overlay_dual_hist_h 键保留兼容旧配置
+        # 文件但不再读取——历史区恒自动吃剩余）
         self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
-        self.overlay.set_dual_hist_h_user(int(c.get("overlay_dual_hist_h") or 0))
         self.overlay.set_dual_src_h_user(int(c.get("overlay_dual_src_h") or 0))
         self._maybe_start_stream_preview()
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值

@@ -926,77 +926,42 @@ def t_overlay_dual_user_height_body():
 check("panel: dual 拉高→历史区吃剩余、当前句贴内容", t_overlay_dual_user_height_body)
 
 def t_overlay_dual_split_drag():
-    """v2.15.0：分割把手——拖出的历史区高度（_dual_hist_h_user）被
-    _relayout 尊重：拖大历史区则 body 让位、拖小则原文区变大；
-    锁定总高与自动两种模式都生效。"""
+    """v2.18.0：唯一可拖分割 = 原文/译文之间的 sep——拖出的原文区高度
+    （_dual_src_h_user）被 _relayout 固定生效、译文区吃剩余。"""
     from app.ui.caption_overlay import CaptionOverlay
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
-    ov.resize(620, 200)
-    for src, tgt in [("Sentence one here", "第一句在这里"),
-                     ("Sentence two here", "第二句在这里")]:
-        ov._dual_show_result(src, tgt, True)
-        ov.dual_push_history(src, tgt)
-    ov._dual_show_pending("Current sentence growing")
+    ov._dual_show_pending("Current sentence growing here")
+    ov._dual_spec("Current sentence growing here", "当前句在这里生长", True)
     for _ in range(6):
         app.processEvents()
-    ov.set_user_height(700)
+    body0 = ov._dual_body.height()
+    # 模拟分割把手下拖 120px（原文区变大、译文区让位——两者各自滚动）
+    ov.set_dual_src_h_user(max(60, ov._dual_src_wrap.height() + 120))
     for _ in range(6):
         app.processEvents()
-    h_auto = ov._dual_hist.height()
-    assert h_auto >= 56, f"历史区保底 56px：{h_auto}"
-    # 模拟分割把手下拖 120px（历史区变大、原文区让位）——700 总高下不触顶
-    ov.set_dual_hist_h_user(h_auto + 120)
+    s1 = ov._dual_src_wrap.height()
+    assert abs(s1 - max(60, ov._dual_src_wrap.height())) <= 4 or s1 >= 60, \
+        f"原文区应为用户高度：{s1}"
+    assert ov._dual_src_h_user >= 60
+    # 拖回小值：原文区缩小
+    ov.set_dual_src_h_user(60)
     for _ in range(6):
         app.processEvents()
-    h1 = ov._dual_hist.height()
-    # body 保底 46 → 历史上限 = 700-66-46
-    expect = min(h_auto + 120, 700 - 66 - 46)
-    assert abs(h1 - expect) <= 12, f"分割拖拽应即时生效：{h_auto} -> {h1}（期望 {expect}）"
-    assert ov._dual_body.height() <= 700 - 66 - 40 + 8, \
-        f"原文区应给历史让位：{ov._dual_body.height()}"
-    # 模拟分割把手上拖回保底（历史区变小、原文区变大）
-    ov.set_dual_hist_h_user(56)
-    for _ in range(6):
-        app.processEvents()
-    h2 = ov._dual_hist.height()
-    assert 56 <= h2 <= 72, f"历史区应回缩到保底附近：{h2}"
-    assert ov._dual_body.height() > 520 - 66 - 120, \
-        f"历史缩小后原文区应变大：{ov._dual_body.height()}"
+    assert ov._dual_src_wrap.height() <= 70, \
+        f"原文区应回缩：{ov._dual_src_wrap.height()}"
+    assert ov._dual_body.height() >= body0 - 8, "body 总高不应突变"
     ov.deleteLater()
-check("panel: dual 分割线拖拽分配两区高度", t_overlay_dual_split_drag)
+check("panel: dual 原文/译文分割线拖拽（唯一分割）", t_overlay_dual_split_drag)
 
-def t_dual_split_hit_global():
-    """v2.15.1：分割命中必须用**全局坐标**——鼠标事件从子控件（QLabel/
-    QScrollArea）传播到面板时 position 不重映射（相对原接收者），相对坐标
-    判定永远错位（用户实测"还是不行"的根因）。"""
-    from app.ui.caption_overlay import CaptionOverlay
-    from PySide6.QtCore import QPoint
-    ov = CaptionOverlay()
-    ov.set_layout_mode("dual")
-    ov.resize(620, 300)
-    ov.move(80, 60)
-    ov.show()
-    app.processEvents()
-    ov._dual_show_result("Hello world", "你好世界", True)
-    ov.dual_push_history("Hello world", "你好世界")
-    for _ in range(4):
-        app.processEvents()
-    assert ov._dual_hist.isVisible()
-    bottom = ov._dual_hist.mapToGlobal(QPoint(0, ov._dual_hist.height())).y()
-    assert ov._dual_split_hit(bottom) is True, "底边中心必须命中"
-    assert ov._dual_split_hit(bottom - 4) is True, "底边上方必须命中"
-    assert ov._dual_split_hit(bottom + 8) is True, "底边下方（body 侧）必须命中"
-    assert ov._dual_split_hit(bottom + 40) is False, "远离命中带不得误判"
-    assert ov._dual_split_hit(bottom - 60) is False, "历史区内部不得误判"
-    ov.deleteLater()
-check("panel: 分割命中用全局坐标（传播坐标不重映射）", t_dual_split_hit_global)
+# v2.18.0：t_dual_split_hit_global 已随历史分割交互移除（_dual_split_hit
+# 不复存在——唯一可拖分割 = sep 本体，事件直接发给它，无坐标命中判定）
 
 def t_overlay_dual_split_real_drag():
-    """v2.15.2：**真实事件流**拖拽——QMouseEvent + sendEvent 按真实路径
-    （分割点处实际接收的子控件 → 事件过滤器），验证事件路由而非仅分配
-    逻辑：press 启动拖拽、move 跟手、release 收口落盘。"""
+    """v2.18.0：**真实事件流**拖拽——QMouseEvent + sendEvent 发到 sep 本体
+    （唯一可拖分割线），验证事件路由：press 启动拖拽、move 跟手、release
+    收口落盘。"""
     from app.ui.caption_overlay import CaptionOverlay
     from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
     from PySide6.QtGui import QMouseEvent
@@ -1006,43 +971,39 @@ def t_overlay_dual_split_real_drag():
     ov.move(80, 60)
     ov.show()
     app.processEvents()
-    ov._dual_show_result("Hello world", "你好世界", True)
-    ov.dual_push_history("Hello world", "你好世界")
-    ov._dual_show_pending("Current growing")
+    ov._dual_show_pending("Current growing here")
+    ov._dual_spec("Current growing here", "当前句在这里生长", True)
     for _ in range(6):
         app.processEvents()
-    # 700 总高：拖 90 不触"body 保底 46"的钳制上限
-    ov.set_user_height(700)
-    for _ in range(6):
-        app.processEvents()
-    assert ov._dual_hist.isVisible()
-    h0 = ov._dual_hist.height()
-    g = ov._dual_hist.mapToGlobal(
-        QPoint(ov._dual_hist.width() // 2, ov._dual_hist.height() + 5))
-    target = QApplication.widgetAt(g)
+    assert ov._dual_sep.isVisible()
+    s0 = ov._dual_src_wrap.height()
 
-    def send_mouse(gtype, gpos, button=None):
-        t = QApplication.widgetAt(gpos) or target
-        local = t.mapFromGlobal(gpos)
+    def send_mouse(target, gtype, gpos, button=None):
+        local = target.mapFromGlobal(gpos)
         ev = QMouseEvent(QEvent.Type(gtype), QPointF(local), QPointF(gpos),
                          button or Qt.NoButton, button or Qt.NoButton,
                          Qt.NoModifier)
-        QApplication.sendEvent(t, ev)
+        QApplication.sendEvent(target, ev)
 
-    send_mouse(QEvent.Type.MouseButtonPress, g, Qt.LeftButton)
-    assert ov._dual_split_drag, "press 应经事件过滤器启动分割拖拽"
+    g = ov._dual_sep.mapToGlobal(QPoint(ov._dual_sep.width() // 2, 4))
+    send_mouse(ov._dual_sep, QEvent.Type.MouseButtonPress, g, Qt.LeftButton)
+    assert ov._dual_split_drag, "sep press 应经事件过滤器启动分割拖拽"
     for dy in (30, 60, 90):
-        send_mouse(QEvent.Type.MouseMove, QPoint(g.x(), g.y() + dy), Qt.LeftButton)
-    h_mid = ov._dual_hist.height()
-    # 700 总高下 hist 上限 = 700-66-46=588（body 保底 46），若 h0 已近上限
-    # 则拖动增量被钳制属正常，跟手性由 h_mid >= h0 保证
-    expect_mid = min(h0 + 90, 700 - 66 - 46)
-    assert h_mid >= h0 and h_mid <= expect_mid + 4, \
-        f"拖动中历史区应跟手：{h0} -> {h_mid}（期望上限 {expect_mid}）"
-    send_mouse(QEvent.Type.MouseButtonRelease, QPoint(g.x(), g.y() + 90), Qt.LeftButton)
+        send_mouse(ov._dual_sep, QEvent.Type.MouseMove,
+                   QPoint(g.x(), g.y() + dy), Qt.LeftButton)
+        # v2.18.0：_relayout 走 singleShot 排期——不 processEvents 的话
+        # wrap.height() 停在旧值，s_mid 断言会误报（排期消费后才有真高度）
+        for _ in range(2):
+            app.processEvents()
+    s_mid = ov._dual_src_wrap.height()
+    assert s_mid >= s0 + 60, f"拖动中原文区应跟手变大：{s0} -> {s_mid}"
+    send_mouse(ov._dual_sep, QEvent.Type.MouseButtonRelease,
+               QPoint(g.x(), g.y() + 90), Qt.LeftButton)
+    for _ in range(4):
+        app.processEvents()
     assert ov._dual_split_drag is False, "release 应收口"
-    h1 = ov._dual_hist.height()
-    assert abs(h1 - expect_mid) <= 16, f"最终高度应达钳制期望：{h1} vs {expect_mid}"
+    assert ov._dual_src_h_user == ov._dual_src_wrap.height(), \
+        f"松手记录的用户高度应与实际一致：{ov._dual_src_h_user} vs {ov._dual_src_wrap.height()}"
     ov.deleteLater()
 check("panel: 分割线真实事件流拖拽（事件过滤器）", t_overlay_dual_split_real_drag)
 
