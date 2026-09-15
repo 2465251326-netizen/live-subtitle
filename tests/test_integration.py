@@ -965,6 +965,32 @@ def t_overlay_dual_split_drag():
     ov.deleteLater()
 check("panel: dual 分割线拖拽分配两区高度", t_overlay_dual_split_drag)
 
+def t_dual_split_hit_global():
+    """v2.15.1：分割命中必须用**全局坐标**——鼠标事件从子控件（QLabel/
+    QScrollArea）传播到面板时 position 不重映射（相对原接收者），相对坐标
+    判定永远错位（用户实测"还是不行"的根因）。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    from PySide6.QtCore import QPoint
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual")
+    ov.resize(620, 300)
+    ov.move(80, 60)
+    ov.show()
+    app.processEvents()
+    ov._dual_show_result("Hello world", "你好世界", True)
+    ov.dual_push_history("Hello world", "你好世界")
+    for _ in range(4):
+        app.processEvents()
+    assert ov._dual_hist.isVisible()
+    bottom = ov._dual_hist.mapToGlobal(QPoint(0, ov._dual_hist.height())).y()
+    assert ov._dual_split_hit(bottom) is True, "底边中心必须命中"
+    assert ov._dual_split_hit(bottom - 4) is True, "底边上方必须命中"
+    assert ov._dual_split_hit(bottom + 8) is True, "底边下方（body 侧）必须命中"
+    assert ov._dual_split_hit(bottom + 40) is False, "远离命中带不得误判"
+    assert ov._dual_split_hit(bottom - 60) is False, "历史区内部不得误判"
+    ov.deleteLater()
+check("panel: 分割命中用全局坐标（传播坐标不重映射）", t_dual_split_hit_global)
+
 def t_overlay_relayout_pending_release():
     """v2.11.0 关键修复锁：_consume_relayout 收敛后必须释放 _relayout_pending。
 

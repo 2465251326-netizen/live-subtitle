@@ -578,19 +578,29 @@ class CaptionOverlay(QWidget):
         sb = self._dual_hist.verticalScrollBar()
         self._hist_follow = (v >= sb.maximum() - 4)
 
-    def _dual_hist_bottom_y(self):
-        """v2.15.0：历史区底边在面板坐标系中的 y（分割把手命中带中心）。"""
+    def _dual_hist_bottom_y(self, global_coords=False):
+        """v2.15.0：历史区底边的 y。global_coords=True 时返回**全局屏幕** y——
+        鼠标事件从子控件（QLabel/QScrollArea）传播到面板时 position 不重映射
+        （相对原接收者），相对坐标判定会永远错位失配（用户实测"还是不行"
+        的根因），必须用全局坐标比对。"""
         try:
+            if global_coords:
+                return self._dual_hist.mapToGlobal(
+                    QPoint(0, self._dual_hist.height())).y()
             return self._dual_hist.mapTo(self, QPoint(
                 0, self._dual_hist.height())).y()
         except RuntimeError:
             return -1
 
-    def _dual_split_hit(self, y):
-        """v2.15.0：分割把手命中判定（历史区底边 ±6px，仅 dual+可见+未收起）。"""
+    def _dual_split_hit(self, global_y):
+        """v2.15.0：分割把手命中判定，仅 dual+可见+未收起。参数必须是
+        **全局屏幕 y**（见 _dual_hist_bottom_y 的坐标说明）。
+        v2.15.1：命中带中心下移 2px、放宽 ±9——分割线上半落在 QScrollArea
+        内（press 会被它消费），可用的主要是下方（当前句区）一侧，故带心
+        偏下让有效命中区最大化。"""
         return (self._layout_mode == "dual" and not self._collapsed
                 and self._dual_hist.isVisible()
-                and abs(y - self._dual_hist_bottom_y()) <= 6)
+                and abs(global_y - (self._dual_hist_bottom_y(global_coords=True) + 2)) <= 9)
 
     def set_dual_hist_h_user(self, h):
         """v2.15.0：历史区用户高度入口（主窗配置恢复/0=回自动分配）。
@@ -909,11 +919,14 @@ class CaptionOverlay(QWidget):
                              if self._dual_hist_rows else 0)
                 if self._dual_hist_rows:
                     # v2.15.0：分割线拖过的历史高度优先（自动总高模式下拖大
-                    # 历史区 → 面板随之长高，分配依然自由）
+                    # 历史区 → 面板随之长高）
                     if self._dual_hist_h_user:
                         hist_h = max(40, self._dual_hist_h_user)
                     else:
-                        hist_h = max(0, min(hist_want, avail - chrome - body_h))
+                        # v2.15.1：自动分支同样保底 56px——旧 40px 门槛会把
+                        # 单行历史（内容需求 ~38px）整条隐藏（与锁定总高分
+                        # 支同源，v2.14.1 只修了一处漏了这里）
+                        hist_h = max(56, min(hist_want, avail - chrome - body_h))
                 else:
                     hist_h = 0
                 if self._dual_hist_rows and hist_h >= 40:
@@ -1293,8 +1306,10 @@ class CaptionOverlay(QWidget):
                 self._v_resizing = True
                 self._v_resize_start = event.globalPosition().toPoint()
                 self._v_resize_start_h = self.height()
-            elif self._dual_split_hit(pos.y()):
+            elif (self._dual_split_hit(event.globalPosition().toPoint().y())):
                 # v2.15.0：分割把手拖拽——历史区/当前句区高度比例自由分配
+                # v2.15.1：命中判定改用全局坐标（传播事件的 position 不重映射，
+                # 相对坐标判定永远错位——"还是不行"的根因）
                 self._dual_split_drag = True
                 self._dual_split_start_y = event.globalPosition().toPoint()
                 self._dual_split_start_h = self._dual_hist.height()
@@ -1343,7 +1358,8 @@ class CaptionOverlay(QWidget):
                       and not self._collapsed)
         near_bottom = (pos.y() >= self.height() - self.RESIZE_EDGE
                        and not self._collapsed)
-        near_split = self._dual_split_hit(pos.y())
+        # v2.15.1：分割命中同样用全局坐标（传播事件坐标不重映射）
+        near_split = self._dual_split_hit(event.globalPosition().toPoint().y())
         if near_right:
             self.setCursor(Qt.SizeHorCursor)
         elif near_bottom or near_split:
