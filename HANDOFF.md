@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-15 v2.7.2 发布（引擎自动切换开关 + 榨干模式；见第十一节快照）
+> 最后更新：2026-09-15 v2.7.3 发布（孤儿线程案销账；见第十一节）
 
 ---
 
@@ -11,7 +11,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.7.2**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.7.3**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -221,4 +221,6 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **硬件基线**：i5-10600KF 6C12T / RTX 2060 6GB（空闲 1365/2100MHz）/ 16G / NVMe；**电源计划=平衡**（在压频，切高性能是用户侧待办，命令已给）。用户当前 asr_accuracy=quality（三档最慢）——已建议看直播切 fast，用户未表态。
 - **A/B 基准方法（留档）**：隔离实例+无停顿长句单条 wav（25.6s）跑两轮，`CloseMainWindow` 优雅退出保 `pipeline.latency` 落盘（Stop-Process 会跳过遥测汇总——踩过）；对比 n_reco/reco_p50/hold_p50。
 - **常设授权（新）**：开发前有任何问题随时问用户，先问后做不猜。
+- **v2.7.3 孤儿线程案销账**（用户批准修复）：根因确认=排水宽限 15s 与停止等待 2.5s 错配 + 主线程 wait 期间无人消费排队信号（尾句转发源被掐死）。修法=三件套：`TranslateThread.close_input()` 输入门 + 主窗 `_on_asr_finished`（身份守卫：冲刷残组→关门，按序排在全部尾句转发之后）+ stop_pipeline **不等翻译线程**（日志改 `pipeline.translate_draining` 诚实标签）。真机验证：停止后 <1s 退出、尾句翻译不丢、orphan_thread 不再出现。
+- **同日用户侧变更**：电源计划切「高性能」（用户授权我执行）；用户配置 asr_accuracy quality→fast（用途=看英语视频，改前经问答确认）；YouTube 视频内容未抓到（页面截断），热词建议留给用户自填。
 
