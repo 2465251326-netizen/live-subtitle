@@ -184,6 +184,7 @@ _FIELD_SPECS = {
     "overlay_layout":       ("overlay", "combo"),
     "stream_preview":       ("pipeline", "check"),
     "overlay_dual_hist_h":  ("internal", "hidden"),
+    "overlay_dual_src_h":   ("internal", "hidden"),
     "overlay_font_size":    ("overlay", "spin"),
     "overlay_text_color":   ("overlay", "color"),
     "overlay_bg_color":     ("overlay", "color"),
