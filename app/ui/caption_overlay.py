@@ -985,64 +985,34 @@ class CaptionOverlay(QWidget):
             self._dual_body.setMinimumHeight(0)
             self._dual_body.setMaximumHeight(16777215)
             chrome = 54 + 12                          # 工具条 + outer margins/spacing
-            sep_h = 8                                 # v2.16.0：分割把手抓取带
+            sep_h = 8                                 # 分割把手抓取带
             avail_w = max(80, self._dual_body.width() - 24)
             src_want = ((self._dual_src.heightForWidth(max(40, avail_w - 2)) + 2)
                         if self._dual_src.isVisible() else 0)
             tgt_want = self._dual_tgt.heightForWidth(max(40, avail_w - 2)) + 2
             body_want = src_want + tgt_want + sep_h + 24   # + dl 纵向 margins/spacing
-            if self._user_height:
-                # v2.14.1：拉高 = **锁定面板总高**——当前句区吃"总高-工具条-
-                # 历史"的全部剩余（拖动即时反馈，绝不弹回）；历史区最多占
-                # 总高 55%、保底 56px 可滚。历史无行时当前句区独占整板。
-                # v2.15.0：分割线拖出的历史高度（_dual_hist_h_user）优先——
-                # 用户显式拖过的比例不应被自动分配覆盖。
-                total = self._user_height
-                hist_h = 0
-                if self._dual_hist_rows:
-                    if self._dual_hist_h_user:
-                        hist_h = max(40, min(self._dual_hist_h_user,
-                                             max(40, total - chrome - 46)))
-                    else:
-                        # 有行即保底 56px（可滚）——单行内容需求 ~38px，若按
-                        # "内容需求≥40 才显示"判定会把单行历史整条杀掉
-                        # （集成锁与独立调试双双实证）
-                        hist_h = max(56, min(self._dual_hist_body.sizeHint().height(),
-                                             int(total * 0.55),
-                                             max(56, total - chrome - 46)))
+            # v2.17.0：分配重构（用户截图"？？？"——v2.14.1"拉高全给当前句
+            # 区"在 v2.16.0 可滚动历史区之后严重失衡：当前句内容只两三行却被
+            # 拉出巨幅留白，历史区反被挤裁）。新语义：
+            #   当前句区 = 贴内容（上限 45% 总高，超长句给滚动）
+            #   历史区   = 吃全部剩余（内容多，正好多显示；拉高=看更多历史）
+            #   分割线拖过的历史高度（_dual_hist_h_user）仍最优先
+            total = (self._user_height
+                     or int((QGuiApplication.primaryScreen().availableGeometry().height()
+                             or 800) * 0.68))
+            body_h = max(46, min(body_want, int(total * 0.45)))
+            hist_h = max(40, total - chrome - body_h)
+            if self._dual_hist_rows and self._dual_hist_h_user:
+                # 用户拖过分割线：尊重其比例，当前句让位但保底 46（内容
+                # 超出部分由 src/tgt 各自滚动，不丢字）
+                hist_h = max(40, min(self._dual_hist_h_user,
+                                     max(40, total - chrome - 46)))
                 body_h = max(46, total - chrome - hist_h)
-                self._dual_body.setFixedHeight(body_h)
-                if hist_h:
-                    self._dual_hist.setVisible(True)
-                    self._dual_hist.setFixedHeight(hist_h)
-                else:
-                    self._dual_hist.setVisible(False)
-                    self._dual_hist.setFixedHeight(0)
-            else:
-                body_h = min(max(body_want, 46), 300)
-                self._dual_body.setFixedHeight(body_h)
-                avail = int((QGuiApplication.primaryScreen().availableGeometry().height()
-                             or 800) * 0.68)
-                hist_want = (self._dual_hist_body.sizeHint().height()
-                             if self._dual_hist_rows else 0)
-                if self._dual_hist_rows:
-                    # v2.15.0：分割线拖过的历史高度优先（自动总高模式下拖大
-                    # 历史区 → 面板随之长高）
-                    if self._dual_hist_h_user:
-                        hist_h = max(40, self._dual_hist_h_user)
-                    else:
-                        # v2.15.1：自动分支同样保底 56px——旧 40px 门槛会把
-                        # 单行历史（内容需求 ~38px）整条隐藏（与锁定总高分
-                        # 支同源，v2.14.1 只修了一处漏了这里）
-                        hist_h = max(56, min(hist_want, avail - chrome - body_h))
-                else:
-                    hist_h = 0
-                if self._dual_hist_rows and hist_h >= 40:
-                    self._dual_hist.setVisible(True)
-                    self._dual_hist.setFixedHeight(hist_h)
-                else:
-                    self._dual_hist.setVisible(False)
-                    self._dual_hist.setFixedHeight(0)
+            self._dual_body.setFixedHeight(body_h)
+            # v2.17.0a：历史区**恒显示**（无行时为空白占位）——否则面板总高
+            # 无法锁定（拖底缘拉高会再次"弹回"，v2.14.0 同款回归）
+            self._dual_hist.setVisible(True)
+            self._dual_hist.setFixedHeight(hist_h)
             # v2.16.0：当前句区内部——原文区用户高度（拖 sep 分割线得出）
             # 固定生效，译文区吃剩余（两者各自可滚动，永不互相裁切）
             if self._dual_src_h_user:
@@ -1052,6 +1022,10 @@ class CaptionOverlay(QWidget):
             else:
                 self._dual_src_wrap.setMinimumHeight(0)
                 self._dual_src_wrap.setMaximumHeight(16777215)
+            # v2.17.0a：dual 面板**总高显式锁定**（chrome+历史+当前句+外框）——
+            # QScrollArea 默认 sizeHint 高 192，adjustSize 会按它把面板缩回去
+            # （fixed 452 的历史区被裁 76px，拉高"没反应"的元凶）
+            self._dual_total_h = total
         else:
             self._mini.setVisible(False)
             self._dual_body.setVisible(False)
@@ -1069,10 +1043,16 @@ class CaptionOverlay(QWidget):
                 Qt.ScrollBarAlwaysOff if want <= self._scroll.height() else Qt.ScrollBarAsNeeded)
         # v2.4.0 实机验收抓到的宽度跳变：adjustSize 会按内容重排宽度（722→432→698）。
         # 契约修正：宽度只认用户（初值/右缘拖拽/持久化恢复），高度才跟内容走。
+        # v2.17.0a：dual 模式跳过 adjustSize——QScrollArea 默认 sizeHint 高
+        # 192 会把面板缩回去（fixed 高度的历史区被裁），总高已显式锁定
+        # （_dual_total_h = chrome+历史+当前句+外框）
         w0 = self.width()
-        self.adjustSize()
-        if w0 >= self.MIN_W:
-            self.resize(w0, self.height())
+        if self._layout_mode == "dual" and not self._collapsed:
+            self.resize(w0, int(getattr(self, "_dual_total_h", self.height())))
+        else:
+            self.adjustSize()
+            if w0 >= self.MIN_W:
+                self.resize(w0, self.height())
         if self._follow:
             QTimer.singleShot(0, self._scroll_bottom)
 

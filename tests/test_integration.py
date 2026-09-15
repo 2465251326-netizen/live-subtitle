@@ -895,10 +895,9 @@ def t_overlay_dual_layout():
 check("panel: 上下双语布局（dual）全链路", t_overlay_dual_layout)
 
 def t_overlay_dual_user_height_body():
-    """v2.14.1：拉高 = **锁定面板总高**——原文区吃"总高-工具条-历史"的全部
-    剩余（拖动即时反馈）；历史最多占 55%、保底 56px 可滚；历史无行时当前
-    句区独占整板。v2.14.0 曾把增量全分给历史区，历史无行时拉高完全无效
-    （面板弹回，用户实测"完全拉不了"）。"""
+    """v2.17.0：拉高面板 → **历史区吃剩余**（内容多正好多显示），当前句区
+    贴内容（上限 45% 总高）——v2.14.1"拉高全给当前句区"在可滚动历史区之后
+    严重失衡（用户截图"？？？"：当前句两三行配巨幅留白、历史被挤裁）。"""
     from app.ui.caption_overlay import CaptionOverlay
     ov = CaptionOverlay()
     ov.show()
@@ -906,24 +905,25 @@ def t_overlay_dual_user_height_body():
     ov._dual_show_pending("The quick brown fox jumps over the lazy dog")
     for _ in range(4):
         app.processEvents()
-    h0 = ov._dual_body.height()
-    ov.set_user_height(520)
+    body_before = ov._dual_body.height()
+    ov.set_user_height(620)
     for _ in range(6):
         app.processEvents()
-    h1 = ov._dual_body.height()
-    assert h1 > h0, f"拉高后原文区必须变大：{h0} -> {h1}"
-    assert abs(ov.height() - 520) <= 14, \
-        f"面板总高应锁定为用户高度：{ov.height()} vs 520"
-    assert ov._dual_hist.isVisible() is False, "历史无行时应隐藏、当前句区独占"
-    ov.dual_push_history("Past sentence", "过去的句子")
-    for _ in range(4):
+    # 当前句区：贴内容（不因拉高被强行撑大产生巨幅留白）
+    assert abs(ov._dual_body.height() - body_before) <= 8, \
+        f"当前句区应贴内容，不随拉高暴涨：{body_before} -> {ov._dual_body.height()}"
+    assert abs(ov.height() - 620) <= 14, f"面板总高锁定：{ov.height()} vs 620"
+    # 历史行出现：吃剩余空间（显示更多历史）
+    for i in range(6):
+        ov.dual_push_history(f"Historical sentence number {i}",
+                             f"历史句第 {i} 句")
+    for _ in range(6):
         app.processEvents()
-    assert ov._dual_hist.isVisible(), "历史行出现后历史区可见"
-    assert abs(ov.height() - 520) <= 14, "历史出现后总高仍锁定"
-    h2 = ov._dual_body.height()
-    assert h2 >= 350, f"原文区不应被历史压瘪：{h2}"
+    assert ov._dual_hist.isVisible()
+    assert ov._dual_hist.height() > ov._dual_body.height(), \
+        f"拉高后剩余空间应归历史区：hist={ov._dual_hist.height()} body={ov._dual_body.height()}"
     ov.deleteLater()
-check("panel: dual 拉高锁定总高、原文区优先", t_overlay_dual_user_height_body)
+check("panel: dual 拉高→历史区吃剩余、当前句贴内容", t_overlay_dual_user_height_body)
 
 def t_overlay_dual_split_drag():
     """v2.15.0：分割把手——拖出的历史区高度（_dual_hist_h_user）被
@@ -941,18 +941,20 @@ def t_overlay_dual_split_drag():
     ov._dual_show_pending("Current sentence growing")
     for _ in range(6):
         app.processEvents()
-    ov.set_user_height(520)
+    ov.set_user_height(700)
     for _ in range(6):
         app.processEvents()
     h_auto = ov._dual_hist.height()
     assert h_auto >= 56, f"历史区保底 56px：{h_auto}"
-    # 模拟分割把手下拖 120px（历史区变大、原文区让位）
+    # 模拟分割把手下拖 120px（历史区变大、原文区让位）——700 总高下不触顶
     ov.set_dual_hist_h_user(h_auto + 120)
     for _ in range(6):
         app.processEvents()
     h1 = ov._dual_hist.height()
-    assert abs(h1 - (h_auto + 120)) <= 12, f"分割拖拽应即时生效：{h_auto} -> {h1}"
-    assert ov._dual_body.height() <= 520 - 66 - 40 + 8, \
+    # body 保底 46 → 历史上限 = 700-66-46
+    expect = min(h_auto + 120, 700 - 66 - 46)
+    assert abs(h1 - expect) <= 12, f"分割拖拽应即时生效：{h_auto} -> {h1}（期望 {expect}）"
+    assert ov._dual_body.height() <= 700 - 66 - 40 + 8, \
         f"原文区应给历史让位：{ov._dual_body.height()}"
     # 模拟分割把手上拖回保底（历史区变小、原文区变大）
     ov.set_dual_hist_h_user(56)
@@ -1009,7 +1011,8 @@ def t_overlay_dual_split_real_drag():
     ov._dual_show_pending("Current growing")
     for _ in range(6):
         app.processEvents()
-    ov.set_user_height(520)
+    # 700 总高：拖 90 不触"body 保底 46"的钳制上限
+    ov.set_user_height(700)
     for _ in range(6):
         app.processEvents()
     assert ov._dual_hist.isVisible()
@@ -1031,11 +1034,15 @@ def t_overlay_dual_split_real_drag():
     for dy in (30, 60, 90):
         send_mouse(QEvent.Type.MouseMove, QPoint(g.x(), g.y() + dy), Qt.LeftButton)
     h_mid = ov._dual_hist.height()
-    assert h_mid > h0 + 40, f"拖动中历史区应跟手：{h0} -> {h_mid}"
+    # 700 总高下 hist 上限 = 700-66-46=588（body 保底 46），若 h0 已近上限
+    # 则拖动增量被钳制属正常，跟手性由 h_mid >= h0 保证
+    expect_mid = min(h0 + 90, 700 - 66 - 46)
+    assert h_mid >= h0 and h_mid <= expect_mid + 4, \
+        f"拖动中历史区应跟手：{h0} -> {h_mid}（期望上限 {expect_mid}）"
     send_mouse(QEvent.Type.MouseButtonRelease, QPoint(g.x(), g.y() + 90), Qt.LeftButton)
     assert ov._dual_split_drag is False, "release 应收口"
     h1 = ov._dual_hist.height()
-    assert abs(h1 - (h0 + 90)) <= 16, f"拖 90px 历史区应变化约 90：{h0} -> {h1}"
+    assert abs(h1 - expect_mid) <= 16, f"最终高度应达钳制期望：{h1} vs {expect_mid}"
     ov.deleteLater()
 check("panel: 分割线真实事件流拖拽（事件过滤器）", t_overlay_dual_split_real_drag)
 
