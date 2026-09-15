@@ -1154,6 +1154,54 @@ def test_engine_auto_fallback_switch():
 
 # ---------- v2.7.2 榨干模式（perf_turbo）单元锁 ----------
 
+def test_translate_close_input_exits_drain():
+    """v2.7.3：close_input+队列排空→立即退出（不再空等 15s 宽限）；
+    已入队条目仍先翻译（尾句不丢）。"""
+    import time as _t
+    from app.translate import translator as tmod
+
+    class Eng:
+        def translate(self, text, source, target):
+            return ("译:" + text, "en")
+
+    class FakeCache:
+        def get(self, k):
+            return None
+
+        def put(self, k, v):
+            pass
+
+        def save(self):
+            pass
+
+    orig_engines, orig_cache = tmod.ENGINES, tmod._cache
+    tmod.ENGINES = {"argos": Eng(), "mymemory": Eng(), "google": Eng()}
+    tmod._cache = FakeCache()
+    try:
+        tt = tmod.TranslateThread("argos", "zh-CN")
+        got = []
+        tt.result_ready.connect(lambda s, tr, eng, det, err: got.append(tr))
+        tt.queue_in.put(("alpha", "en"))
+        tt._stop = True
+        tt._stop_at = _t.monotonic()
+        tt.close_input()
+        t0 = _t.monotonic()
+        tt.run()   # 排空后应秒退；旧行为是等满 15s
+        dt = _t.monotonic() - t0
+        assert got == ["译:alpha"], got
+        assert dt < 3.0, f"close_input 后不得等宽限，实耗 {dt:.1f}s"
+        # 对照：不关门则走宽限路径（用短宽限验证逻辑分支存在）
+        tt2 = tmod.TranslateThread("argos", "zh-CN")
+        tt2.DRAIN_GRACE = 0.6
+        tt2._stop = True
+        tt2._stop_at = _t.monotonic()
+        t0 = _t.monotonic()
+        tt2.run()   # 队列空+未关门→等满 0.6s 宽限再退
+        assert _t.monotonic() - t0 >= 0.5, "未关门必须仍走宽限（尾句转发窗）"
+    finally:
+        tmod.ENGINES, tmod._cache = orig_engines, orig_cache
+
+
 def test_segmenter_turbo_cap():
     """v2.7.2：榨干模式连续语流切段上限 6s→4s；非低延迟不受影响。"""
     from app.audio.capture import Segmenter

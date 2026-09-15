@@ -1138,6 +1138,8 @@ class MainWindow(QMainWindow):
         self.asr_thread.status_changed.connect(self._on_asr_status)
         self.asr_thread.error_occurred.connect(self._on_pipeline_error)
         self.asr_thread.model_ready.connect(self._on_model_ready)
+        # v2.7.3：识别线程退场（含排水）→ 冲刷攒句+关闭翻译输入门（治"每次停止必孤儿"）
+        self.asr_thread.finished.connect(self._on_asr_finished)
         self.asr_thread.start()
         self._sid_asr = self.asr_thread   # v2.6.2（P1-6）：会话身份引用
 
@@ -1518,12 +1520,15 @@ class MainWindow(QMainWindow):
         # 加载未完成（_asr_ready 为假）时缩短等待，线程交孤儿容器收尾
         for i, t in enumerate(threads[1:], start=1):
             if t:
+                if i == 2:
+                    # v2.7.3：翻译线程不再阻塞等待——它的尾段来自"主循环转发 asr 排队
+                    # 信号"，主线程停在 wait 上反而掐死自己的转发源（死锁结构）。
+                    # 退出时机改由 _on_asr_finished→close_input 决定（尾句落地即退，
+                    # 通常 <1s；异常时 15s 宽限兜底）。此处继续往下走不阻塞 GUI
+                    continue
                 timeout = 2500
                 if i == 1 and not getattr(self, "_asr_ready", False):
                     timeout = 500
-                # 不在 GUI 线程长等（模型加载中停止曾最长冻界面 15s）：
-                # 超时线程交孤儿容器后台排水（translate 的排水宽限期让它
-                # 等 asr 尾句转发进来，v1.9.4 的"后台自行完成"语义保留）
                 t.wait(timeout)
         # v2.0.3：超时仍未退出的线程不再裸丢引用（只剩 parent 关系，MainWindow
         # 析构时会销毁运行中的 QThread → qFatal 崩溃）。改为摘除 parent、
@@ -1534,7 +1539,12 @@ class MainWindow(QMainWindow):
                 _orphan_threads().append(t)
                 t.finished.connect(t.deleteLater)
                 from app import log as app_log
-                app_log.log("pipeline.orphan_thread", cls=type(t).__name__)
+                if t is threads[2]:
+                    # v2.7.3：翻译线程停止时仍在跑=设计内"停止后台排水"
+                    # （close_input 后秒级自退），单列标签，与真孤儿区分
+                    app_log.log("pipeline.translate_draining")
+                else:
+                    app_log.log("pipeline.orphan_thread", cls=type(t).__name__)
                 if t is threads[1] and not getattr(self, "_asr_ready", False):
                     # v2.0.4：加载期停止的专项记录——加载线程随后台完成即静默退出
                     app_log.log("pipeline.stop_during_model_load",
@@ -1567,6 +1577,23 @@ class MainWindow(QMainWindow):
             k = ctypes.windll.kernel32
             k.SetPriorityClass(k.GetCurrentProcess(), 0x00000080 if high else 0x00000020)
         except Exception:
+            pass
+
+    def _on_asr_finished(self):
+        """v2.7.3：识别线程已退出=所有 text_ready 已发出，且本槽在主线程按序处理
+        （排在全部尾句转发之后）——此刻把主窗攒句残组冲刷给翻译、再关闭翻译输入门，
+        翻译线程排空队列即退，不再空等 15s 排水宽限。
+        会话身份守卫：管线重启后旧 asr 的 finished 不得冲刷新会话残组/关新门。"""
+        s = self.sender()
+        if s is not None and s is not getattr(self, "_sid_asr", None):
+            return
+        try:
+            if getattr(self, "_tgroup", None):
+                self._flush_tgroup()
+            tr = self._active_translate()
+            if tr is not None:
+                tr.close_input()
+        except RuntimeError:
             pass
 
     def _on_pipeline_error(self, msg):

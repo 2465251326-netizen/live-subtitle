@@ -440,6 +440,13 @@ class TranslateThread(QThread):
         ArgosEngine.beam_size = self._beam_size
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
+        self._input_closed = False   # v2.7.3：上游（asr+主窗转发）已关门，见 close_input
+
+    def close_input(self):
+        """v2.7.3：关闭输入闸门——识别线程已退出且主窗已转发/冲刷完尾组后调用；
+        排水循环发现队列空且闸门已关即退出，不再空等 15s 宽限
+        （"每次停止 TranslateThread 必成孤儿"的根修正）。幂等，任意线程可调。"""
+        self._input_closed = True
 
     def update_fix_map(self, mapping):
         """v2.6.0（R5）：设置保存后热更新译文词典，无需重启管线。"""
@@ -584,6 +591,10 @@ class TranslateThread(QThread):
                 item = self.queue_in.get(timeout=0.5)
             except queue.Empty:
                 if self._stop:
+                    # v2.7.3：输入已关门（asr 退场+尾组已冲刷）且队列排空→立即退出；
+                    # 此前一律等满 15s 宽限，而 stop_pipeline 只等 2.5s→"每次必孤儿"
+                    if self._input_closed:
+                        break
                     if time.monotonic() - getattr(self, "_stop_at", 0.0) < self.DRAIN_GRACE:
                         continue
                     break

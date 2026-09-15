@@ -242,6 +242,46 @@ def t_early_flush_decision():
     w.deleteLater()
 check("pipeline: 提前冲句判据与开关（v2.7.0 T2）", t_early_flush_decision)
 
+def t_asr_finished_closes_translate_input():
+    # v2.7.3：识别线程退场→冲刷攒句残组+关闭翻译输入门（孤儿线程根治的
+    # 主窗半边）；旧会话 asr 的 finished 被身份守卫拦截
+    from app.asr.engine import AsrThread
+    w = MainWindow()
+    events = []
+
+    class FakeTr:
+        def submit(self, text, lang):
+            events.append(("submit", text))
+            return []
+
+        def close_input(self):
+            events.append(("close",))
+
+    asr = AsrThread("tiny", "cpu", "auto")
+    w._sid_asr = asr
+    w.translate_thread = None
+    w._sid_tr = FakeTr()
+    w._tgroup = ["tail frag"]
+    w._tgroup_lang = "en"
+    w._tgroup_start = __import__("time").monotonic()
+    asr.finished.connect(w._on_asr_finished)
+    asr.finished.emit()
+    assert ("submit", "tail frag") in events, "残组必须在关门前冲刷给翻译"
+    assert ("close",) in events, "翻译输入门必须关闭"
+    assert not w._tgroup
+    # 守卫：旧线程 finished 而 _sid_asr 已换新 → 不冲不关
+    events.clear()
+    old = AsrThread("tiny", "cpu", "auto")
+    w._sid_asr = AsrThread("tiny", "cpu", "auto")   # 已是新会话
+    w._tgroup = ["new session frag"]
+    old.finished.connect(w._on_asr_finished)
+    old.finished.emit()
+    assert events == [], "旧会话 finished 不得触碰新会话残组/输入门"
+    assert w._tgroup == ["new session frag"]
+    w.deleteLater()
+check("pipeline: asr 退场冲刷残组并关翻译输入门（v2.7.3 孤儿根治）",
+      t_asr_finished_closes_translate_input)
+
 def t_overlay_trim():
     ov = CaptionOverlay()
     for i in range(60):
