@@ -157,6 +157,7 @@ _FIELD_SPECS = {
     "lang_recheck":         ("pipeline", "check"),
     "low_latency_mode":     ("pipeline", "check"),
     "early_flush":          ("pipeline", "check"),
+    "perf_turbo":           ("pipeline", "check"),
     "asr_hotwords":         ("pipeline", "text"),
     "prewarm_model":        ("instant", "check"),
     "mishear_map":          ("pipeline", "mishear"),
@@ -251,6 +252,13 @@ _STD_ROWS = [
      "kind": "check", "title": "提前冲句（低延迟增强）",
      "desc": "说完最后一句后的等待从 3.5 秒缩短到 2 秒即冲整句译文（静默判据不变，只是地板更低）。"
              "连续说话时译文节奏不受影响（仍按整句成批出）；若发现句子常被切短可关闭。仅低延迟模式生效。",
+     "opts": {}},
+    {"key": "perf_turbo", "attr": "perf_turbo_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "榨干模式（硬件全速）",
+     "desc": "一个开关榨尽算力：GPU 推理权重压缩为 INT8（解码约快 1.2~1.6 倍、显存约省半，"
+             "识别率可能轻微下降）＋翻译运行期进程优先级提升（后台其他程序相对变慢）＋"
+             "连续说话切段上限 6s→4s＋冲句地板 2.0s→1.2s（句子更易切短）。追求极限速度再开；"
+             "挂机求稳请保持关闭。重启翻译生效。",
      "opts": {}},
     {"key": "lang_recheck", "attr": "lang_recheck_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "语言复检",
@@ -941,7 +949,8 @@ class SettingsDialog(QDialog):
                   self.gpu_check_button)
         self._std_rows(page, "asr", "语言与计算",
                        keys=("hallucination_filter", "silero_vad", "lang_recheck",
-                             "low_latency_mode", "early_flush", "prewarm_model"))
+                             "low_latency_mode", "early_flush", "perf_turbo",
+                             "prewarm_model"))
         self._section(page, "识别质量调优")
         # v2.7.0（T3）：热词提示——事前纠正专名误听，与事后修正词典互补
         self.hotwords_edit = QLineEdit()

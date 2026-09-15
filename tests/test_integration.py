@@ -228,6 +228,14 @@ def t_early_flush_decision():
     w.config.set("early_flush", False)                  # 开关关→旧 3.5s 地板
     w._tgroup_tick()
     assert not flushed, "开关关闭必须回到 3.5s 旧行为"
+    # v2.7.2：榨干模式再压一档——静默 1.5s 即冲（地板 1.2），早于 early_flush 的 2.0
+    w.config.set("early_flush", True)
+    w.config.set("perf_turbo", True)
+    flushed.clear()
+    w._last_level_sound = _t.monotonic() - 1.5
+    w._tgroup_tick()
+    assert flushed, "榨干模式 1.5s 静默应冲（地板 1.2）"
+    w.config.set("perf_turbo", False)
     tt = getattr(w, "_tgroup_timer", None)
     if tt is not None:
         tt.stop()

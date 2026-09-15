@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.7.1"
+APP_VERSION = "2.7.2"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -56,6 +56,8 @@ DEFAULTS = {
                                        # 普通模式攒到 14s 才切句，实测感知"太慢"的主因）
     "early_flush": True,               # v2.7.0（T2）：低延迟提前冲句——whisper 段内"人声已停多久"
                                        # +末片置信度为证据时，攒句静默地板 3.5s→1.2s（仅低延迟模式生效）
+    "perf_turbo": False,               # v2.7.2：榨干模式——GPU INT8 推理 + 进程高优先级 +
+                                       # 分段上限 6s→4s + 冲句地板 2.0s→1.2s（捆绑开关，默认关=一切照旧）
     "asr_hotwords": "",                # v2.7.0（T3）：热词提示——人名/专名/术语注入 whisper
                                        # initial_prompt，事前纠正专名误听（留空=关闭）
     "lang_recheck": True,              # v2.7.0（T5）：语言锁复检——自动模式下每 20 段解除

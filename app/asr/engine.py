@@ -246,7 +246,7 @@ class AsrThread(QThread):
     def __init__(self, model_size: str, device: str, language: str, parent=None,
                  hallucination_filter=True, silero_vad=False, mishear_map=None,
                  accuracy="fast", mishear_whole_word=False,
-                 hotwords="", lang_recheck=True):
+                 hotwords="", lang_recheck=True, turbo=False):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
@@ -261,6 +261,9 @@ class AsrThread(QThread):
         self.hotwords = str(hotwords or "")
         self.lang_recheck = bool(lang_recheck)
         self._seg_count = 0
+        # v2.7.2：榨干模式——GPU 权重 INT8（Turing 起有 INT 张量核，解码 1.2~1.6×、
+        # 显存约省半；识别率可能轻微下降，文案如实）
+        self.turbo = bool(turbo)
         self.queue_in: "queue.Queue[object]" = queue.Queue()
         self._stop = False
         self._model = None
@@ -454,7 +457,12 @@ class AsrThread(QThread):
         # 未装/CPU 版/驱动异常 → 回落 CPU（就绪提示会说明原因）
         if device == "cuda" and not _torch_cuda_ready():
             device = "cpu"
-        compute_type = "int8" if device == "cpu" else "float16"
+        # v2.7.2：榨干模式 GPU 权重 INT8（int8_float16：权重 int8/激活 fp16）；
+        # cache_key 含 compute_type，池天然隔离，切换即重载不混池
+        if device == "cuda":
+            compute_type = "int8_float16" if self.turbo else "float16"
+        else:
+            compute_type = "int8"
         # v2.0.6：进程内实例复用——同一 (模型, 设备, 量化) 在池中直接取用，
         # 切输入来源/改识别设置重启管线不再全量重载（CPU 上数秒到数十秒）。
         # 池容量 1，换模型/换设备时旧实例被替换由 GC 释放
@@ -774,10 +782,13 @@ class PrewarmWorker(QThread):
     复用 AsrThread._load_model 同一条设备解析/回落/入池路径，保证 cache_key
     与真实管线一致；预热失败静默——真实管线会给出带原因的报错。"""
 
-    def __init__(self, model_size: str, device: str, parent=None):
+    def __init__(self, model_size: str, device: str, parent=None, turbo=False):
         super().__init__(parent)
         self.model_size = model_size
         self.device = device
+        # v2.7.2：预热与真实管线必须同 compute_type 才命中同一池键——
+        # 榨干模式下不带 turbo 会让预热白建 fp16 实例、首帧仍重载
+        self.turbo = bool(turbo)
         self._stop = False
 
     def request_stop(self):
@@ -799,7 +810,8 @@ class PrewarmWorker(QThread):
             app_log.log("asr.prewarm_start", model=self.model_size, device=self.device)
             t0 = time.time()
             loader = AsrThread(self.model_size, self.device, "auto", None,
-                               accuracy=getattr(self, "accuracy", "fast"))
+                               accuracy=getattr(self, "accuracy", "fast"),
+                               turbo=self.turbo)
             # v2.6.4（P2）：non-blocking 让位——真实管线正在加载时预热立即
             # 放弃（真实加载完成即入池，预热目的已达成），避免双份构造
             ok = loader._load_model(blocking=False)

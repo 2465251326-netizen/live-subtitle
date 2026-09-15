@@ -1152,6 +1152,78 @@ def test_engine_auto_fallback_switch():
         tmod.ENGINES, tmod._cache = orig_engines, orig_cache
 
 
+# ---------- v2.7.2 榨干模式（perf_turbo）单元锁 ----------
+
+def test_segmenter_turbo_cap():
+    """v2.7.2：榨干模式连续语流切段上限 6s→4s；非低延迟不受影响。"""
+    from app.audio.capture import Segmenter
+    assert Segmenter(low_latency=True).max_seg == 6.0
+    assert Segmenter(low_latency=True, turbo=True).max_seg == 4.0
+    assert Segmenter(low_latency=False, turbo=True).max_seg == 14.0, "普通模式不掺和"
+
+
+def test_asr_turbo_compute_type():
+    """v2.7.2：cuda+turbo→int8_float16，cuda→float16，cpu→int8（池键含
+    compute_type，切换不混池）。"""
+    import app.asr.engine as eng
+    seen = []
+
+    class DummyModel:
+        pass
+
+    def fake_construct(self, model_ref, device, compute_type, local_only):
+        seen.append(compute_type)
+        return DummyModel()
+
+    orig_construct = eng.AsrThread._construct_model
+    orig_cached = eng.AsrThread.__dict__["model_cached"]
+    orig_ready = eng._torch_cuda_ready
+    eng.AsrThread._construct_model = fake_construct
+    eng.AsrThread.model_cached = staticmethod(lambda s: True)
+    eng._torch_cuda_ready = lambda: True
+    try:
+        eng._MODEL_CACHE.clear()
+        eng.AsrThread("tiny", "cuda", "auto", turbo=True)._load_model()
+        assert seen[-1] == "int8_float16", seen
+        eng._MODEL_CACHE.clear()
+        eng.AsrThread("tiny", "cuda", "auto")._load_model()
+        assert seen[-1] == "float16", seen
+        eng._MODEL_CACHE.clear()
+        eng.AsrThread("tiny", "cpu", "auto", turbo=True)._load_model()
+        assert seen[-1] == "int8", "CPU 路径与 turbo 无关"
+        eng._MODEL_CACHE.clear()
+    finally:
+        eng.AsrThread._construct_model = orig_construct
+        eng.AsrThread.model_cached = orig_cached
+        eng._torch_cuda_ready = orig_ready
+
+
+def test_prewarm_turbo_passthrough():
+    """v2.7.2：预热带 turbo——否则预热建 fp16 池、真实管线 int8 键 miss，
+    预热白做（首帧仍重载）。"""
+    import app.asr.engine as emod
+    seen = []
+    orig_load = emod.AsrThread.__dict__["_load_model"]
+    orig_warm = emod.AsrThread.__dict__["_warmup"]
+    orig_cached = emod.AsrThread.__dict__["model_cached"]
+
+    def spy_load(self, blocking=True):
+        seen.append(self.turbo)
+        self._device_used = "cpu"
+        return False          # 返回 False 终止后续 warmup 分支
+
+    emod.AsrThread._load_model = spy_load
+    emod.AsrThread._warmup = lambda self: None
+    emod.AsrThread.model_cached = staticmethod(lambda s: True)
+    try:
+        emod.PrewarmWorker("tiny", "cuda", turbo=True).run()
+        assert seen == [True], f"预热必须透传 turbo: {seen}"
+    finally:
+        emod.AsrThread._load_model = orig_load
+        emod.AsrThread._warmup = orig_warm
+        emod.AsrThread.model_cached = orig_cached
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -140,7 +140,7 @@ def resample_to_16k(data: np.ndarray, orig_sr: int, carry_key=None) -> np.ndarra
 
 
 class Segmenter:
-    def __init__(self, low_latency=False):
+    def __init__(self, low_latency=False, turbo=False):
         self.buffer = []
         self.buffer_len = 0.0
         self.speech_len = 0.0
@@ -152,7 +152,9 @@ class Segmenter:
         # 分段上限 14s→6s、静音判停 0.45s→0.30s、自适应区间收紧 0.20~0.40s。
         # 代价：句子可能切短、译文上下文变少，故为设置开关、默认关。
         self.low_latency = bool(low_latency)
-        self.max_seg = 6.0 if self.low_latency else MAX_SEGMENT_S
+        # v2.7.2：榨干模式——连续说话的强制切段上限 6s→4s（没人停顿也 4s 必交付一片，
+        # 代价=句子更易被腰斩，配合提前冲地板 1.2s 使用）
+        self.max_seg = (4.0 if turbo else 6.0) if self.low_latency else MAX_SEGMENT_S
         self.sil_lo = 0.20 if self.low_latency else 0.30
         self.sil_hi = 0.40 if self.low_latency else 0.60
         # 自适应切句（建议2）：按语速在 [sil_lo, sil_hi] 间动态调整静音判停
@@ -249,13 +251,13 @@ class CaptureThread(QThread):
     QUIET_LEVEL = 0.012       # 单位：原始峰值幅度 0~1（与发出比例同量纲，8 倍增益前）
 
     def __init__(self, source_type: str, device_index: int, parent=None,
-                 device_name: str = "", low_latency: bool = False):
+                 device_name: str = "", low_latency: bool = False, turbo: bool = False):
         super().__init__(parent)
         self.source_type = source_type
         self.device_index = device_index
         self.device_name = str(device_name or "")
         self._stop = False
-        self.segmenter = Segmenter(low_latency=low_latency)
+        self.segmenter = Segmenter(low_latency=low_latency, turbo=turbo)
         self._warned_quiet = False
         self._tail_seg = None   # v2.6.2（P1-4）：停止 flush 尾段暂存
 

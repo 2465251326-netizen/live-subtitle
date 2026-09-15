@@ -511,7 +511,8 @@ class MainWindow(QMainWindow):
         try:
             from app.asr.engine import PrewarmWorker
             self._prewarm = PrewarmWorker(str(self.config.get("asr_model")),
-                                          str(self.config.get("asr_device")), self)
+                                          str(self.config.get("asr_device")), self,
+                                          turbo=bool(self.config.get("perf_turbo")))
             self._prewarm.start()
         except Exception:
             pass
@@ -1080,7 +1081,10 @@ class MainWindow(QMainWindow):
                     target=self.config.get("target_lang"))
         self.running = True
         # v2.3.20（P26）：新会话清零延迟样本与提交时刻表（防跨会话混算）
-        self._lat_reco, self._lat_tr, self._submit_ts = [], [], {}
+        self._lat_reco, self._lat_tr, self._lat_hold, self._submit_ts = [], [], [], {}
+        # v2.7.2：榨干模式——翻译运行期提升进程优先级（停止后恢复），
+        # 让采集/转写线程在系统负载下不被普通进程抢时间片
+        self._apply_process_priority(True)
         self.toggle_button.setText("停止翻译")
         self.toggle_button.setObjectName("StopButton")
         self.toggle_button.style().unpolish(self.toggle_button)
@@ -1128,6 +1132,7 @@ class MainWindow(QMainWindow):
             mishear_whole_word=bool(c.get("fix_whole_word")),
             hotwords=str(c.get("asr_hotwords") or ""),
             lang_recheck=bool(c.get("lang_recheck")),
+            turbo=bool(c.get("perf_turbo")),
         )
         self.asr_thread.text_ready.connect(self._on_asr_text)
         self.asr_thread.status_changed.connect(self._on_asr_status)
@@ -1151,6 +1156,8 @@ class MainWindow(QMainWindow):
             device_name=str(c.get("device_name") or ""),
             # v2.3.3（P1）：低延迟模式——直播/新闻场景缩短分段与判停
             low_latency=bool(c.get("low_latency_mode")),
+            # v2.7.2：榨干模式——连续语流强制切段上限 6s→4s
+            turbo=bool(c.get("perf_turbo")),
         )
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
         self.capture_thread.level_changed.connect(self._on_level)
@@ -1547,7 +1554,20 @@ class MainWindow(QMainWindow):
         self.translate_thread = None
         self.engine_status_label.setText("引擎：已停止")
         self._log_latency_summary()   # v2.3.20（P26）：会话延迟摘要入日志
+        self._apply_process_priority(False)   # v2.7.2：榨干模式停止后归还优先级
         self.update_overlay_status()
+
+    def _apply_process_priority(self, high):
+        """v2.7.2：榨干模式的进程优先级——HIGH(0x80)/NORMAL(0x20)。
+        仅开关开启时动手；非 Windows/权限失败静默不影响功能。"""
+        if not bool(self.config.get("perf_turbo")):
+            return
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.SetPriorityClass(k.GetCurrentProcess(), 0x00000080 if high else 0x00000020)
+        except Exception:
+            pass
 
     def _on_pipeline_error(self, msg):
         from app.errors import friendly_message
@@ -1718,7 +1738,11 @@ class MainWindow(QMainWindow):
         # 5.0/6.0 铁证），故只保留时间地板一档。收益定位=末句抢救：连续语流中
         # 本句译文由"下一句到达"冲刷（两轨制固有，hold≈6s 不变）；说话结束/
         # 场景切换后的最后一句，此前要干等 3.5s 静默才冲，现 2.0s。
-        floor = 2.0 if bool(self.config.get("early_flush")) else 3.5
+        # v2.7.2：榨干模式再压一档 2.0→1.2（配合 4s 分段上限，切短风险自担已文案告知）
+        if bool(self.config.get("perf_turbo")):
+            floor = 1.2
+        else:
+            floor = 2.0 if bool(self.config.get("early_flush")) else 3.5
         if (quiet_for >= floor and final_looking) or now >= getattr(self, "_tgroup_deadline", 0.0):
             self._flush_tgroup()
             t = getattr(self, "_tgroup_timer", None)
