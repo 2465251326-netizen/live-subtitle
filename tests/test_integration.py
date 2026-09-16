@@ -1145,18 +1145,20 @@ check("panel: 分割线跟手（上下拖方向正确、可拖区间不塌缩）
       t_overlay_split_follows_mouse)
 
 
-def t_overlay_dual_hist_default_off():
-    """v2.19.0：用户实拍裁决——"红色框框的历史区域删掉"。
-    出厂默认 **关**：当前句独占面板、终版句不再沉历史（不建控件、不占内存），
-    面板贴内容不再撑到 0.68 屏；开关（设置页 / ⋯ 菜单）打开后旧能力完整回来。"""
+def t_overlay_dual_hist_default_on():
+    """v2.19.1 用户真机二轮裁决：「句子全部保留，不能在字幕悬浮窗里消失」——
+    历史区恢复**出厂默认开**（v2.19.0 的默认关以首轮实拍"空框吃面板"为据，
+    该几何缺陷已在 23.2 修正，否掉的形态成因不复存在）。
+    两态能力都必须完整：开=终版句逐句沉入不消失；关=当前句独占、不建控件。"""
     from app.config import DEFAULTS
     from app.ui.caption_overlay import CaptionOverlay
-    assert DEFAULTS["overlay_dual_hist"] is False, \
-        "历史区出厂默认必须为关——用户实拍判定它把当前句挤成两行"
+    assert DEFAULTS["overlay_dual_hist"] is True, \
+        "历史区出厂默认必须为开——用户裁决：悬浮窗里说过的句子不能消失"
 
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
+    # 关闭态（能力保留）：不建行、当前句独占
     ov.set_hist_enabled(False)
     ov._dual_show_pending("Hello there, this is the live report")
     ov.dual_push_history("some finished sentence", "已经翻完的一句")
@@ -1166,16 +1168,21 @@ def t_overlay_dual_hist_default_off():
     assert not ov._dual_hist.isVisible(), "关闭时历史区不得出现在面板上"
     assert ov._dual_body.height() >= ov.height() - 80, \
         f"关闭后当前句应独占面板：body={ov._dual_body.height()} 总高={ov.height()}"
-    # 打开后能力回来：历史行照常累积
+    # 开启态（默认形态）：终版句逐句驻留，不消失
     ov.set_hist_enabled(True)
     ov.dual_push_history("another finished sentence", "又一句译文")
+    ov.dual_push_history("one more finished sentence", "再一句译文")
     for _ in range(6):
         app.processEvents()
-    assert ov._dual_hist_rows == 1, "重新打开后应能正常累积历史"
+    assert ov._dual_hist_rows == 2, "开启后终版句必须逐句驻留"
     assert ov._dual_hist.isVisible()
+    # 独立构造（未过配置的裸组件）保持历史开=默认形态
+    ov2 = CaptionOverlay()
+    assert ov2._dual_hist_enabled is True, "裸构造默认必须处于'保留句子'形态"
+    ov2.deleteLater()
     ov.deleteLater()
-check("panel: 双语历史区默认关（独占面板 + 可回退）",
-      t_overlay_dual_hist_default_off)
+check("panel: 双语历史区默认开（句子不消失；关闭=独占，能力可回退）",
+      t_overlay_dual_hist_default_on)
 
 
 def t_dual_pair_atomic_swap():

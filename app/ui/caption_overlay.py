@@ -312,7 +312,8 @@ class CaptionOverlay(QWidget):
         self._dual_hist.hide()
         self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
         # v2.19.0：历史区总开关（默认 True 保持独立构造时的旧行为；主窗按配置
-        # overlay_dual_hist 下发，用户实拍裁决后**出厂默认关**=当前句独占面板）
+        # overlay_dual_hist 下发。v2.19.1 用户真机二轮裁决：出厂默认**开**——
+        # "句子全部保留，不能在字幕悬浮窗里消失"，几何修正后不再有旧空框问题）
         self._dual_hist_enabled = True
         # v2.19.1：当前句"在说态"——终版收口后置 False（闭合）。流式拍/新片段
         # 在闭合态到来即触发**原子换句**（原文+译文同刻切换），杜绝

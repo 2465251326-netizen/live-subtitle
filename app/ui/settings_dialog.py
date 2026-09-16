@@ -184,7 +184,7 @@ _FIELD_SPECS = {
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_layout":       ("overlay", "combo"),
-    # v2.19.0：dual 历史区开关（默认关=当前句独占面板）
+    # v2.19.0：dual 历史区开关（v2.19.1 起默认开=悬浮窗句子全部保留；关=独占面板）
     "overlay_dual_hist":    ("overlay", "check"),
     "stream_preview":       ("pipeline", "check"),
     "overlay_dual_hist_h":  ("internal", "hidden"),
@@ -399,11 +399,12 @@ _STD_ROWS = [
              "面板 ⋯ 菜单可随时互切，保存后立即生效。",
      "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
     {"key": "overlay_dual_hist", "attr": "dual_hist_check", "page": "display", "section": "字幕显示",
-     "kind": "check", "title": "双语面板历史区（默认关）",
-     "desc": "关闭（默认）＝「上下双语」面板只显示正在说的这一句，整个面板都给原文+译文，字大、不拥挤；"
-             "说过的句子仍在主窗口与导出文件里完整保留。"
-             "开启＝面板上半部多一块历史区：每句翻译完成后自动沉入（原文小灰+译文小白成对），"
-             "可用滚轮回看前几句，代价是面板变高、当前句区缩小。"
+     "kind": "check", "title": "双语面板历史区（默认开）",
+     "desc": "开启（默认）＝「上下双语」面板上半部保留历史区：每句翻译完成后自动沉入"
+             "（原文小灰+译文小白成对，最多 30 对），说过的句子在悬浮窗里不消失，滚轮可回看；"
+             "历史区高度按内容自动收缩、最多占面板一半，当前句区保底不被挤没，"
+             "两区之间可拖分割线自由分配。"
+             "关闭＝当前句独占整个面板（字更大、不拥挤），说过的句子只在主窗口与导出文件里保留。"
              "面板 ⋯ 菜单里也有同名开关，随手可切、重启保持。",
      "opts": {}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
