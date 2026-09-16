@@ -111,20 +111,24 @@ QFrame#CaptionCard {
     border: 1px solid #242a38;
     border-radius: 12px;
 }
-/* v2.2.5：聚焦态——最新一条字幕卡强调边框+微亮背景，一眼锁定"正在说" */
-QFrame#CaptionCard#CaptionCardActive {
+/* v2.2.5：聚焦态——最新一条字幕卡强调边框+微亮背景，一眼锁定"正在说"
+   v2.18.1：选择器由 `QFrame#CaptionCard#CaptionCardActive` 改为**属性选择器**。
+   旧写法在 Qt 里表示「祖先 objectName=CaptionCard 且自身 objectName=
+   CaptionCardActive」，而卡片互为兄弟、且 set_active 是覆写唯一 objectName，
+   导致这条规则从未命中（连基础卡面规则都被改名踩掉）。像素实测坐实。 */
+QFrame#CaptionCard[state="active"] {
     background-color: #1a1f2b;
     border: 1px solid #4f8cff;
     border-radius: 12px;
 }
 /* v2.2.5：历史卡渐隐——降低文字对比度，视觉焦点留给最新句 */
-QFrame#CaptionCard#CaptionCardOld QLabel#CaptionSource {
+QFrame#CaptionCard[state="old"] QLabel#CaptionSource {
     color: #5a6172;
 }
-QFrame#CaptionCard#CaptionCardOld QLabel#CaptionTarget {
+QFrame#CaptionCard[state="old"] QLabel#CaptionTarget {
     color: #9aa3b8;
 }
-QFrame#CaptionCard#CaptionCardOld QLabel#CaptionMeta {
+QFrame#CaptionCard[state="old"] QLabel#CaptionMeta {
     color: #454c5e;
 }
 QLabel#CaptionSource {

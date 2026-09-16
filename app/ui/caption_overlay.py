@@ -57,14 +57,18 @@ class _DualSepHandle(QWidget):
         from PySide6.QtGui import QPainter, QColor
         p = QPainter(self)
         active = self._hover or self._drag
-        # 全宽中央细线：平时极淡，悬停/拖拽提亮
-        line = QColor(255, 255, 255, 64 if active else 26)
+        # 全宽中央细线：平时淡但**看得见**，悬停/拖拽提亮。
+        # v2.18.1：静息 alpha 由 26 提到 70——用户裁决"面板只留一条分割线"后，
+        # 真机截图实测这条线在 87% 不透明面板上几乎不可辨（Δ亮度仅约 9%），
+        # 等于"留了一条看不见的线"。70 档约 24% 提亮：一眼能找到，仍是一根细线，
+        # 不会回到 v2.16.0 那种 8px 实心灰带"太生硬、难看"的老问题。
+        line = QColor(255, 255, 255, 130 if active else 70)
         p.fillRect(0, self.height() // 2, self.width(), 1, line)
         # 中央胶囊：仅悬停/拖拽时浮现（平时完全隐形）
         if active:
             p.setRenderHint(QPainter.Antialiasing)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 150 if self._drag else 80))
+            p.setBrush(QColor(255, 255, 255, 170 if self._drag else 110))
             p.drawRoundedRect(int(self.width() / 2) - 20,
                               int(self.height() / 2) - 2, 40, 4, 2, 2)
 
@@ -307,6 +311,8 @@ class CaptionOverlay(QWidget):
         self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
         self._hist_follow = True           # 用户上滚回看时不自动滚底
         self._dual_hist.verticalScrollBar().valueChanged.connect(self._on_hist_scroll)
+        # v2.18.1：原文/译文两个可滚动区各自的"跟底"状态（用户上滚回看不打断）
+        self._dual_follow = {"src": True, "tgt": True}
         # v2.15.0：分割线拖拽——历史区/当前句区的高度比例由用户拖 hist 底缘
         # （分隔把手）自由分配；None=自动分配。用户需求："中间的分割线依然
         # 不能自由的上下拉长"
@@ -371,6 +377,11 @@ class CaptionOverlay(QWidget):
         dl.addWidget(self._dual_src_wrap, 1)
         dl.addWidget(self._dual_sep)
         dl.addWidget(self._dual_tgt_wrap, 2)
+        # v2.18.1：两区各自的"用户上滚回看"检测（与历史区/列表区同一语义）
+        self._dual_src_wrap.verticalScrollBar().valueChanged.connect(
+            lambda v: self._on_dual_wrap_scroll("src", v))
+        self._dual_tgt_wrap.verticalScrollBar().valueChanged.connect(
+            lambda v: self._on_dual_wrap_scroll("tgt", v))
         outer.addWidget(self._dual_body, 1)
         self._dual_body.hide()
         # v2.15.2：分割线交互改走**事件过滤器**。为什么必须用它：
@@ -699,6 +710,26 @@ class CaptionOverlay(QWidget):
         sb = self._dual_hist.verticalScrollBar()
         sb.setValue(sb.maximum())
 
+    def _on_dual_wrap_scroll(self, key, v):
+        """v2.18.1：用户在原文/译文区内上滚回看 → 暂停该区自动跟底；滚回底部恢复。"""
+        wrap = self._dual_src_wrap if key == "src" else self._dual_tgt_wrap
+        sb = wrap.verticalScrollBar()
+        self._dual_follow[key] = (v >= sb.maximum() - 4)
+
+    def _dual_follow_bottom(self):
+        """v2.18.1：dual 原文/译文区内容超出可视高度时**自动跟底**。
+
+        真机英语新闻实测（BBC Global News Podcast 整集）：长句把最新文字推到可视区
+        之外，滚动条 max=49 却停在 value=0——用户看不到刚说出的那几个字，必须自己
+        滚轮。流式字幕里这是硬伤：面板存在的意义就是"看到正在说的话"。
+        用户主动上滚回看时不打断（`_on_dual_wrap_scroll`）。"""
+        for wrap, key in ((self._dual_src_wrap, "src"), (self._dual_tgt_wrap, "tgt")):
+            if not self._dual_follow.get(key, True):
+                continue
+            sb = wrap.verticalScrollBar()
+            if sb.maximum() > 0 and sb.value() < sb.maximum():
+                sb.setValue(sb.maximum())
+
     def dual_push_history(self, src, tgt):
         """v2.14.0：终版句沉入历史区（原文小灰 + 译文小白成对行）。
         超上限删最老；跟随状态下自动滚底（用户上滚回看时不打断）。
@@ -708,6 +739,11 @@ class CaptionOverlay(QWidget):
         src = (src or "").strip()
         tgt = (tgt or "").strip()
         if not src and not tgt:
+            return
+        # v2.18.1：译文为空不再用占位 "…" 顶进历史区——真机英语新闻实测里历史区
+        # 出现过只含省略号的行（一次性占位被当成正文永久留存，还会占掉一行高度）。
+        # 原文也无可显示（关了原文）时，整行直接跳过。
+        if not tgt and (not src or not self._show_source):
             return
         w = QWidget()
         w.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -721,9 +757,10 @@ class CaptionOverlay(QWidget):
         f.setPixelSize(max(10, int(self._font_size * 0.55)))
         lab_src.setFont(f)
         lab_src.setVisible(bool(src) and self._show_source)
-        lab_tgt = QLabel(tgt or "…")
+        lab_tgt = QLabel(tgt)
         lab_tgt.setObjectName("DualHistTgt")
         lab_tgt.setWordWrap(True)
+        lab_tgt.setVisible(bool(tgt))
         f2 = QFont()
         f2.setPixelSize(max(11, int(self._font_size * 0.66)))
         f2.setWeight(QFont.DemiBold)
@@ -782,6 +819,11 @@ class CaptionOverlay(QWidget):
         has_tgt = bool(self._dual_tgt.text().strip()) and not self._dual_tgt.property("empty")
         show = self._show_source and bool(self._dual_src.text().strip())
         self._dual_src.setVisible(show)
+        # v2.18.1：关原文时**整个原文滚动区**一起收起——此前只隐了里面的标签，
+        # QScrollArea 本体仍占 21px，加上仍按可见算的分隔把手 8px，把当前句区
+        # 挤得只剩 21px（真机实测：用户就是「原文 关」，一句正常译文 ~32px
+        # 显示不全，得靠滚动条才看得完整）。
+        self._dual_src_wrap.setVisible(show)
         self._dual_sep.setVisible(show and has_tgt)
 
     @staticmethod
@@ -797,6 +839,9 @@ class CaptionOverlay(QWidget):
     def _dual_new_sentence(self, src_text):
         """新句起点：原文区重置为该片段，译文区进入占位态（推测版淡样式）。"""
         self._dual_src.setText(src_text)
+        # v2.18.1：新句开始重新跟底——用户在上半句里上滚回看，不应把下一句
+        # 的最新文字也一起挡住（回看语义属于过去那句）
+        self._dual_follow = {"src": True, "tgt": True}
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
         self._dual_tgt.setText("…")
@@ -968,16 +1013,22 @@ class CaptionOverlay(QWidget):
             self._dual_body.setMinimumHeight(0)
             self._dual_body.setMaximumHeight(16777215)
             chrome = 54 + 12                          # 工具条 + outer margins/spacing
-            sep_h = 8                                 # 分割把手抓取带
+            # v2.18.1：关原文时原文区与分隔把手**都不该占高**——旧算法恒加
+            # sep_h 8 与"三控件"的 24px 边距/间距，导致译文区被饿到 21px
+            # （真机实测，用户配置正是「原文 关」）。
+            src_on = self._dual_src.isVisible()
+            sep_h = 8 if src_on else 0
             avail_w = max(80, self._dual_body.width() - 24)
             src_want = ((self._dual_src.heightForWidth(max(40, avail_w - 2)) + 2)
-                        if self._dual_src.isVisible() else 0)
+                        if src_on else 0)
             tgt_want = self._dual_tgt.heightForWidth(max(40, avail_w - 2)) + 2
             # v2.18.0：用户拖过的原文区高度优先计入 body 需求——自动高度
             # 模式下拖大原文区 → body 随之撑大（否则用户值被钳回 30 无效）
-            if self._dual_src_h_user:
+            if self._dual_src_h_user and src_on:
                 src_want = max(30, self._dual_src_h_user)
-            body_want = src_want + tgt_want + sep_h + 24   # + dl 纵向 margins/spacing
+            # dl 纵向 margins 14 + 可见控件之间的 spacing 5×(n-1)
+            body_want = (src_want + tgt_want + sep_h + 14
+                         + 5 * (2 if src_on else 0))
             # v2.17.0：分配语义——当前句区贴内容（≤45% 总高，超长句滚动），
             # 历史区吃全部剩余。
             # v2.18.0：**简化**——移除历史区手动分割（v2.15.x），历史上/当前
@@ -1009,9 +1060,16 @@ class CaptionOverlay(QWidget):
             # QScrollArea 默认 sizeHint 高 192，adjustSize 会按它把面板缩回去
             # （fixed 452 的历史区被裁 76px，拉高"没反应"的元凶）
             self._dual_total_h = total
+            # v2.18.1：本轮高度分配落地后跟底（等 viewport 尺寸真正变化再算，
+            # 否则 maximum 还是旧值）——长句最新文字不得留在可视区之外
+            QTimer.singleShot(0, self._dual_follow_bottom)
         else:
             self._mini.setVisible(False)
             self._dual_body.setVisible(False)
+            # v2.18.1：dual→list 切换必须把历史区一起收起——它在 dual 分支里
+            # 被"恒显示"（v2.17.0a 为锁总高），list 分支此前只隐了 _dual_body，
+            # 结果切回列表后残留一整块空白历史区（实测 401px）+ 其占位高度。
+            self._dual_hist.setVisible(False)
             self._scroll.setVisible(True)
             want = self._body.sizeHint().height() + 8
             cap = int((QGuiApplication.primaryScreen().availableGeometry().height()
@@ -1080,6 +1138,10 @@ class CaptionOverlay(QWidget):
             it["src"].setVisible(bool(it["src_text"]) and self._show_source)
         if self._collapsed:
             self._update_mini()
+        # v2.18.1：dual 区必须一并重算可见性——此前漏调 _sync_dual_visibility，
+        # 「原文 关」时原文行与那条可拖分割线**仍留在面板上**（用户截图实证：
+        # 关着原文却看得见 sep 线）。用户裁决：关原文=没有两栏要分=面板无可见线。
+        self._sync_dual_visibility()
         self._sync_bar_texts()
         self._relayout()
         self._schedule_relayout()
@@ -1276,8 +1338,10 @@ class CaptionOverlay(QWidget):
             QLabel#PanelMiniSrc {{ font-size: {max(11, int(fs * 0.62))}px; color: #98a2b3; }}
             QLabel#PanelMiniTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
             QWidget#PanelDual {{ background: transparent; }}
-            QScrollArea#PanelDualHist {{ background: transparent; border: none;
-                                          border-bottom: 1px solid rgba(255,255,255,20); }}
+            /* v2.18.1：历史区底缘的 border-bottom 已删除——它是用户截图里
+               "第二条线"的来源（面板只该保留原文/译文之间那一条可拖分割线）。
+               两区之间由 6px 布局间距自然分隔，不需要装饰线。 */
+            QScrollArea#PanelDualHist {{ background: transparent; border: none; }}
             QScrollArea#PanelDualHist > QWidget {{ background: transparent; }}
             QScrollArea#PanelDualHist > QWidget > QWidget {{ background: transparent; }}
             QLabel#DualHistSrc {{ color: #7d8794; }}
@@ -1455,6 +1519,12 @@ class CaptionOverlay(QWidget):
                         obj.setCursor(Qt.SizeVerCursor)
                     else:
                         obj.setCursor(Qt.ArrowCursor)
+                # v2.18.1：悬停态真实落地——_DualSepHandle 的"细线→胶囊→提亮"
+                # 三态里，set_hover(True) 此前**全库零调用点**（只挂了 Leave→False
+                # 与 HoverEnter 无人处理），所以 v2.16.1 宣称的"悬停浮现胶囊"
+                # 从未出现过。MouseMove 已经在过滤器里到达，直接按"是否落在
+                # 把手上"给真值，不依赖 WA_Hover/HoverEnter。
+                self._dual_sep.set_hover(obj is self._dual_sep)
             elif t == QEvent.Type.Leave and obj is self._dual_sep:
                 self._dual_sep.set_hover(False)
             elif t == QEvent.Type.MouseButtonPress and ev.button() == Qt.LeftButton:
@@ -1466,12 +1536,13 @@ class CaptionOverlay(QWidget):
                     self._dual_split_start_h = self._dual_src_wrap.height()
                     self._dual_sep.set_drag(True)
                     return True           # 拦下：防止 QScrollArea 抢走拖拽
-            elif t == QEvent.Type.MouseMove and self._dual_split_drag:
-                self._dual_split_apply_drag(ev.globalPosition().toPoint())
-                return True
             elif t == QEvent.Type.MouseButtonRelease and self._dual_split_drag:
                 self._dual_split_drag = False
                 self._dual_split_apply_drag(ev.globalPosition().toPoint())
+                # v2.18.1：拖拽态必须收口——此前只清 _dual_split_drag 标志、
+                # 没把手本体 set_drag(False)，结果用户拖过一次后中央胶囊
+                # **永久高亮**挂在面板上（真机截图里那条"又粗又亮的线"）。
+                self._dual_sep.set_drag(False)
                 if getattr(self, "_on_dual_split", None):
                     self._on_dual_split("src", self._dual_src_h_user or 0)
                 return True

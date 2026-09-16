@@ -1644,6 +1644,50 @@ def test_spec_translate_offline_only_gate():
     assert W(Cfg(d), Unprobed())._spec_enabled() is False, "引擎未探测完不得推测"
 
 
+def test_spec_translation_not_cached():
+    """v2.18.1：推测式中间版**不得写持久缓存**。
+
+    真机英语新闻实测（BBC Global News Podcast 整集，150s 会话）：222 条缓存里
+    41 组是同一句话的渐进变体，最长一句被存了 7 个版本（"GMT on Tuesday 15th
+    September. …" 长度 58/86/99/160/168/192/201）。半句前缀几乎不会再被原样查到
+    （终版文本更长），写进去纯属污染：LRU 只有 800 格，真整句缓存被一次性碎片
+    挤掉，磁盘上还永久留着大量半截译文。读侧必须照常受益（文本相同即命中）。"""
+    from app.translate import translator as tr
+
+    class FakeCache:
+        def __init__(self):
+            self.puts = []
+            self.data = {}
+
+        def get(self, k):
+            return self.data.get(k)
+
+        def put(self, k, v):
+            self.puts.append(k)
+            self.data[k] = v
+
+    class FakeEngine:
+        def translate(self, text, source, target):
+            return ("译文:" + text, "en")
+
+    real_cache, real_engines = tr._cache, tr.ENGINES
+    tr._cache = FakeCache()
+    tr.ENGINES = {"argos": FakeEngine()}
+    try:
+        tt = tr.TranslateThread("argos", "zh-CN")
+        tt._active_engine = "argos"
+        tt._do_translate("a long partial sentence grow", "en", store=False)
+        assert tr._cache.puts == [], f"推测版不得写缓存，实写 {tr._cache.puts}"
+        tt._do_translate("a long partial sentence grow", "en")     # 终版照常写
+        assert len(tr._cache.puts) == 1, f"终版必须入缓存，实得 {tr._cache.puts}"
+        # 同文本再推测：读侧照常命中缓存（不因 store=False 而失去命中收益）
+        hit = tt._do_translate("a long partial sentence grow", "en", store=False)
+        assert hit[0] == "译文:a long partial sentence grow", hit
+        assert len(tr._cache.puts) == 1, "命中路径不得重复写"
+    finally:
+        tr._cache, tr.ENGINES = real_cache, real_engines
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

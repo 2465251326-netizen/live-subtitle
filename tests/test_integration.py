@@ -404,16 +404,70 @@ def t_card_lifecycle():
     w._on_asr_text("life1", "en", "1.0")
     assert len(w._pending) == 1
     w._on_translated("life1", "一生一", "google", "en", "")
-    assert w._active_card.objectName() == "CaptionCardActive"
+    assert w._active_card.property("state") == "active"
+    assert w._active_card.objectName() == "CaptionCard"     # 状态不再靠改名
     w._on_asr_text("life2", "en", "1.0")
     w._on_translated("life2", "一生二", "google", "en", "")
     cards = [w.scroll_layout.itemAt(i).widget() for i in range(w.scroll_layout.count())
              if w.scroll_layout.itemAt(i).widget()]
-    old = [c for c in cards if c.objectName() == "CaptionCardOld"]
-    assert len(old) == 1 and w._active_card.objectName() == "CaptionCardActive"
+    old = [c for c in cards if c.property("state") == "old"]
+    assert len(old) == 1 and w._active_card.property("state") == "active"
     w.stop_pipeline()
     assert len(w._pending) == 0
 check("card: 流式配对/聚焦切换/stop清空", t_card_lifecycle)
+
+
+def t_card_focus_style_pixels():
+    """v2.18.1 像素级锁：聚焦/渐隐样式必须**真的渲染出来**。
+    历史教训：styles.py 写的是 `QFrame#CaptionCard#CaptionCardActive`
+    （Qt 解释为"祖先名 CaptionCard + 自身名 CaptionCardActive"，卡片互为
+    兄弟永不成立），而 set_active 又覆写唯一 objectName 把基础卡面规则一起
+    踩掉——聚焦卡实际渲染成窗口底色 #0f1115（卡片"没有脸"），而旧锁只断言
+    objectName 字符串，于是 102 项全绿照样漏过一个上线即失效的视觉特性。
+    这条锁断言的是像素，不是内部状态。"""
+    from app.ui.styles import DARK_QSS
+    from PySide6.QtWidgets import QWidget, QVBoxLayout
+
+    def px(img, x, y):
+        p = img.pixel(x, y)
+        return (p >> 16) & 255, (p >> 8) & 255, p & 255
+
+    def near(c, hexs, tol=6):
+        img = c.grab().toImage()
+        r, g, b = px(img, 6, max(0, img.height() - 6))
+        er, eg, eb = (int(hexs[i:i + 2], 16) for i in (1, 3, 5))
+        return abs(r - er) <= tol and abs(g - eg) <= tol and abs(b - eb) <= tol
+
+    host = QWidget()
+    host.setStyleSheet(DARK_QSS)
+    lay = QVBoxLayout(host)
+    idle = CaptionCard("idle card text")
+    act = CaptionCard("active card text")
+    act.set_result("聚焦卡译文", "google", "en", True)
+    old = CaptionCard("old card text")
+    old.set_result("历史卡译文", "google", "en", True)
+    for c in (idle, act, old):
+        lay.addWidget(c)
+    host.resize(420, 300)
+    host.show()
+    act.set_active(True)
+    old.set_active(False)
+    app.processEvents()
+    assert near(idle, "#161a22"), f"基础卡面底色丢失: {px(idle.grab().toImage(), 6, idle.height() - 6)}"
+    assert near(act, "#1a1f2b"), f"聚焦态背景未生效: {px(act.grab().toImage(), 6, act.height() - 6)}"
+    assert near(old, "#161a22"), f"历史态把基础卡面踩掉了: {px(old.grab().toImage(), 6, old.height() - 6)}"
+    # 渐隐：历史卡原文文字必须比基础卡更暗
+    def brightest(c):
+        img = c.source_label.grab().toImage()
+        return max((((img.pixel(x, y) >> 16 & 255) + (img.pixel(x, y) >> 8 & 255)
+                     + (img.pixel(x, y) & 255)) for y in range(0, max(1, img.height()), 2)
+                    for x in range(0, max(1, img.width()), 2)), default=0)
+    b_idle, b_old = brightest(idle), brightest(old)
+    assert b_old < b_idle, f"历史卡文字未渐隐（idle={b_idle} old={b_old}）"
+    for c in (idle, act, old):
+        c.setParent(None); c.deleteLater()
+    host.deleteLater()
+check("card: 聚焦/渐隐样式像素级生效（v2.18.1 双 ID 选择器回归）", t_card_focus_style_pixels)
 
 def t_card_eviction_pending():
     w = MainWindow()
@@ -1002,10 +1056,256 @@ def t_overlay_dual_split_real_drag():
     for _ in range(4):
         app.processEvents()
     assert ov._dual_split_drag is False, "release 应收口"
+    # v2.18.1：把手本体也必须退出拖拽态——旧实现只清 _dual_split_drag 标志、
+    # 漏了 set_drag(False)，中央胶囊自此**永久高亮**挂在面板上（用户截图里
+    # 那条"又粗又亮的分割线"就是这个）。
+    assert ov._dual_sep._drag is False, "松手后把手本体拖拽态必须复位（胶囊不得常驻）"
     assert ov._dual_src_h_user == ov._dual_src_wrap.height(), \
         f"松手记录的用户高度应与实际一致：{ov._dual_src_h_user} vs {ov._dual_src_wrap.height()}"
     ov.deleteLater()
 check("panel: 分割线真实事件流拖拽（事件过滤器）", t_overlay_dual_split_real_drag)
+
+
+def t_overlay_single_divider():
+    """v2.18.1：面板上「可见横线」必须恰好一条 = 原文/译文那条可拖分割线。
+
+    用户截图实证的多条线来源（本轮全部处理）：
+    ① `QScrollArea#PanelDualHist { border-bottom }` —— 历史区底缘装饰线，
+       不可拖、纯视觉噪声 → 已删除；
+    ② `_DualSepHandle` 自绘细线 + 中央胶囊 —— 唯一保留（可拖）；
+    ③ 拖完 `set_drag` 未复位 → 胶囊永久高亮（看起来像第三条粗线）→ 已修；
+    ④ 「原文 关」时 sep 未被重算可见性 → 没有两栏要分却仍挂着线 → 已修；
+    ⑤ dual→list 切换历史区残留 → 已修。
+    这里用**像素扫描**客观数线，不靠眼睛，也不断言内部状态。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    from PySide6.QtCore import QPoint
+
+    ov = CaptionOverlay()
+    ov.set_show_source(True)
+    ov.set_layout_mode("dual")
+    ov.resize(700, 420)
+    ov.move(60, 60)
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    ov._dual_show_pending("The quick brown fox jumps over the lazy dog")
+    ov._dual_show_result("The quick brown fox jumps over the lazy dog",
+                         "敏捷的棕色狐狸跳过了懒狗", True)
+    for _ in range(12):
+        app.processEvents()
+
+    def divider_rows():
+        """返回整幅横贯的分割线所在 y（相邻行归并）。三条判据同时成立：
+        ① 亮像素占比 > 0.9  ② 亮样本亮度均匀（线是一次 fillRect 画出来的，
+        文字行是笔画与空隙混排）  ③ 上下 2px 明显变暗（1~2px 孤立薄行）。
+        实测标定（面板 700x544、底色基准 b0=89）：单行原文 y=435/447 占比
+        0.66、亮样本极差 404；sep 线 y=479 占比 0.95、极差 0、上下 2px 0.00。
+        只用占比阈值会把文字判成线，必须再加均匀度与薄行两条。
+        扫描区间从正文区顶部起，避开工具条高亮带。"""
+        img = ov.grab().toImage()
+        W, H = img.width(), img.height()
+        col = []
+        for yy in range(H):
+            pt = img.pixel(2, yy)
+            col.append(((pt >> 16) & 255) + ((pt >> 8) & 255) + (pt & 255))
+        b0 = sorted(col)[len(col) // 2]
+
+        def lum(x, y):
+            if not (0 <= y < H):
+                return 0
+            pt = img.pixel(x, y)
+            return ((pt >> 16) & 255) + ((pt >> 8) & 255) + (pt & 255)
+
+        def profile(y):
+            if not (0 <= y < H):
+                return 0.0, 999
+            vals = [lum(x, y) - b0 for x in range(6, W - 6, 4)]
+            if not vals:
+                return 0.0, 999
+            lit = [v for v in vals if v > 24]
+            spread = (max(lit) - min(lit)) if lit else 999
+            return len(lit) / len(vals), spread
+
+        def frac(y):
+            return profile(y)[0]
+
+        ys = []
+        for y in range(max(0, ov._dual_hist.mapTo(ov, QPoint(0, 0)).y()), H):
+            f, spread = profile(y)
+            if (f > 0.9 and spread <= 40
+                    and frac(y - 2) < 0.5 and frac(y + 2) < 0.5):
+                if not ys or y - ys[-1] > 3:
+                    ys.append(y)
+        return ys
+
+    rows = divider_rows()
+    assert len(rows) == 1, f"面板应恰好一条可见分割线，实测 {len(rows)} 条 @ y={rows}"
+    sep_y = ov._dual_sep.mapTo(ov, QPoint(0, ov._dual_sep.height() // 2)).y()
+    assert abs(rows[0] - sep_y) <= 4, f"唯一那条线必须落在可拖把手上：线 y={rows[0]}，sep y={sep_y}"
+
+    # 关原文（用户当前状态）：没有两栏要分 → 面板上不得再有任何可见线
+    ov.set_show_source(False)
+    for _ in range(12):
+        app.processEvents()
+    assert not ov._dual_sep.isVisible(), "关原文后把手应隐藏"
+    assert divider_rows() == [], f"关原文后仍检出可见线: {divider_rows()}"
+
+    # 切回列表布局：dual 历史区不得残留（v2.17.0a 恒显示只在 dual 分支成立）
+    ov.set_show_source(True)
+    ov.set_layout_mode("list")
+    for _ in range(12):
+        app.processEvents()
+    assert not ov._dual_hist.isVisible(), "dual→list 后历史区残留（列表布局里多一块空白区）"
+    ov.deleteLater()
+check("panel: 面板恰好一条分割线（v2.18.1 多条线回归）", t_overlay_single_divider)
+
+
+def t_overlay_dual_follow_bottom():
+    """v2.18.1：dual 原文/译文区内容超出可视高度必须**自动跟底**。
+
+    真机英语新闻实测（BBC Global News Podcast 整集）：长句把最新文字推到可视区之外
+    ——原文区滚动条 max=49 却停在 value=0，用户看不到刚说出的那几个字，必须自己
+    滚轮。流式字幕面板存在的意义就是"看到正在说的话"，这是硬伤。"""
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 87)
+    ov.set_show_source(True)
+    ov.set_layout_mode("dual")
+    ov.resize(560, 400)
+    ov.show()
+    for _ in range(8):
+        app.processEvents()
+    long_src = ("The minister said that the ceasefire would hold only if both sides agreed "
+                "to withdraw heavy weapons and allow inspectors into the region and that the "
+                "international community should support this humanitarian effort today")
+    long_tgt = ("部长表示停火只有在双方同意撤出重型武器并允许核查人员进入该地区的情况下才会维持，"
+                "而且国际社会应当支持这一人道主义努力，同时他还强调人道主义走廊必须立即开放"
+                "以便救援物资能够送达受影响地区的平民手中，这一点至关重要")
+    ov._dual_show_pending(long_src)
+    ov._dual_show_result(long_src, long_tgt, True)
+    for _ in range(30):
+        app.processEvents()
+    seen_overflow = False
+    for key, wrap in (("src", ov._dual_src_wrap), ("tgt", ov._dual_tgt_wrap)):
+        sb = wrap.verticalScrollBar()
+        if sb.maximum() > 0:
+            seen_overflow = True
+            assert sb.value() >= sb.maximum() - 1, \
+                f"{key} 区内容溢出却未跟底：value={sb.value()} max={sb.maximum()}"
+    assert seen_overflow, "本例必须真的制造出溢出（否则锁是空的）"
+    # 用户上滚回看 → 不得被后续内容强行拉回底部
+    sb = ov._dual_src_wrap.verticalScrollBar()
+    sb.setValue(0)
+    for _ in range(4):
+        app.processEvents()
+    ov._dual_spec(long_src, long_tgt + "，此外还需要更多援助。", True)
+    for _ in range(25):
+        app.processEvents()
+    assert sb.value() <= 4, f"用户回看时被强行拉回底部：value={sb.value()}"
+    # 新句开始 → 恢复跟底（回看语义属于上一句）
+    ov._dual_show_pending("A brand new sentence begins here now")
+    for _ in range(25):
+        app.processEvents()
+    assert ov._dual_follow["src"] is True, "新句应恢复跟底"
+    ov.deleteLater()
+check("panel: dual 原文/译文区溢出自动跟底（真机新闻回归）", t_overlay_dual_follow_bottom)
+
+
+def t_overlay_dual_history_no_placeholder():
+    """v2.18.1：译文为空的终版不得用占位 "…" 顶进历史区。
+    真机英语新闻实测：历史区出现过只含省略号的行——一次性占位被当成正文永久留存，
+    还白占一行高度。关了「同时显示原文」时这种行整条跳过。"""
+    from PySide6.QtWidgets import QLabel
+    ov = CaptionOverlay()
+    ov.set_show_source(False)
+    ov.set_layout_mode("dual")
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    n0 = ov._dual_hist_rows
+    ov.dual_push_history("Some english source line", "")
+    assert ov._dual_hist_rows == n0, "空译文 + 关原文：整行不应入历史"
+    ov.set_show_source(True)
+    ov.dual_push_history("Another english source line", "")
+    assert ov._dual_hist_rows == n0 + 1, "有原文可显示时该行仍应入历史"
+    labs = [l.text() for l in ov._dual_hist_body.findChildren(QLabel)]
+    assert "…" not in labs, f"历史行出现占位省略号: {labs}"
+    ov.deleteLater()
+check("panel: dual 历史行不写占位省略号", t_overlay_dual_history_no_placeholder)
+
+
+def t_overlay_dual_srcoff_tgt_room():
+    """v2.18.1：关「同时显示原文」时，当前句**译文区必须拿到自己的完整高度**。
+
+    真机英语新闻实测（用户配置正是「原文 关」）：旧实现只隐藏原文标签，QScrollArea
+    本体仍占 21px，加上仍按可见计算的分隔把手 8px 与三控件间距，body 60px 里
+    译文区被饿到只剩 21px——一句正常译文（22px 字号约 32px 高）显示不全。"""
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 87)
+    ov.set_show_source(False)
+    ov.set_layout_mode("dual")
+    ov.resize(843, 707)
+    ov.show()
+    for _ in range(8):
+        app.processEvents()
+    src = "The quick brown fox jumps over the lazy dog and keeps running forward"
+    tgt = "敏捷的棕色狐狸跳过了懒狗并继续向前奔跑"
+    ov._dual_show_pending(src)
+    ov._dual_show_result(src, tgt, False)
+    for _ in range(30):
+        app.processEvents()
+    assert not ov._dual_src_wrap.isVisible(), "关原文后原文滚动区本体应收起（不再占高）"
+    need = ov._dual_tgt.heightForWidth(max(40, ov._dual_tgt_wrap.viewport().width() - 2))
+    have = ov._dual_tgt_wrap.viewport().height()
+    assert have >= need, f"译文区被饿：可视 {have}px < 内容需求 {need}px"
+    # 开原文 → 原文区回来，且分割线（唯一那条）重新可见
+    ov.set_show_source(True)
+    for _ in range(25):
+        app.processEvents()
+    assert ov._dual_src_wrap.isVisible(), "开原文后原文区应恢复"
+    assert ov._dual_sep.isVisible(), "开原文后唯一分割线应出现"
+    ov.deleteLater()
+check("panel: 关原文时译文区不被饿（真机新闻回归）", t_overlay_dual_srcoff_tgt_room)
+
+
+def t_stream_draft_no_duplicate():
+    """v2.18.1：流式草稿不得把同一句上屏两遍。
+
+    真机 BBC 新闻实测截图：原文区出现 "Our correspondent James Landale is in the
+    Ukrainian capital and told... Our correspondent James Landale is in the Ukrainian
+    capital and told me more about the over..."，译文区同样重复。根因：每只按
+    "上一终版句"剥离重叠，没按屏幕上已显示的当前句剥离，而 whisper 两次转写措辞
+    必有差异（"and told..." vs "and told me more"）→ _merge_stream 严格后缀失配
+    → 走"无重叠"分支整句追加。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    w.overlay.set_layout_mode("dual")
+    w.overlay.set_show_source(True)
+    for _ in range(6):
+        app.processEvents()
+    prev_final = "But there is no opposition."
+    body = ("By the way there are several other proposals from our closest partners our "
+            "international partners work on this track so that through joint efforts we can "
+            "achieve this energy")
+    w._dual_hist_base = prev_final
+    w._dual_current = ""
+    # 第 1 拍：whisper 在窗口尾部吐出省略号（真机就是这样的文本形态）
+    w._on_partial_preview(prev_final + " " + body + "...")
+    first = w._dual_current
+    assert first, "第 1 拍应上屏增量"
+    assert "But there is no opposition" not in first, f"上一终版句不该被拖进当前句: {first}"
+    # 第 2 拍：同一窗口的更完整转写——边界词从 "energy..." 变成 "energy and"，
+    # 前缀对齐被打断，旧实现正是在这里整句重复
+    w._on_partial_preview(body + " and our correspondent James Landale is in the "
+                                 "Ukrainian capital")
+    cur = w._dual_current
+    key = "through joint efforts we can achieve this energy"
+    assert cur.lower().count(key) == 1, \
+        f"整句重复上屏（出现 {cur.lower().count(key)} 次，{len(cur.split())} 词）: {cur}"
+    assert "our correspondent james landale" in cur.lower(), f"新话不得丢: {cur}"
+    w._quitting = True
+    w._teardown()
+check("pipeline: 流式草稿不整句重复（真机新闻回归）", t_stream_draft_no_duplicate)
 
 def t_overlay_relayout_pending_release():
     """v2.11.0 关键修复锁：_consume_relayout 收敛后必须释放 _relayout_pending。
@@ -2110,6 +2410,60 @@ def t_wizard_build():
     dlg = FirstRunWizard(w)   # 构建即全量初始化，不 exec
     dlg.deleteLater()
 check("wizard: 首启向导可完整构建", t_wizard_build)
+
+# ---------- 7b) v2.18.1 承诺类回归：向导不改配置 / 面板语言同步 ----------
+def t_wizard_preserves_source_type():
+    """重跑首启向导必须"一路点完成无副作用"（设置页原文：不会改动你的现有配置）。
+    旧实现第 1 步恒勾「系统声音」、_finish 又无条件写回 source_type →
+    麦克风用户走完向导被静默改回系统声音（运行时实测坐实）。"""
+    from app.ui.first_run import FirstRunWizard
+    keep = ("source_type", "device_index", "asr_model", "wizard_done")
+    before = {k: Config().get(k) for k in keep}      # _finish 会写这四个键，全部回滚
+    try:
+        Config().set("source_type", "microphone")
+        w = MainWindow()
+        w.show()
+        dlg = FirstRunWizard(w)
+        assert dlg.radio_mic.isChecked() and not dlg.radio_system.isChecked(), \
+            "向导第 1 步应回显当前音频源（麦克风），不得恒勾系统声音"
+        dlg._page = 2
+        dlg._finish()
+        assert Config().get("source_type") == "microphone", \
+            "一路点『完成』不应改动音频源"
+        dlg.deleteLater()
+        w._quitting = True
+        w._teardown()
+    finally:
+        for k, v in before.items():
+            Config().set(k, v)
+check("wizard: 重跑向导不改动现有音频源（承诺回归）", t_wizard_preserves_source_type)
+
+
+def t_panel_language_syncs_settings():
+    """面板 🌐 切目标语言 → 开着的设置页下拉框必须跟随。
+    旧调用点写的是**不存在的** dlg.reload_values()，AttributeError 被
+    `except Exception: pass` 静默吞掉 → 同步从未发生。"""
+    from app.ui.settings_dialog import SettingsDialog
+    before = Config().get("target_lang")
+    try:
+        w = MainWindow()
+        w.show()
+        dlg = SettingsDialog(w)
+        w._settings_dlg = dlg
+        assert hasattr(dlg, "sync_target_lang"), "同步入口必须真实存在"
+        w._on_panel_language("ja")
+        assert Config().get("target_lang") == "ja"
+        assert dlg.target_combo.currentData() == "ja", \
+            f"设置页目标语言未跟随面板：{dlg.target_combo.currentData()}"
+        dlg._staged["target_lang"] = "de"          # 用户已暂存未保存 → 不覆盖
+        w._on_panel_language("ko")
+        assert dlg._staged["target_lang"] == "de", "窄同步不得吞掉用户暂存值"
+        dlg.deleteLater()
+        w._quitting = True
+        w._teardown()
+    finally:
+        Config().set("target_lang", before)
+check("panel: 🌐 切语言同步设置页（reload_values 死调用回归）", t_panel_language_syncs_settings)
 
 # ---------- 8) 托盘与退出清理 ----------
 def t_teardown():

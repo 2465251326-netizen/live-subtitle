@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 v2.18.0（dual 简化：只保留原文/译文一条分割线，历史区自动——用户"为什么会有三条线"，见 CHANGELOG）
+> 最后更新：2026-09-16 **v2.18.1 已发布**——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,15 +12,16 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.18.0**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.18.1**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
 ```powershell
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
-python tests/test_units.py                   # 38 项单元测试
-python tests/test_integration.py             # 69 项集成测试（判定以 test_report.txt 的 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
+$PY = "C:\Python314\python.exe"              # ⚠ PATH 里的 python 是 3.13 且缺 PySide6，直接跑必 ModuleNotFoundError
+& $PY tests/test_units.py                    # 78 项单元测试
+& $PY tests/test_integration.py              # 106 项集成测试（判定以 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
 # 更新 CHANGELOG.md 更新日志（v2.3.0 起 README 为门面文档不再内嵌日志；发版说明同时进 Release body）
@@ -381,4 +382,47 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **v2.16.2 追记**：**QScrollArea 白底是三重坑**——QSS 选择器链不命中 viewport、viewport 需直接挂透明属性、真实 Windows 渲染下 QAbstractScrollArea 还会用 palette.base 填充。**新增任何 QScrollArea 必须三保险一次到位**：NoFrame + viewport.setAutoFillBackground(False)+WA_TranslucentBackground + viewport.setStyleSheet("background: transparent;")（参照 _dual_src_wrap/_dual_tgt_wrap 构建）。另：QWidget.grab() 的渲染 palette 与真实屏幕不同（白底在 grab 里可能不刺眼导致漏检）——**视觉回归验证一律用全屏 CopyFromScreen 真实渲染**。
 - **v2.15.x 追记**：分割把手**四轮**修复（v2.15.0 实现 → v2.15.1 坐标错位 → v2.15.2 事件过滤器 → v2.15.3 布局缝隙兜底）。v2.15.2 教训同前述（move/hover 不传播、QScrollArea 消费 press、position 不重映射，最终方案 = 7 子控件事件过滤器 + QTest 式 sendEvent 真实事件流验证）。**v2.15.3 最终一块拼图**：分割线恰好落在 hist 与 body 之间的 **layout spacing 缝隙**（无子控件）——press 时 `widgetAt` 返回面板自身、事件直达 `mousePressEvent`，而该分支在 v2.15.2 清理时误删 → 缝隙路径无主。修复 = 恢复面板级命中兜底分支（与过滤器共用 `_dual_split_apply_drag`），**过滤器（点在子控件上）+ 面板兜底（点在缝隙）双通道**。经验：事件过滤器不是银弹——**布局缝隙上的事件没有子控件可过滤**，面板自身的事件处理必须保留；验证务必用真实坐标（widgetAt 探测接收者）而非假设事件走向。
 - **v2.14.1 追记（同夜）**：用户实测"底缘完全拉不了"——v2.14.0 把拉高增量全分给历史区，历史无行时 hist_h 强制 0、body 固定内容高 → 面板弹回。修正语义：**拉高=锁定面板总高**，原文区吃"总高-工具条-历史"全部剩余，历史最多 55%、保底 56px 可滚（单行内容需求 38px 曾被"≥40 才显示"门槛整条杀掉，一并修）；底缘新增横向三点把手（此前隐形）。锁：`t_overlay_dual_user_height_body`（拉高锁定总高/body 变大/历史不压瘪）。教训：**新增"空间分配"逻辑时，每一类内容状态（空/单行/多行）都要有断言**——v2.14.0 的锁只测了"有历史行"路径，"无历史行"路径的拉高回归漏网。
+
+## 二十、会话快照（2026-09-16 v2.18.1：面板"一条线"补漏 + 三个实测缺陷）
+
+- **用户诉求原话**："上一个 agent 没能修好这个界面，我只想要一个分割线，你修好后最好进行截图，自己看看修复效果…直到确实只有一个分割线为止"；随后追加"顺便把 D1、D2、D3 修了"（D1/D2/D3 = 本会话工作区体检实测出的三个缺陷）。
+- **v2.18.0 为什么没修好**：它删的是"历史区**可拖分割把手**"，但**漏删了历史区 QSS 的 `border-bottom`**——那条装饰线才是用户截图里 y≈410 的线。加上 `_DualSepHandle` 松手漏 `set_drag(False)` 导致胶囊永久高亮（y≈610 那条粗线），用户看到的仍是"好几条线"。教训：**"减少交互把手"≠"减少可见线"**，视觉元素要按像素清点，不能按代码里删掉的控件数清点。
+- **面板最终形态**（用户二选一裁决：留可拖的「原文/译文」线；关原文时不要线）：工具条 → 历史区（自动高度、**无线**、滚轮回看）→ 原文区 → **唯一一条可拖分割线** → 译文区；关「同时显示原文」⇒ 该线一并隐藏（面板零可见线）。静息 alpha 26→**70**：删掉多余线后"保留的那条"淡到 Δ亮度仅约 9%（真机截图实测），等于留了一条看不见的线——用户要的是**看得见的一条**。
+- **本轮修掉的 8 项**：① 历史区装饰线 ② `set_drag(False)` 缺失（胶囊常驻）③ `set_show_source` 漏调 `_sync_dual_visibility`（关原文仍有线）④ dual→list 历史区残留（实测 401px 空白块）⑤ 字幕卡聚焦/渐隐样式**自 v2.2.5 上线起从未生效**（见下）⑥ 面板 🌐 切语言调不存在的 `dlg.reload_values()`（异常被吞，同步从未发生）→ 新增窄同步 `sync_target_lang()`（不清 `_staged`）⑦ 重跑首启向导把麦克风改回系统声音（违背设置页承诺；模型页 v2.0.3 已回显，源页漏网）⑧ 分割把手"悬停浮现胶囊"三态里 `set_hover(True)` 全库零调用点 → 改在过滤器 MouseMove 里按"是否落在把手上"给真值。
+- **D1 的根因值得反复读**：`set_active()` 用**覆写 objectName** 表达状态，而 QSS 写 `QFrame#CaptionCard#CaptionCardActive`——Qt 里 `#A#B` 是「祖先名 A 且自身名 B」，卡片互为兄弟永不成立；同时改名让基础规则 `QFrame#CaptionCard` 一起失效 ⇒ 聚焦卡渲染成窗口底色（卡片"没有脸"）。修法：状态改**动态属性** `state`（""/active/old），objectName 恒为 CaptionCard；**子控件必须逐个 unpolish/polish**——Qt 在父属性变化时只重排父自身，`#CaptionCard[state="old"] QLabel#CaptionSource` 这类后代规则不会自动重算（像素锁当场抓到：old 与 idle 文字极差 0）。
+- **测试体系的新眼睛（本节最重要的方法论）**：102 项集成全绿却放过了一个"上线即失效"的视觉特性，因为旧锁 `t_card_lifecycle` 断言的是 **objectName 字符串**——把失效机制当成正确行为锁死了。本轮新增三把**像素级锁**：`t_card_focus_style_pixels`（三张卡渲染底色/文字亮度对比）、`t_overlay_single_divider`（扫描"整幅+亮度均匀+上下 2px 回落"的孤立薄行，断言恰好 1 条；关原文断言 0 条）、`t_wizard_preserves_source_type` / `t_panel_language_syncs_settings`。**判据标定实测值**：单行原文文字占比仅 0.66、亮样本极差 404；sep 线占比 0.95、极差 0、上下 2px 0.00——只用"亮像素占比"会把文字判成线，必须再加均匀度与薄行两条。
+- **真机截图自查的坑（新增）**：面板 87% 不透明 ⇒ 桌面内容会漏进抓屏，**任何"绝对亮度阈值 + 面板外列做基线"的检测器都会失灵**（实测把 y=2 列当基线取到纯桌面，检出 0 条；换局部基线又检出一堆桌面峰）。结论：**客观数线用 offscreen 确定性像素锁**（背景纯色、可复现），**真机截图只用于人眼判断**。另：`overlay_enabled=false` 也挡不住面板出现——v2.10.0 的"启动即常驻"是无条件的，测主窗时别指望配置能藏掉面板。
+- **子代理结论必须自己复核（再次实锤）**：本轮两个子代理交来的"严重缺陷"里，**5 条是假的**——"缩进错误 ×2"（全模块 `compile()` 通过）、"`_spec_enabled` 用 `is` 比较字符串"（实为 `==`）、"`level_changed` 量纲不统一"（实为 `min(1.0, level*8)` 发 0~1）、"`--check-config` 未实现"（全库无该引用）。真缺陷只在逐条自己验证 + 像素实测后才入册。已把这条写进 `.monkeycode/MEMORY.md`。
+- **套件与发版**：本批结束时单元 78 / 集成 106；真实新闻实测（第二十一节）再加 5 把锁后为**单元 79 / 集成 110 全绿**。**v2.18.1 已按第二节工作流发布**（bump → CHANGELOG 定稿 → commit 含 `app/config.py` → push main → tag → CI 出双资产）。
+
+## 二十一、会话快照（2026-09-16 真实英语新闻端到端测试 · 悬浮窗专项）
+
+### 21.1 音源方法论（本轮踩通的路，下次直接抄）
+
+- **便携版 Chrome 起不了第二实例**：`--user-data-dir=<新目录>` 在这个 `Chrome-v124…-Stable-1.8.5` 包里**被单实例策略吃掉**——实测启动器进程退出、0 个 chrome 进程 0 个窗口，第 1 轮整场零音源却"跑完了"（差点得出"面板无字幕"的错误结论）。**教训：测试开始前必须先证明音源在出声**，否则后面全是空谈。
+- **MCI 不可用**：`winmm.mciSendStringW('open … type mpegvideo')` 报 err 277「初始化 MCI 时发生问题」（本机无可用 mpegvideo 设备）。
+- **可用组合（已验证）**：`requests` 走代理拉真实新闻播客 mp3（`https://podcasts.files.bbci.co.uk/p02nq0gn.rss` → BBC Global News Podcast 整集 13.3MB/27min）→ `faster_whisper.audio.decode_audio(path, sampling_rate=44100)` 解码 → `pyaudiowpatch` **输出**到默认扬声器（Realtek idx=5）→ 环回设备 idx=26 自然抓到。实测 rms_max=0.288 / median=0.053，链路健康。
+- **设备索引会漂移**：用户配置里 `device_index: 29` 已越界（当前设备总数 29，合法 0–28；Realtek 环回现为 26）。应用的 `resolve_device_index` 按 `device_name` 回查救回来了——**这条按名回查是真有用的设计，别删**。
+- **抓屏**：`ctypes BitBlt(GetDC(0))` 抓这台机器上 DWM 合成的字幕面板得到**纯黑**（24 张全黑），必须用 Qt `QScreen.grabWindow(0, x, y, w, h)`。窗口标题：主窗 `LiveSubtitle · 实时字幕翻译`、面板 `LiveSubtitle`（v1 驱动按"标题含 LiveSubtitle"分类 → 两个都判成 main）。
+- **驱动脚本形态**：隔离 home（镜像用户配置 + **拷 argos 目录**，`PACKS_DIR` 由 `CONFIG_DIR` 派生）+ `HF_HOME` 注入复用 1.6GB 缓存 + `PYTHONUNBUFFERED=1`（否则后台任务看不到进度）+ 收尾 `WM_CLOSE` 保 `pipeline.latency` 落盘。
+- **已留盘复用**（`scripts/qa/`，gitignore 内）：`qa_play_news.py <mp3> <秒数> <输出idx=5> <环回idx=26>`（真实新闻音频播放 + 环回电平自测）、`qa_news_drive.py --round N --seconds 150 [--show-source]`（隔离实例 + 周期抓屏 + 优雅收尾；`--capture-only` 可只抓屏）。下次改悬浮窗直接跑它，别再自己搭音源。
+
+### 21.2 实测揪出的 5 个悬浮窗缺陷（全部已修，详见 CHANGELOG v2.18.1）
+
+1. **流式草稿整句重复上屏**（最刺眼）——剥离基线错 + 锚点取"第一次出现"。新旧对照：旧 2 次/68 词，新 1 次/39 词。
+2. **关原文时译文区被饿到 21px**——只隐了标签没隐 QScrollArea 本体，且 body 需求仍按三控件算间距。**用户自己的设置正是这一档**。
+3. **dual 两区溢出不跟底**——最新文字被推到可视区外（实测滚动条 max=49 停在 0），流式字幕硬伤。
+4. **推测式翻译污染持久缓存**——150s 会话 218 条里 39 组是同一句的渐进变体（最长 13 版）；修后同长度会话 28 条/0 组。
+5. **历史区写入占位 "…" 行**——一次性占位被当正文永久留存。
+
+### 21.3 真机遥测基线（用户配置：turbo+cuda+argos+cap2.5+neural_vad+perf_turbo+spec）
+
+`n_reco=58 reco_p50=0.28 reco_p95=0.50 n_tr=28 tr_p50=0.11 tr_p95=0.71 tr_max=3.07 hold_p50=2.91 hold_p95=5.70 n_spec=61 spec_p50=0.09`
+→ 用户实际感知的译文延迟 = **spec_p50 0.09s**；`hold_p50≈2.9 ≈ 分段上限 2.5 + 收尾`，与第十三节定性一致（hold 恒随分段周期）。`tr_max=3.07` 是偶发网络/加载尖峰，值得后续留意。零 `orphan_thread`、零 error/Traceback。
+
+### 21.4 遗留观察（未立案，下次可查）
+
+- 面板 87% 不透明度 + 主窗就在面板正后方时，抓屏里两者内容混叠，**自动化视觉判读会被干扰**——测面板请把主窗移开或最小化。
+- `neural_vad=true` + `segment_cap_s=2.5` 仍是用户设置，第十八节的"神经 VAD 黏滞拉长切段"嫌疑未做 A/B 复测。
+- 历史区文字与当前句字号差偏小（0.55×/0.66× vs 1.0×），真实新闻密集语流下"哪句是正在说的"仍需用户主观确认。
 

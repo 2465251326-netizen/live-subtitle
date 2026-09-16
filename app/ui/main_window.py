@@ -60,6 +60,10 @@ class CaptionCard(QFrame):
     def __init__(self, source_text, parent=None, on_menu=None):
         super().__init__(parent)
         self.setObjectName("CaptionCard")
+        # v2.18.1：卡片状态用动态属性表达（""=占位/未激活、"active"=最新句、
+        # "old"=已渐隐历史），objectName 恒为 CaptionCard——基础卡面样式不再
+        # 被状态切换踩掉（原因见 set_active）
+        self.setProperty("state", "")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.created_at = datetime.now()
         self.source_text = source_text
@@ -177,11 +181,28 @@ class CaptionCard(QFrame):
             self.setVisible(False)
 
     def set_active(self, active):
-        """聚焦态切换（v2.2.5）：active=True 换强调边框样式，False 渐隐。"""
-        self.setObjectName("CaptionCardActive" if active else "CaptionCardOld"
-                           if not self.is_pending() else "CaptionCard")
+        """聚焦态切换（v2.2.5）：active=True 换强调边框样式，False 渐隐。
+
+        v2.18.1 根因修复：状态改走**动态属性 state**，不再覆写 objectName。
+        旧实现把卡片唯一的 objectName 改成 CaptionCardActive/CaptionCardOld，
+        而 styles.py 写的是 `QFrame#CaptionCard#CaptionCardActive`——Qt 里
+        `#A#B` 意为「祖先名 A 且自身名 B」，卡片之间互为兄弟不是祖孙，
+        该选择器**从 v2.2.5 上线起从未命中**。更糟的是改名让基础规则
+        `QFrame#CaptionCard`（卡面底色 + 边框）一并失效：像素实测
+        聚焦卡采样 = #0f1115（窗口底色透出，卡片"没有脸"），
+        未激活卡 = #161a22。既有集成锁只断言 objectName 字符串，
+        把这个死机制当成了"正确行为"，所以 102 项全绿也照不出来。"""
+        state = "active" if active else ("old" if not self.is_pending() else "")
+        self.setProperty("state", state)
         self.style().unpolish(self)
         self.style().polish(self)
+        # 子控件必须逐个重 polish：Qt 在父控件动态属性变化时只重排父自身，
+        # 依赖父属性的**后代规则**（`QFrame#CaptionCard[state="old"]
+        # QLabel#CaptionSource` 等文字渐隐）不会自动重算——实测 old=448 与
+        # idle 同色即此因（像素锁 t_card_focus_style_pixels 抓到）
+        for ch in (self.meta_label, self.source_label, self.target_label):
+            ch.style().unpolish(ch)
+            ch.style().polish(ch)
 
 
 def _srt_ts(sec):
@@ -628,7 +649,9 @@ class MainWindow(QMainWindow):
         dlg = getattr(self, "_settings_dlg", None)
         if dlg is not None:
             try:
-                dlg.reload_values()
+                # v2.18.1：原调 dlg.reload_values()——该方法不存在，异常被
+                # except 吞掉，设置页目标语言从未跟随面板同步
+                dlg.sync_target_lang(code)
             except Exception:
                 pass
         if self.running:
@@ -1607,13 +1630,16 @@ class MainWindow(QMainWindow):
             if not anchor:
                 continue
             limit = min(len(text_words), max(4, len(text_words) * 2 // 3))
+            # v2.18.1：取**最后一次**出现，不是第一次。短锚（n=1/2 的 "and"/"told"
+            # 这类常用词）常在草稿前段就撞上一次巧合匹配，旧代码找到就 break →
+            # 剥离量不足 → 已显示的那段被当成新话整段追加（真机 BBC 新闻实测：
+            # 原文与译文各出现同一句两遍）。取最后一次才是"已显示到此为止"。
             for i in range(limit):
                 if i + n > len(text_words):
                     break
                 chunk = " ".join(text_words[i:i + n]).lower().strip(".,!?;:")
                 if chunk == anchor:
                     best_end = i + n
-                    break
             if best_end is not None:
                 break
         if best_end:
@@ -1655,10 +1681,18 @@ class MainWindow(QMainWindow):
         # 与 _dual_current（当前句显示文本）分离，终版句沉历史后当前句从
         # 零开始，不再混句
         base = getattr(self, "_dual_hist_base", "") or ""
-        diff = self._strip_overlapped_prefix(base, t)
+        cur_txt = getattr(self, "_dual_current", "") or ""
+        # v2.18.1：剥离基线必须是"屏幕上已经显示的全部"（上一终版句 + 当前句），
+        # 而不是只有上一终版句。预览窗口每拍都会把上一拍的尾部再转写一遍，
+        # 只按 base 剥离时，与 current 的重叠就只剩 `_merge_stream` 的严格后缀
+        # 匹配在兜——而 whisper 两次转写措辞必有差异（实测 "and told..." vs
+        # "and told me more about"），后缀对不齐就走"无重叠"分支 → **整句重复
+        # 上屏**（真机 BBC 新闻截图实证：原文与译文各出现同一句两遍）。
+        shown = (base + " " + cur_txt).strip() if cur_txt else base
+        diff = self._strip_overlapped_prefix(shown, t)
         if not diff:
             return
-        cur = self._merge_stream(getattr(self, "_dual_current", "") or "", diff)
+        cur = self._merge_stream(cur_txt, diff)
         self._dual_current = cur
         self.overlay.update_partial(cur)
         # v2.13.0：**草稿也送推测翻译**——译文区跟着原文一起实时生长。

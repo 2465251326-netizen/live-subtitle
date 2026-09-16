@@ -78,8 +78,16 @@ class FirstRunWizard(QDialog):
         d.setWordWrap(True)
         v.addWidget(d)
         self.radio_system = QRadioButton("🎧  系统声音（推荐）——网页视频 / 播放器 / 会议的声音")
-        self.radio_system.setChecked(True)
         self.radio_mic = QRadioButton("🎙  麦克风——采集外部人声")
+        # v2.18.1：**回显当前配置**。旧实现恒勾「系统声音」，而 _finish 无条件
+        # 把 radio 的选择写回 source_type——麦克风用户重跑向导一路点『完成』
+        # 就被静默改回系统声音，与设置页"不会改动你的现有配置/默认项即当前
+        # 配置"的承诺直接矛盾（实测坐实：microphone → 走完向导 → system）。
+        # 模型页自 v2.0.3 起就按当前配置回显，音频源页是漏网的那一处。
+        if str(self.main.config.get("source_type") or "system") == "microphone":
+            self.radio_mic.setChecked(True)
+        else:
+            self.radio_system.setChecked(True)
         for r in (self.radio_system, self.radio_mic):
             v.addWidget(r)
         v.addStretch()

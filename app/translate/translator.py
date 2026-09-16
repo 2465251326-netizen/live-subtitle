@@ -511,7 +511,16 @@ class TranslateThread(QThread):
         norm_src = WHISPER_LANG_MAP.get(detected, detected or "")
         return f"{self.target}:{norm_src}:{text.strip()}"
 
-    def _do_translate(self, text, detected):
+    def _do_translate(self, text, detected, store=True):
+        """翻译一句（带持久缓存）。
+
+        v2.18.1：新增 `store` 开关——**推测式中间版不再写缓存**。
+        真机英语新闻实测（BBC Global News Podcast，150s 会话）：222 条缓存里
+        41 组是同一句话的渐进变体（最长一句被存了 7 个版本："GMT on Tuesday
+        15th September. …" 长度 58/86/99/160/168/192/201）。半句前缀几乎不会
+        再被原样查到（终版文本更长），写进去纯属污染：LRU 只有 800 格，
+        真整句的缓存被这些一次性碎片挤掉，磁盘上还永久留着大量半截译文。
+        读侧不变——文本恰好相同（如重复播出的台标句）时推测版照样命中受益。"""
         # v2.0.1：key 加入源语言维度——同文本被 whisper 判为不同源语言时，
         # 旧 key 会让 MyMemory/Argos 命中错误语言方向的缓存译文
         key = self._cache_key(detected, text)
@@ -530,7 +539,8 @@ class TranslateThread(QThread):
         result = engine.translate(text, source, self.target)
         # v2.6.0（R1）：实体还原后再入缓存——缓存中的译文即上屏所见
         result = (unescape_html(result[0]), result[1])
-        _cache.put(key, result)
+        if store:
+            _cache.put(key, result)
         return result
 
     def _maybe_reprobe_primary(self):
@@ -642,7 +652,7 @@ class TranslateThread(QThread):
             translated = ""
             used_engine = self._active_engine
             try:
-                translated, used_lang = self._do_translate(text, detected)
+                translated, used_lang = self._do_translate(text, detected, store=not spec)
             except Exception as e:
                 # 多层降级链（v2.0.0）：google ↔ mymemory 互备，最后落 Argos 离线
                 # （仅当对应方向的离线包已安装时才参与，避免无意义的报错切换）

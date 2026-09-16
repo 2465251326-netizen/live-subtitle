@@ -2464,6 +2464,25 @@ class SettingsDialog(QDialog):
             self.source_combo.blockSignals(False)
         self._load_devices()
 
+    def sync_target_lang(self, code):
+        """悬浮条 🌐 切换目标语言后，同步设置页的「翻译目标语言」下拉框。
+
+        v2.18.1：主窗原先调的是**不存在的** `dlg.reload_values()`——全库仅此
+        一处引用，AttributeError 被 `except Exception: pass` 静默吞掉，同步
+        从未发生（设置页开着时下拉框仍显示旧语言）。这里做**窄同步**而不是
+        直接 load_from_config()：后者会 `_staged.clear()`，把用户其他尚未
+        保存的改动一并丢掉。用户已暂存该键时同样不覆盖其暂存值。"""
+        combo = getattr(self, "target_combo", None)
+        if combo is None:
+            return
+        if "target_lang" in (getattr(self, "_staged", None) or {}):
+            return
+        idx = combo.findData(code)
+        if idx >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+
     def focus_page(self, index):
         """右键「打开设置」时定位到指定页（0 音频 / 1 识别 / 2 翻译 / 3 显示 / 4 通用）。"""
         if 0 <= index < self.pages.count():
