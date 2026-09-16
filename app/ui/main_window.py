@@ -1055,8 +1055,8 @@ class MainWindow(QMainWindow):
         # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复——
         # **必须最先**（后续历史区开关、分割高度恢复与 _relayout 都依赖布局模式）
         self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
-        # v2.19.0：dual 历史区开关（v2.19.1 起用户二轮裁决默认**开**=句子在
-        # 悬浮窗里全部保留不消失；关=当前句独占面板，能力互为回退）；
+        # v2.19.0：dual 历史区开关（v2.19.1 三轮裁决：默认**关**＝滚动字幕墙，
+        # 句子在悬浮窗里全部保留不消失；开＝经典上下双语大字区+顶部历史块）；
         # 必须在 set_dual_src_h_user 之前——两者都会触发 _relayout，
         # 先定历史份额再定原文区高度，最终几何才与"一次拖出"的结果一致
         self.overlay.set_hist_enabled(bool(c.get("overlay_dual_hist")))

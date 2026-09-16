@@ -399,13 +399,13 @@ _STD_ROWS = [
              "面板 ⋯ 菜单可随时互切，保存后立即生效。",
      "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
     {"key": "overlay_dual_hist", "attr": "dual_hist_check", "page": "display", "section": "字幕显示",
-     "kind": "check", "title": "双语面板历史区（默认开）",
-     "desc": "开启（默认）＝「上下双语」面板上半部保留历史区：每句翻译完成后自动沉入"
-             "（原文小灰+译文小白成对，最多 30 对），说过的句子在悬浮窗里不消失，滚轮可回看；"
-             "历史区高度按内容自动收缩、最多占面板一半，当前句区保底不被挤没，"
-             "两区之间可拖分割线自由分配。"
-             "关闭＝当前句独占整个面板（字更大、不拥挤），说过的句子只在主窗口与导出文件里保留。"
-             "面板 ⋯ 菜单里也有同名开关，随手可切、重启保持。",
+     "kind": "check", "title": "双语面板历史区（默认关＝滚动字幕墙）",
+     "desc": "关闭（默认）＝滚动字幕墙：整个面板就是一面滚动的字幕墙——每句说完留在屏上成对驻留，"
+             "当前句在最底部实时生长，满屏自动上滚，滚轮上滑回看不被打断。"
+             "句子不会从悬浮窗里消失（v2.19.1 用户真机三轮裁决后的形态）。\n"
+             "开启＝经典上下双语：当前句大字区（原文+译文，中间可拖分割线）+ 面板顶部历史块"
+             "（每句翻译完成自动沉入，原文小灰+译文小白成对，最多 30 对，滚轮回看）。\n"
+             "两种形态都不影响主窗口与导出文件的完整记录；面板 ⋯ 菜单里也有同名开关，随手可切、重启保持。",
      "opts": {}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
@@ -1216,9 +1216,10 @@ class SettingsDialog(QDialog):
         slider_row = QHBoxLayout()
         slider_row.setSpacing(8)
         self.bg_opacity_slider = ClickableSlider(Qt.Horizontal)
-        self.bg_opacity_slider.setRange(0, 100)   # v2.7.4（B-7）：0-95→0-100，
-        # 与 DEFAULTS 注释（0-100）及面板快捷档（30-100）统一量程——旧 95 上限
-        # 会让面板上设到 >95 的值一进设置页保存就被静默压回 95
+        self.bg_opacity_slider.setRange(30, 100)   # v2.7.4（B-7）：0-95→0-100 统一量程；
+        # v2.19.1：下限 0→30——面板快捷档（滚轮/⋯菜单）本就 30 封顶，滑条却能拖到 0
+        # 且落盘，重启后 apply_style 直读 0 = 整板全透明（真机实录：幕墙字悬浮在壁纸上）。
+        # 三入口同一地板，杜绝"重启前后两副面孔"。
         self.bg_opacity_label = QLabel("92%")
         self.bg_opacity_label.setObjectName("SettingDesc")
         slider_row.addWidget(self.bg_opacity_slider)

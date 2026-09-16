@@ -311,9 +311,9 @@ class CaptionOverlay(QWidget):
         outer.addWidget(self._dual_hist, 1)
         self._dual_hist.hide()
         self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
-        # v2.19.0：历史区总开关（默认 True 保持独立构造时的旧行为；主窗按配置
-        # overlay_dual_hist 下发。v2.19.1 用户真机二轮裁决：出厂默认**开**——
-        # "句子全部保留，不能在字幕悬浮窗里消失"，几何修正后不再有旧空框问题）
+        # v2.19.0：历史区总开关（**裸构造默认 True=经典控件形态**，独立组件与既有
+        # 测试语义不变；主窗按配置 overlay_dual_hist 下发。v2.19.1 三轮裁决后的
+        # 出厂默认是 False＝滚动字幕墙："句子全部保留，不能在字幕悬浮窗里消失"）
         self._dual_hist_enabled = True
         # v2.19.1：当前句"在说态"——终版收口后置 False（闭合）。流式拍/新片段
         # 在闭合态到来即触发**原子换句**（原文+译文同刻切换），杜绝
@@ -484,6 +484,7 @@ class CaptionOverlay(QWidget):
         if not key:
             return None
         suffix_hit = None
+        prefix_hit = None
         for it in reversed(self._rows):
             if not it["pending"]:
                 continue
@@ -494,7 +495,12 @@ class CaptionOverlay(QWidget):
             # 结尾），命中后由补齐路径把行文本升级为整句，与主窗卡片对齐
             if s and key.endswith(s) and suffix_hit is None:
                 suffix_hit = it
-        return suffix_hit
+            # v2.19.1：幕墙/列表的流式草稿行常是终版的**前缀**（whisper 终版
+            # 只是补了句读或尾部一词）——不认这条就会同句多出一行重复字幕。
+            # ≥8 字符护栏防短句误配；倒序扫描天然偏向最新待决行（即生长行）
+            if s and len(s) >= 8 and key.startswith(s) and prefix_hit is None:
+                prefix_hit = it
+        return suffix_hit or prefix_hit
 
     def _merge_pending(self, texts):
         """收编被并入整句的前片占位行（与主窗卡片 set_merged_away 同语义，
@@ -516,7 +522,7 @@ class CaptionOverlay(QWidget):
         v2.11.0：dual（上下双语）模式下原文区**流式生长**——新句起始（首字符
         大写/CJK/数字）即重置原文区为该片段；延续片段按 CJK 邻接规则拼进当前
         句，用户看到的是"整句在打字机式生长"，与推测式翻译的译文区同步演进。"""
-        if self._layout_mode == "dual":
+        if self._classic_dual():
             self._dual_show_pending(source_text)
             return
         r = self._find_pending(source_text)
@@ -535,6 +541,17 @@ class CaptionOverlay(QWidget):
             self._relayout()
             self._schedule_relayout()
             return
+        if (last is not None and source_text
+                and self._dual_same_sentence(last["src_text"], source_text)):
+            # v2.19.1：流式草稿已把同句先行上屏（幕墙/列表皆然），随后到达的
+            # 正式片段虽大写开头也**必须就地校准该行**而非另起新行——否则同句
+            # 两行并存，且草稿行的迟到终版会配错行
+            last["src_text"] = source_text
+            last["src"].setText(source_text)
+            last["src"].setVisible(bool(source_text) and self._show_source)
+            self._relayout()
+            self._schedule_relayout()
+            return
         # v2.7.5（R-4）：_pending_row 死变量移除——T1 多待决并存后匹配走
         # _find_pending（按原文精确/后缀），单槽指针已无读方
         self._add_row(source_text, "⟳ 识别中…", True)
@@ -545,7 +562,7 @@ class CaptionOverlay(QWidget):
         排到队尾，好过配错行）。merged_from=攒句合并的前片名单（主窗传入）。
         v2.11.0：dual 模式下"收口"=译文区从推测态转正式样式，原文区校准为
         整句；无行概念，merged_from 直接忽略。"""
-        if self._layout_mode == "dual":
+        if self._classic_dual():
             self._dual_show_result(source_text, target_text, show_source)
             return
         self._show_source = bool(show_source)
@@ -578,7 +595,7 @@ class CaptionOverlay(QWidget):
            译文"，正是 v2.7.4（B-8）在主窗侧修过的同款分叉。
         配对复用 _find_pending（精确 + 后缀匹配）：combined 键以末片结尾，
         所以能命中末片占位行；找不到行说明已收编/已终态，静默丢弃。"""
-        if self._layout_mode == "dual":
+        if self._classic_dual():
             self._dual_spec(source_text, target_text, show_source)
             return
         r = self._find_pending(source_text)
@@ -606,6 +623,18 @@ class CaptionOverlay(QWidget):
             return
         t = (text_full or "").strip()
         if not t:
+            return
+        if self._wall():
+            # v2.19.1 幕墙：流式拍喂**末行待决句**（无则建行）——原文实时
+            # 生长，历史行纹丝不动（用户三轮裁决：句子不得消失）
+            live = self._rows[-1] if self._rows else None
+            if live is not None and live["pending"]:
+                live["src_text"] = t
+                live["src"].setText(t)
+                live["src"].setVisible(bool(t) and self._show_source)
+                self._schedule_relayout()
+            else:
+                self._add_row(t, "⟳ …", True)
             return
         cur = self._dual_src.text().strip()
         if not self._dual_cur_open:
@@ -635,6 +664,15 @@ class CaptionOverlay(QWidget):
         直接丢弃，不得把已定稿译文刷回淡色。"""
         if self._layout_mode != "dual" or not translated:
             return
+        if self._wall():
+            # v2.19.1 幕墙：草稿推测译喂末行待决句的译文位（终版到达时由
+            # show_pending_result 原地收口，同一行成对定格）
+            live = self._rows[-1] if self._rows else None
+            if live is not None and live["pending"]:
+                live["tgt"].setText(translated)
+                live["tgt_text"] = translated
+                self._schedule_relayout()
+            return
         if (source_text and not self._dual_cur_open
                 and self._dual_same_sentence(self._dual_src.text(), source_text)):
             return
@@ -647,7 +685,7 @@ class CaptionOverlay(QWidget):
 
     def show_caption(self, source_text, target_text, show_source=True):
         """一次性上屏（无占位）。v2.11.0：dual 模式同终态收口路径。"""
-        if self._layout_mode == "dual":
+        if self._classic_dual():
             self._dual_show_result(source_text, target_text, show_source)
             return
         self._show_source = bool(show_source)
@@ -657,7 +695,7 @@ class CaptionOverlay(QWidget):
         self._sync_bar_texts()
 
     def clear_caption(self):
-        if self._layout_mode == "dual":
+        if self._classic_dual():
             # v2.14.0：当前句 + 历史区一并清空
             while self._dual_hist_rows > 0:
                 it = self._dual_hist_lay.itemAt(0)
@@ -697,6 +735,18 @@ class CaptionOverlay(QWidget):
         """当前是否处于上下双语布局（主窗/测试用）。"""
         return self._layout_mode == "dual"
 
+    def _classic_dual(self):
+        """经典上下双语 = dual 且历史区**开**：当前句大字区（原文/译文/分割线）
+        + 顶部历史块。历史区关时面板整体切换为滚动字幕墙（_wall）。"""
+        return self._layout_mode == "dual" and self._dual_hist_enabled
+
+    def _wall(self):
+        """v2.19.1 滚动字幕墙 = dual 且历史区**关**。用户三轮实拍裁决：
+        "句子全部保留，不能在字幕悬浮窗里消失"——旧"独占单句槽"把终版句
+        整块抹掉，被否。幕墙复用列表行系统（_rows/_add_row/_find_pending）：
+        每句成对驻留、当前句在末行实时生长、满屏上滚、滚轮回看不打断。"""
+        return self._layout_mode == "dual" and not self._dual_hist_enabled
+
     def _dual_want_height(self):
         """dual 当前句区的内容需求高度。
 
@@ -734,15 +784,17 @@ class CaptionOverlay(QWidget):
         拖原文/译文之间的分割线改的就是这个值——原文区想多大拖多大，
         译文区吃剩余（两者各自可滚动）。"""
         self._dual_src_h_user = int(h) if h and int(h) >= 30 else None
-        if self._layout_mode == "dual" and not self._collapsed:
+        if self._classic_dual() and not self._collapsed:
             self._relayout()
 
     def set_hist_enabled(self, on):
         """v2.19.0：dual 历史区总开关（主窗按配置 overlay_dual_hist 下发）。
 
-        关=当前句独占整个面板（用户实拍裁决："红色框框的历史区域删掉"）；
-        开=保留 v2.14.0 的"终版句沉历史 + 滚轮回看"。关闭时**清空已建历史行**
-        （控件不留在布局里占内存），重新打开后从当前句之后重新开始累积。"""
+        v2.19.1 三轮实拍裁决后的语义：**开**=经典上下双语（当前句大字区 +
+        顶部历史块 + 可拖分割线）；**关**=滚动字幕墙（整个面板即句对列表，
+        每句说完留在屏上、当前句在末行实时生长、满屏上滚——"句子全部保留，
+        不能在字幕悬浮窗里消失"）。切换时清空**另一形态**的内容：旧控件不留
+        占内存，历史真相始终在主窗与导出文件里。"""
         on = bool(on)
         if on == self._dual_hist_enabled:
             return
@@ -754,8 +806,24 @@ class CaptionOverlay(QWidget):
                     it.widget().deleteLater()
                     self._dual_hist_lay.removeItem(it)
                 self._dual_hist_rows -= 1
+            # 经典当前句区内容对幕墙形态无效：清空复位
+            self._dual_src.setText("")
+            self._dual_tgt.setText("")
+            self._dual_tgt.setProperty("empty", True)
+            self._dual_tgt.setProperty("spec", False)
+            self._restyle_dual_tgt()
+            self._dual_cur_open = False
+        else:
+            # 幕墙行对经典形态无效：清空（主窗历史仍在）
+            for it in self._rows:
+                it["row"].setParent(None)
+                it["row"].deleteLater()
+            self._rows = []
+            self._last_result = ("", "")
+            self._unread = 0
         if self._layout_mode == "dual" and not self._collapsed:
             self._relayout()
+        self._update_empty_hint()
 
     def is_hist_enabled(self):
         return bool(self._dual_hist_enabled)
@@ -848,8 +916,8 @@ class CaptionOverlay(QWidget):
 
     def dual_clear_current(self):
         """v2.14.0：当前句区清空（终版句已沉历史，等待下一句草稿/片段；
-        空态由 _update_empty_hint 写占位/引导）。"""
-        if self._layout_mode != "dual":
+        空态由 _update_empty_hint 写占位/引导）。v2.19.1：仅经典态有意义。"""
+        if not self._classic_dual():
             return
         self._dual_src.setText("")
         self._dual_tgt.setProperty("empty", True)
@@ -997,8 +1065,9 @@ class CaptionOverlay(QWidget):
     def _update_empty_hint(self):
         """B/D：无行时显示占位（或首次手势引导），来字即隐；顺带门控清空按钮。
         v2.11.0：dual 模式空态时译文区**常驻占位文案**（真机截图实证：不写的话
-        空面板是一片空白，用户不知道这里是干嘛的）；有内容则不动。"""
-        if self._layout_mode == "dual":
+        空面板是一片空白，用户不知道这里是干嘛的）；有内容则不动。
+        v2.19.1：幕墙态（dual+历史区关）走列表占位分支，不再命中旧控件。"""
+        if self._classic_dual():
             if not self._dual_src.text().strip():
                 self._dual_tgt.setProperty("empty", True)
                 self._dual_tgt.setProperty("spec", False)
@@ -1061,7 +1130,7 @@ class CaptionOverlay(QWidget):
         # relayout 被守卫吞掉：列表模式有滚动条兜底视觉无感（历史未暴露），
         # dual 模式无滚动 → 第二句起高度永远停在首句值、长终版底部裁切
         # （真机截图+探针轨迹实证：pending=True 恒真、want=124 而 body=74）。
-        if self._layout_mode == "dual" and not self._collapsed:
+        if self._classic_dual() and not self._collapsed:
             want0 = self._dual_want_height()
             h0 = self._dual_body.height()
             h1 = self._dual_hist.height()
@@ -1100,7 +1169,7 @@ class CaptionOverlay(QWidget):
             self._dual_body.setVisible(False)
             self._mini.setVisible(True)
             self._mini.setFixedHeight(min(self._mini.sizeHint().height(), 120))
-        elif self._layout_mode == "dual":
+        elif self._classic_dual():
             # v2.11.0：上下双语——当前句区贴内容；v2.14.0：历史区吃剩余
             # 空间（有内容才显示）
             # v2.14.1（关键修复）：**用户拉高的空间优先给当前句原文区**——
@@ -1213,7 +1282,7 @@ class CaptionOverlay(QWidget):
         # 192 会把面板缩回去（fixed 高度的历史区被裁），总高已显式锁定
         # （_dual_total_h = chrome+历史+当前句+外框）
         w0 = self.width()
-        if self._layout_mode == "dual" and not self._collapsed:
+        if self._classic_dual() and not self._collapsed:
             self.resize(w0, int(getattr(self, "_dual_total_h", self.height())))
         else:
             self.adjustSize()
@@ -1324,7 +1393,7 @@ class CaptionOverlay(QWidget):
     def _update_mini(self):
         """v2.5.0：精简条内容 = 最新一句（尊重原文开关）；无字幕给引导占位。
         v2.11.0：dual 模式无行区，从双语区的当前句取值。"""
-        if self._layout_mode == "dual":
+        if self._classic_dual():
             if self._dual_src.text().strip():
                 src = self._dual_src.text() if self._show_source else ""
                 self._mini_src.setText(src)
@@ -1362,7 +1431,7 @@ class CaptionOverlay(QWidget):
     def set_collapsed(self, on):
         self._collapsed = bool(on)
         self._sync_bar_texts()
-        dual = self._layout_mode == "dual"
+        dual = self._classic_dual()
         self._jump_btn.setVisible(not self._follow and not self._collapsed and not dual)
         self._scroll.setVisible(not self._collapsed and not dual)
         self._dual_body.setVisible(not self._collapsed and dual)
@@ -1422,6 +1491,14 @@ class CaptionOverlay(QWidget):
             if self._on_first_show:
                 self._on_first_show()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # v2.19.1（真机截图实证）：WA_TranslucentBackground 无边框窗口 resize 后
+        # **新暴露区域不会自动重绘**——幕墙每来一句 adjustSize 长高、启动时宽度从
+        # 初始值撑到持久化的 619，右半/下半永远停在壁纸透明（右缘把手三点画在旧宽度
+        # 处即铁证）。经典态总高锁死躲过了这颗雷，幕墙必须正面修：尺寸变化即全窗 update。
+        self.update()
+
     def show_first_hint(self):
         """D：空状态文案升级为手势引导（主窗按配置只调一次）。"""
         self._hint_guide = True
@@ -1435,7 +1512,9 @@ class CaptionOverlay(QWidget):
         self._font_size = max(10, int(font_size))
         self._text_color = QColor(text_color)
         self._bg_color = QColor(bg_color)
-        self._bg_alpha = int(max(0, min(100, int(bg_opacity))) * 2.55)
+        # v2.19.1：地板 30 与面板快捷档/设置页滑条统一——历史配置里已存在的 0
+        # 不再能在重启后把面板变成全透明空壳（真机实录）
+        self._bg_alpha = int(max(30, min(100, int(bg_opacity))) * 2.55)
         self._apply_qss()
         self._sync_bar_texts()
         self._relayout()
@@ -1635,7 +1714,7 @@ class CaptionOverlay(QWidget):
         ③ 传播/过滤的事件 position 相对**原接收者**（不重映射），一律取
            globalPosition 比对。"""
         if (getattr(self, "_dual_split_watch", None) and obj in self._dual_split_watch
-                and self._layout_mode == "dual" and not self._collapsed):
+                and self._classic_dual() and not self._collapsed):
             t = ev.type()
             if t in (QEvent.Type.MouseMove, QEvent.Type.HoverMove):
                 g = ev.globalPosition().toPoint()
@@ -1840,7 +1919,9 @@ class CaptionOverlay(QWidget):
         act_auto_h.setEnabled(bool(self._user_height))
         act_auto_h.triggered.connect(lambda _c=False: self._reset_user_height())
         # v2.19.0：历史区就地开关（用户实拍"删掉红框那块"，但能力保留可回退）
-        acts["hist"] = menu.addAction("显示历史区（上下双语）")
+        # v2.19.1：历史区关=滚动字幕墙（句子全部保留），开=经典分栏（当前句
+        # 大字 + 顶部历史块）——菜单名如实描述两态，不再叫"显示历史区"
+        acts["hist"] = menu.addAction("经典双语（顶部历史块）")
         acts["hist"].setCheckable(True)
         acts["hist"].setChecked(self._dual_hist_enabled)
         acts["hist"].setEnabled(self._layout_mode == "dual")

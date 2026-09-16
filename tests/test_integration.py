@@ -1107,6 +1107,16 @@ def t_overlay_split_follows_mouse():
         ov.show()
         ov.set_layout_mode("dual")
         ov.set_hist_enabled(hist_on)
+        if not hist_on:
+            # v2.19.1：历史区关=滚动字幕墙——没有大字区也就没有可拖分割线
+            # （幕墙自身的契约由 t_overlay_dual_hist_wall_default 锁住）
+            ov.show_pending("Hello there")
+            for _ in range(4):
+                app.processEvents()
+            assert not ov._dual_body.isVisible(), "幕墙态不得露出经典大字区"
+            assert not ov._dual_sep.isVisible(), "幕墙态不得存在可拖分割线"
+            ov.deleteLater()
+            continue
         if hist_on:
             for i in range(8):
                 ov.dual_push_history(f"sentence {i} of the report", f"第{i}句译文内容")
@@ -1145,44 +1155,52 @@ check("panel: 分割线跟手（上下拖方向正确、可拖区间不塌缩）
       t_overlay_split_follows_mouse)
 
 
-def t_overlay_dual_hist_default_on():
-    """v2.19.1 用户真机二轮裁决：「句子全部保留，不能在字幕悬浮窗里消失」——
-    历史区恢复**出厂默认开**（v2.19.0 的默认关以首轮实拍"空框吃面板"为据，
-    该几何缺陷已在 23.2 修正，否掉的形态成因不复存在）。
-    两态能力都必须完整：开=终版句逐句沉入不消失；关=当前句独占、不建控件。"""
+def t_overlay_dual_hist_wall_default():
+    """v2.19.1 三轮实拍裁决：出厂默认 **关历史块＝滚动字幕墙**——
+    "句子全部保留，不能在字幕悬浮窗里消失"。幕墙复用列表行系统：每句成对
+    驻留、旧行永不抹掉；开回经典态（大字区+历史块）能力完整、两态互清。"""
     from app.config import DEFAULTS
     from app.ui.caption_overlay import CaptionOverlay
-    assert DEFAULTS["overlay_dual_hist"] is True, \
-        "历史区出厂默认必须为开——用户裁决：悬浮窗里说过的句子不能消失"
+    assert DEFAULTS["overlay_dual_hist"] is False, \
+        "出厂默认必须是幕墙态（历史块关）——用户三轮裁决：句子不得消失"
 
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
-    # 关闭态（能力保留）：不建行、当前句独占
     ov.set_hist_enabled(False)
-    ov._dual_show_pending("Hello there, this is the live report")
-    ov.dual_push_history("some finished sentence", "已经翻完的一句")
+    for _ in range(4):
+        app.processEvents()
+    assert not ov._dual_body.isVisible(), "幕墙态不得显示经典当前句大字区"
+    assert ov._scroll.isVisible(), "幕墙态必须露出滚动行区"
+    # 三句顺序到达：全部驻留，一行不少、一行不抹
+    for i in range(3):
+        ov.show_pending(f"Sentence number {i} arrives live")
+        ov.update_partial(f"Sentence number {i} arrives live on screen")
+        ov.update_dual_draft_tgt(f"第{i}句实时草稿")
+        ov.show_pending_result(f"Sentence number {i} arrives live on screen.",
+                               f"第{i}句完整译文。", True)
     for _ in range(6):
         app.processEvents()
-    assert ov._dual_hist_rows == 0, "关闭时不得建历史行（不占内存）"
-    assert not ov._dual_hist.isVisible(), "关闭时历史区不得出现在面板上"
-    assert ov._dual_body.height() >= ov.height() - 80, \
-        f"关闭后当前句应独占面板：body={ov._dual_body.height()} 总高={ov.height()}"
-    # 开启态（默认形态）：终版句逐句驻留，不消失
+    assert len(ov._rows) == 3, f"幕墙必须驻留全部三句，实得 {len(ov._rows)}"
+    for i in range(3):
+        assert ov._rows[i]["src_text"] == f"Sentence number {i} arrives live on screen.", \
+            f"第{i}行原文被改写/消失"
+        assert ov._rows[i]["tgt_text"] == f"第{i}句完整译文。", f"第{i}行译文被改写/消失"
+    # 第四句流式草稿：新行生长，前三句不动
+    ov.update_partial("A brand new sentence grows")
+    for _ in range(4):
+        app.processEvents()
+    assert len(ov._rows) == 4 and ov._rows[-1]["pending"], "新句应另起生长行"
+    assert ov._rows[0]["src_text"].endswith("on screen."), "旧行被新句抹掉了"
+    # 切回经典态：幕墙行清空、大字区回来（能力互为回退）
     ov.set_hist_enabled(True)
-    ov.dual_push_history("another finished sentence", "又一句译文")
-    ov.dual_push_history("one more finished sentence", "再一句译文")
-    for _ in range(6):
+    for _ in range(4):
         app.processEvents()
-    assert ov._dual_hist_rows == 2, "开启后终版句必须逐句驻留"
-    assert ov._dual_hist.isVisible()
-    # 独立构造（未过配置的裸组件）保持历史开=默认形态
-    ov2 = CaptionOverlay()
-    assert ov2._dual_hist_enabled is True, "裸构造默认必须处于'保留句子'形态"
-    ov2.deleteLater()
+    assert ov._rows == [], "切回经典态应清空幕墙行"
+    assert ov._dual_body.isVisible() and not ov._scroll.isVisible()
     ov.deleteLater()
-check("panel: 双语历史区默认开（句子不消失；关闭=独占，能力可回退）",
-      t_overlay_dual_hist_default_on)
+check("panel: 双语默认=滚动字幕墙（三句全驻留 + 新句生长 + 经典态回退）",
+      t_overlay_dual_hist_wall_default)
 
 
 def t_dual_pair_atomic_swap():
@@ -1198,7 +1216,7 @@ def t_dual_pair_atomic_swap():
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(False)
+    ov.set_hist_enabled(True)   # v2.19.1：本锁测的是经典大字区的原子换句契约
     A_src = "Hello everyone and welcome to the show."
     A_tgt = "大家好，欢迎收看本期节目。"
 
