@@ -402,7 +402,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - **便携版 Chrome 起不了第二实例**：`--user-data-dir=<新目录>` 在这个 `Chrome-v124…-Stable-1.8.5` 包里**被单实例策略吃掉**——实测启动器进程退出、0 个 chrome 进程 0 个窗口，第 1 轮整场零音源却"跑完了"（差点得出"面板无字幕"的错误结论）。**教训：测试开始前必须先证明音源在出声**，否则后面全是空谈。
 - **MCI 不可用**：`winmm.mciSendStringW('open … type mpegvideo')` 报 err 277「初始化 MCI 时发生问题」（本机无可用 mpegvideo 设备）。
 - **可用组合（已验证）**：`requests` 走代理拉真实新闻播客 mp3（`https://podcasts.files.bbci.co.uk/p02nq0gn.rss` → BBC Global News Podcast 整集 13.3MB/27min）→ `faster_whisper.audio.decode_audio(path, sampling_rate=44100)` 解码 → `pyaudiowpatch` **输出**到默认扬声器（Realtek idx=5）→ 环回设备 idx=26 自然抓到。实测 rms_max=0.288 / median=0.053，链路健康。
-- **设备索引会漂移**：用户配置里 `device_index: 29` 已越界（当前设备总数 29，合法 0–28；Realtek 环回现为 26）。应用的 `resolve_device_index` 按 `device_name` 回查救回来了——**这条按名回查是真有用的设计，别删**。
+- **设备索引与总数都会漂，别信任何一次快照**：本会话先测到 `device_count=29`（合法 0–28，用户配置的 `device_index: 29` 当场报 Invalid device，Realtek 环回在 26），改配置时再测却是 `device_count=33` 且 **29 正好就是** `扬声器 (Realtek High Definition Audio) [Loopback]`，连测 4 次稳定 33。⇒ 我曾据第一次快照断言"用户配置越界过期"，**那是错的**（已纠正）。结论：WASAPI 枚举数量本身会随会话/虚拟设备变化，**存的索引天然不可靠，`resolve_device_index` 的按名回查是唯一稳的路径，别删、也别"顺手修正"索引数字**。
 - **抓屏**：`ctypes BitBlt(GetDC(0))` 抓这台机器上 DWM 合成的字幕面板得到**纯黑**（24 张全黑），必须用 Qt `QScreen.grabWindow(0, x, y, w, h)`。窗口标题：主窗 `LiveSubtitle · 实时字幕翻译`、面板 `LiveSubtitle`（v1 驱动按"标题含 LiveSubtitle"分类 → 两个都判成 main）。
 - **驱动脚本形态**：隔离 home（镜像用户配置 + **拷 argos 目录**，`PACKS_DIR` 由 `CONFIG_DIR` 派生）+ `HF_HOME` 注入复用 1.6GB 缓存 + `PYTHONUNBUFFERED=1`（否则后台任务看不到进度）+ 收尾 `WM_CLOSE` 保 `pipeline.latency` 落盘。
 - **已留盘复用**（`scripts/qa/`，gitignore 内）：`qa_play_news.py <mp3> <秒数> <输出idx=5> <环回idx=26>`（真实新闻音频播放 + 环回电平自测）、`qa_news_drive.py --round N --seconds 150 [--show-source]`（隔离实例 + 周期抓屏 + 优雅收尾；`--capture-only` 可只抓屏）。下次改悬浮窗直接跑它，别再自己搭音源。
