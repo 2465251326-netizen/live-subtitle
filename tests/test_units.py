@@ -1548,6 +1548,77 @@ def test_stream_preview_restart():
     assert p._buf_len == 0.0
 
 
+def test_stream_preview_language_auto():
+    """v2.18.2（D-1）：识别语言=auto（**出厂默认值**）时流式预览必须把
+    language 归一为 None 交给 whisper 自动检测。直传字符串 "auto" 会在
+    Tokenizer 构造处抛 `ValueError: 'auto' is not a valid language code`，
+    而预览线程逐拍 try 会把它整拍静默吞掉——症状=开了"流式原文"却永远
+    不出草稿、界面零报错（GPU+dual+自动检测 = README 主打场景整条哑火）。
+    取证：本机离线 tiny 模型实测 'auto' 抛 ValueError、None 正常检测。"""
+    from app.asr.preview import StreamPreview, normalize_language
+    from app.config import DEFAULTS
+
+    assert DEFAULTS["asr_language"] == "auto", \
+        "默认识别语言已变——本锁的前提（默认用户中招）需重新评估"
+    # 纯函数侧
+    assert normalize_language("auto") is None
+    assert normalize_language("Auto") is None, "手编配置大小写不得复现同一哑火"
+    assert normalize_language("  ") is None and normalize_language(None) is None
+    assert normalize_language("en") == "en" and normalize_language("zh-CN") == "zh-CN"
+
+    # 实参侧：真正落到 transcribe 的 kwargs 里不许出现 language="auto"
+    calls = []
+
+    class _Model(object):
+        def transcribe(self, audio, **kw):
+            calls.append(kw)
+            return iter([]), None
+
+    p = StreamPreview(_Model(), "auto")
+    assert p._lang is None, "构造期就要归一，不能留到调用点各自判断"
+    assert p._transcribe(np.zeros(1600, dtype=np.float32)) == ""
+    assert calls, "桩模型未被调用，本锁等于没测"
+    assert "language" not in calls[-1], f"auto 被原样下发给 whisper：{calls[-1]}"
+    # 锁定语言时仍必须透传（草稿不该每拍重新猜语言）
+    p2 = StreamPreview(_Model(), "en")
+    p2._transcribe(np.zeros(1600, dtype=np.float32))
+    assert calls[-1].get("language") == "en", "指定语言必须原样下发"
+
+
+def test_spec_source_lang_resolution():
+    """v2.18.2（D-3）：推测式送译的源语言回退链——攒句语言 → 会话最近识别
+    语言 → 配置；**"auto" 一律视同未知**（translator.py:537 会把它挡成
+    source=None，argos 随即抛"缺少源语言信息"，spec 不走备援链 → 首句几拍
+    的草稿译文全灭；真机实测 12 条推测回复里 4 条带该错）。
+    轻量替身借用未绑定函数（单元测试里不能构造 QWidget，见 HANDOFF 5.3）。"""
+    from app.ui.main_window import MainWindow
+
+    class Cfg(object):
+        def __init__(self, d):
+            self._d = d
+
+        def get(self, key):
+            return self._d.get(key)
+
+    class W(object):
+        _spec_source_lang = MainWindow._spec_source_lang
+
+    w = W()
+    w.config = Cfg({"asr_language": "auto"})
+    assert w._spec_source_lang() == "", "全未知时必须解不出语言，绝不能把 'auto' 当语言送出去"
+    w._last_asr_lang = "en"
+    assert w._spec_source_lang() == "en", "会话最近识别语言可兜底（草稿早于首个终版片段）"
+    w._tgroup_lang = "ja"
+    assert w._spec_source_lang() == "ja", "本攒句语言优先级最高"
+    del w._tgroup_lang, w._last_asr_lang
+    w.config = Cfg({"asr_language": "en"})
+    assert w._spec_source_lang() == "en", "用户手动锁定语言照常生效"
+    w.config = Cfg({"asr_language": " AUTO "})
+    assert w._spec_source_lang() == "", "大小写/空格变体同样视同未知"
+    w.config = Cfg({"asr_language": "zh-CN"})
+    assert w._spec_source_lang() == "zh-CN", "带地区后缀的语言码不受影响"
+
+
 def test_strip_overlapped_prefix():
     """v2.12.0：流式草稿增量剥离——partial 窗口与已确认文本尾部天然重叠
     （同一段音频两次转写），剥离后只剩新增话音；无重叠时全量返回。"""

@@ -1430,12 +1430,25 @@ def t_main_draft_translation_flow():
     tr = _Tr()
     w._active_translate = lambda: tr
     try:
-        # 草稿到达：原文区刷新 + 草稿送推测翻译（spec=True）
+        # v2.18.2（D-3）升级本锁：旧断言要求草稿以 "auto" 送译（itest_home 的
+        # asr_language 恰为 "auto"）——那是把缺陷行为当契约锁住了。新契约：
+        # ① 语言未知时**不送**（argos 走不通、spec 不走备援链，送=必错）
+        w._dual_hist_base = ""
         w._dual_current = ""
+        w._last_asr_lang = ""
+        w._tgroup_lang = ""
+        w._on_partial_preview("Draft before any language is known")
+        assert [x for x in tr.sent if x[2]] == [], f"语言未知时不得送推测翻译：{tr.sent}"
+        assert w._dual_draft == "Draft before any language is known", "原文照常生长"
+        # ② 会话一旦解出语言（此处模拟上一句已识别为 en），草稿照常送译且带真语言
+        w._last_asr_lang = "en"
+        w._dual_hist_base = ""
+        w._dual_current = ""
+        # 草稿到达：原文区刷新 + 草稿送推测翻译（spec=True）
         w._on_partial_preview("The market opened higher")
         assert w.overlay._dual_src.text() == "The market opened higher"
         assert w._dual_draft == "The market opened higher"
-        assert tr.sent[-1] == ("The market opened higher", "auto", True), tr.sent
+        assert tr.sent[-1] == ("The market opened higher", "en", True), tr.sent
         # 草稿译文回复：译文区 spec 淡态更新（原文/配对/计数都不动）
         w._on_spec_translated("The market opened higher", "市场高开", "argos", "en", "")
         assert w.overlay._dual_tgt.text() == "市场高开"
@@ -1455,6 +1468,113 @@ def t_main_draft_translation_flow():
     finally:
         w.stop_pipeline()
 check("pipeline: 草稿送推测翻译与迟到草稿作废", t_main_draft_translation_flow)
+
+def t_main_panel_placeholder_once_per_piece():
+    """v2.18.2（D-2）：每个识别片段只允许**一次**面板占位调用。
+    历史上 _on_asr_text 对同一 text 调两次 overlay.show_pending（方法开头
+    一次、建卡之后又一次，v2.4.0 遗留）。dual 原文区对"延续片段"（小写
+    开头 → _starts_new_sentence 判为续接）做累加，实测原文区出现
+    "Hello everyone and welcome to the show and welcome to the show"。
+    GPU+dual 下被流式预览每拍整体覆盖而掩盖，**CPU 用户（预览被闸门自动
+    关闭）直接可见**；列表模式因 _find_pending 幂等不受影响。"""
+    w = MainWindow()
+    w.show()
+    w.overlay.show()
+    w.running = True
+    old = {k: w.config.get(k) for k in
+           ("overlay_layout", "low_latency_mode", "instant_caption")}
+    w.config.set("overlay_layout", "dual")
+    w.config.set("low_latency_mode", True)
+    w.config.set("instant_caption", True)      # 双调用只存在于流式两段式分支
+    w.apply_overlay_from_config()
+
+    class _Tr(object):
+        _active_engine = "argos"
+
+        def isRunning(self):
+            return True
+
+        def submit(self, text, lang, spec=False):
+            return []
+
+    w._active_translate = lambda: _Tr()
+    hits = []
+    real_show_pending = w.overlay.show_pending
+
+    def spy(text):
+        hits.append(text)
+        return real_show_pending(text)
+
+    w.overlay.show_pending = spy
+    try:
+        w._on_asr_text("Hello everyone", "en", "1.0")
+        assert hits.count("Hello everyone") == 1, \
+            f"新句片段应只调一次面板占位，实调 {hits.count('Hello everyone')} 次"
+        w._on_asr_text(" and welcome to the show", "en", "1.0")
+        assert hits.count(" and welcome to the show") == 1, \
+            "延续片段被重复送面板（同一片段两次 show_pending）"
+        src = w.overlay._dual_src.text()
+        assert src == "Hello everyone and welcome to the show", src
+        assert src.count("welcome") == 1, f"dual 原文区重复拼接：{src!r}"
+    finally:
+        w.stop_pipeline()
+        for k, v in old.items():
+            w.config.set(k, v)
+check("panel: 每片段仅一次面板占位调用（dual 原文不重复）",
+      t_main_panel_placeholder_once_per_piece)
+
+def t_main_draft_waits_for_real_language():
+    """v2.18.2（D-3）：草稿送译在语言未知时**不送**，语言一解出就照常送，
+    且任何情况下都不把配置里的 "auto" 当语言喂给引擎。
+    真机取证：默认 asr_language=auto + dual + argos 下，首个终版片段之前到的
+    草稿全部失败（12 条推测回复 4 条报"缺少源语言信息…"，用户观感=原文在长
+    译文不动）；translator.py:537 早就把 auto 挡成 source=None，spec 不走备援链。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    old = {k: w.config.get(k) for k in
+           ("overlay_layout", "low_latency_mode", "asr_language", "spec_translate")}
+    w.config.set("overlay_layout", "dual")
+    w.config.set("low_latency_mode", True)
+    w.config.set("spec_translate", True)
+    w.config.set("asr_language", "auto")      # 出厂默认，正是 D-3 的触发条件
+    w.apply_overlay_from_config()
+
+    sent = []
+
+    class _Tr(object):
+        _active_engine = "argos"
+
+        def isRunning(self):
+            return True
+
+        def submit(self, text, lang, spec=False):
+            sent.append((lang, bool(spec)))
+            return []
+
+    w._active_translate = lambda: _Tr()
+    try:
+        w._last_asr_lang = ""
+        w._tgroup_lang = ""
+        w._dual_hist_base = ""
+        w._dual_current = ""
+        w._on_partial_preview("Hello there my friend")
+        assert [x for x in sent if x[1]] == [], f"语言未知时不得送推测翻译：{sent}"
+        assert w._dual_draft == "Hello there my friend", "原文照常生长，只是不送注定失败的请求"
+        # 首个终版片段带来语言 → 之后的草稿必须带真语言送译
+        w._on_asr_text("Hello there my friend", "en", "1.0")
+        assert w._last_asr_lang == "en", "会话级语言记忆要落下来"
+        sent.clear()
+        w._on_partial_preview("Hello there my friend and welcome back")
+        specs = [l for l, sp in sent if sp]
+        assert specs and all(l == "en" for l in specs), f"应带 en 送译，实得 {specs}"
+        assert "auto" not in [l for l, _ in sent], "任何提交都不得把 auto 当语言"
+    finally:
+        w.stop_pipeline()
+        for k, v in old.items():
+            w.config.set(k, v)
+check("pipeline: 草稿送译拿不到真语言就不送（auto 视同未知）",
+      t_main_draft_waits_for_real_language)
 
 def t_overlay_layout_config_roundtrip():
     """overlay_layout 配置经 apply_overlay_from_config 恢复布局；

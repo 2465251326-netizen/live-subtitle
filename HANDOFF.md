@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 **v2.18.1 已发布**——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节
+> 最后更新：2026-09-16 **v2.18.2 已发布**（本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,16 +12,17 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.18.1**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.18.2**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
 ```powershell
 cd "C:\deepseek (2)\live-subtitle"
 $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
-$PY = "C:\Python314\python.exe"              # ⚠ PATH 里的 python 是 3.13 且缺 PySide6，直接跑必 ModuleNotFoundError
-& $PY tests/test_units.py                    # 78 项单元测试
-& $PY tests/test_integration.py              # 106 项集成测试（判定以 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
+$PY = "C:\Python314\python.exe"              # ⚠ 2026-09-16 复核：本机 PATH 里的 python 已指向 C:\Python314\python.exe（3.14.7，依赖齐全），
+#   旧记录"PATH python=3.13 缺 PySide6"在本机已不成立；仍建议显式写绝对路径，防 PATH 漂移
+& $PY tests/test_units.py                    # 81 项单元测试
+& $PY tests/test_integration.py              # 112 项集成测试（判定以 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
 # 更新 CHANGELOG.md 更新日志（v2.3.0 起 README 为门面文档不再内嵌日志；发版说明同时进 Release body）
@@ -107,6 +108,16 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 | `close_action` | `tray` | 关闭窗口=最小化到托盘 |
 | `max_history` | `200` | |
 
+> ⚠️ **2026-09-16 10:50 磁盘现值勘误**（读 `~\.live_subtitle\config.json` 实测，上表是 09-10 的历史快照，
+> 之后多轮会话与用户自改已让若干键过期；**别再照上表推断当前行为**）：
+> `engine=argos`（非 auto）、`engine_auto_fallback=false`、`asr_language=en`（**非 auto**——正是 D-1
+> 在本机从未暴露的原因，见第二十二节）、`show_source=true`（非"只译文"）、`overlay_layout=dual`、
+> `perf_turbo=true`、`asr_accuracy=fast`、`hallucination_filter=false`（用户自己关掉了）、
+> `segment_cap_s=4.0` + `neural_vad=false`（09-16 10:49 由 2.5/true 改回，见第 21.4 节更新）、
+> `stream_preview=true`、面板几何 `x=1106 y=344 w=619 h=515 字号22 透明度87`、
+> `translate_fix_map={"加快人工智能的发展速度":"控制人工智能的发展节奏"}`、`overlay_dual_src_h=87`。
+> 备份件：`config.json.bak-20260910_235823`、`config.json.bak-20260916_104939`。
+
 **机器**：Windows，RTX 2060 6GB（驱动 610.62 / CUDA UMD 13.3），Python 3.14.7（**无 torch**，GPU 走 `nvidia-cublas-cu12` + `nvidia-cudnn-cu12` 独立 wheel）。
 
 ## 四点九、引擎/模型选型实测背书（第十二轮矩阵，真人直播各 ~80s）
@@ -134,7 +145,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 ### 5.3 环境与测试陷阱
 - `QT_QPA_PLATFORM=offscreen` 跑无头测试，但 **offscreen 无字体** → 测量文字宽高必须用 `QT_QPA_PLATFORM=windows`（真实 Windows 平台）
 - 文字裁剪检测：`scripts/probe_text_clip.py`（真实 Windows 平台逐控件比对所需尺寸 vs 实际尺寸；v2.2.13 起 word-wrap/多行标签按"当前宽度换行后需要高度"比对——旧版只比单行高度，曾漏掉速览卡热键压行 bug 被用户实拍抓包；用 `git worktree` 挂旧代码可做探测器双向验证）
-- 集成测试：`tests/test_integration.py`（69 项，覆盖配置/缓存/重采样/字幕面板(成对行·淘汰·清空·收起·拖移契约·空状态·图钉·引导·未读计数·高度收敛)/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
+- 集成测试：`tests/test_integration.py`（112 项，覆盖配置/缓存/重采样/字幕面板(成对行·淘汰·清空·收起·拖移契约·空状态·图钉·引导·未读计数·高度收敛)/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
 - 阻塞式 `stream.read` 在静音环回上会挂死 → 探测脚本必须轮询 `get_read_available`
 - 探测脚本用完即删，产物走 `.gitignore`
 
@@ -159,6 +170,8 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 app/config.py            DEFAULTS 配置白名单 + 存储根迁移
 app/hotkey.py            全局热键（双发去重在此）
 app/asr/engine.py        AsrThread：模型下载/加载/GPU 检测/转写/背压
+app/asr/preview.py       StreamPreview：dual 流式原文通道（0.9s 节拍重识别 4s 窗）；
+                         语言参数必须走 normalize_language（auto/空→None，见第二十二节 D-1）
 app/audio/capture.py     CaptureThread、设备解析、重采样+FIR、能量 VAD 分段
 app/translate/translator.py  TranslateThread、三引擎备援链、翻译缓存
 app/ui/main_window.py    主窗口、字幕卡、托盘、状态横幅、空页面速览卡
@@ -167,8 +180,8 @@ app/ui/settings_dialog.py 设置页（声明式 _FIELD_SPECS 驱动）
 app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
-tests/test_units.py      78 项单元测试
-tests/test_integration.py 102 项集成测试
+tests/test_units.py      81 项单元测试
+tests/test_integration.py 112 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -177,7 +190,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.10.0 已发布（v2.8.0 推测式增量翻译真机实测 5.13s→0.10s；v2.9.0 神经 VAD 恢复为默认关实验开关；v2.10.0 悬浮面板启动即常驻）。第十三节有延迟结构定性与 A/B 方法论，第十四节有神经 VAD 恢复始末，第十五节有常驻行为矩阵。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.18.2 已发布（第二十二节＝最近一轮：工作区深度体检实测出 D-1 流式原文在 auto 下静默哑火、D-2 dual 原文重复拼接、D-3 首句草稿译文必错，三缺陷全修 + 真机复测；第二十一节＝真实英语新闻端到端 5 项悬浮窗缺陷；第二十节＝面板"一条线"补漏与像素锁方法论）。第十三节有延迟结构定性与 A/B 方法论，第十四节有神经 VAD 恢复始末，第十五节有常驻行为矩阵。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
@@ -423,6 +436,163 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 ### 21.4 遗留观察（未立案，下次可查）
 
 - 面板 87% 不透明度 + 主窗就在面板正后方时，抓屏里两者内容混叠，**自动化视觉判读会被干扰**——测面板请把主窗移开或最小化。
-- `neural_vad=true` + `segment_cap_s=2.5` 仍是用户设置，第十八节的"神经 VAD 黏滞拉长切段"嫌疑未做 A/B 复测。
+- `neural_vad=true` + `segment_cap_s=2.5` 仍是用户设置，第十八节的"神经 VAD 黏滞拉长切段"嫌疑未做 A/B 复测。**→ 2026-09-16 10:49 已消解**：用户自己把配置改回 `segment_cap_s=4.0` + `neural_vad=false`（对照备份 `config.json.bak-20260916_104939`），该观察项关闭；如需再验，重新开开关跑 `scripts/qa/qa_news_drive.py`。
 - 历史区文字与当前句字号差偏小（0.55×/0.66× vs 1.0×），真实新闻密集语流下"哪句是正在说的"仍需用户主观确认。
+
+## 二十二、会话快照（2026-09-16 工作区深度体检 · 实测出两个真缺陷并修复补锁）
+
+### 22.1 本轮性质与基线数字（全部实跑，非转述）
+
+- 做法：四路子代理**只读**并行分析（① 采集+识别链路 ② 翻译+基础设施 ③ UI 层 ④ 测试+CI+演进），
+  父代理**逐条自己复核**后才入册——按 `.monkeycode/MEMORY.md` 规约，子代理结论一律先当"待验证材料"。
+- 规模：17,595 行 Python（`app/` ≈10.5k，其中 UI 5.8k：main_window 2730 / settings_dialog 2514 / caption_overlay 1779；tests ≈4.7k）。
+- 仓库：`main`==`origin/main`（0/0）、工作树干净、`.git` 1.62MiB / garbage 0、**全库零 `TODO/FIXME`**。
+- 依赖实测：`C:\Python314` = PySide6 6.11.2 / faster-whisper 1.2.1 / ctranslate2 4.8.2 / numpy 2.5.3；
+  `argos_translate` **未装且不需要**（离线翻译走 CT2 直载）；本机 PATH 的 `python` 已指向 3.14.7（见第二节就地勘误）。
+- 套件基线（本轮起点）：单元 **79 PASS** / 集成 **TOTAL: 110 PASS: 110 FAIL: 0**；
+  `bump_version.py --check` → 版本一致 2.18.1；最近一次真机会话（09-16 10:45，v2.18.1）日志零 error/零孤儿，
+  `reco_p50=0.34 tr_p50=0.08 hold_p50=2.74 spec_p50=0.09`。
+- 收尾状态：修复 + 补锁 + **发版前真机复测双 PASS**；同族第三项 D-3 也已一并修掉（见 22.8），
+  终态 **单元 81 / 集成 112 全绿**，v2.18.2 已 bump + CHANGELOG + 发布。
+
+### 22.2 D-1（严重，出厂默认配置即中招）：流式原文通道在 `asr_language=auto` 下**整条静默哑火**
+
+- **根因链**：`main_window.py:1337` 把配置原值喂 `StreamPreview` → `preview.py` 旧实现只做 `str(language or "") or None`，
+  `"auto"` 是**真值** → `_transcribe` 传 `language="auto"` → **faster-whisper 只在 `language is None` 时才自动检测**
+  （`transcribe.py:471`，否则走 else 分支交给 `Tokenizer`，`tokenizer.py:28-32` 对非法语言码抛 `ValueError`）
+  → `preview.py` 逐拍 `except` 整拍静默吞掉 → 用户观感 = 开了"讲到哪跟到哪"却永远不出草稿、**界面零报错**。
+- **真机铁证**（本机离线 tiny 模型，修复前）：
+  `asr_language='auto' → RAISED ValueError: 'auto' is not a valid language code`；
+  `'en'` 与 `''`（→None）均正常；对照"不传 language"时自动检测成功。修复后 `'auto' → _lang=None → OK 无异常`。
+- **中招条件**：`stream_preview=True`(默认) × `overlay_layout=dual` × `asr_device=cuda` × **`asr_language=auto`（出厂默认）**
+  ——正是 README 主打的那条卖点路径。**本机从未暴露**纯粹因为用户配置 `asr_language=en`（见第四节勘误）。
+- **修法**：新增纯函数 `preview.normalize_language()`（`""`/`auto`（大小写容错）→ None），构造期归一，
+  与正式通道 `engine.py` "auto 时根本不传 language" 的既有规约对齐；锁定语言仍原样透传（草稿不该每拍重猜）。
+- **锁**：单元 `test_stream_preview_language_auto`（纯函数 + 桩模型捕获**真实 kwargs**断言无 `language="auto"`，
+  并断言 `DEFAULTS["asr_language"] == "auto"`——默认值若被改动，锁会提醒重新评估前提）。
+
+### 22.3 D-2（中，GPU 用户被掩盖 / CPU 用户直接可见）：dual 布局延续片段原文被拼接两遍
+
+- **根因**：`_on_asr_text` 对**同一个片段**调用 `overlay.show_pending(text)` **两次**（方法开头一次 + 建卡后一次，
+  v2.4.0 遗留），而 `caption_overlay._dual_show_pending` 对"小写开头延续片段"（`_starts_new_sentence` 判为续接）
+  做 `_dual_join` **累加**、无幂等守卫 → 重复拼接。列表模式因 `_find_pending` 幂等不受影响。
+- **真机铁证**（offscreen 构造真实 `CaptionOverlay`，按主窗调用序列复现）：
+  一次 `Hello everyone and welcome to the show` → 两次（旧行为）`...show and welcome to the show`。
+- **掩盖条件**：GPU+dual 下流式预览每拍 `update_partial` 整体覆盖 `_dual_src` 把它抹掉；
+  **CPU 模式（预览被三重闸自动关闭）+ dual 布局**下用户直接看到重复字幕。
+- **修法（取根因，不加下游去重兜底）**：删掉 `_on_asr_text` 建卡后的第二次调用，统一保留方法开头那一次
+  （两条分支——流式两段式与 `instant_caption=off`——各自恰好一次）。
+  **有意不做**面板层 endswith 去重：合法叠词（`非常`+`非常`）会被误吞，语义风险大于收益。
+- **锁**：集成 `t_main_panel_placeholder_once_per_piece`（spy 计数断言每片段**恰好一次** `show_pending`
+  + 断言 `_dual_src` 全文与"welcome 只出现 1 次"）。
+
+### 22.4 顺手加固：整条通道哑火不再无声
+
+- `StreamPreview` 加 `_fail_streak`：首拍记 `preview.round_failed`，**连续 3 拍升级记一条 `preview.degraded`**
+  （携带 `language` 与提示）后停止刷屏。真实 `run()` 循环 + 抛错桩实测：`round_failed` 恰 1 条 + `degraded` 1 条。
+- 为什么值得做：D-1 这类"功能整体失效"过去被逐拍 `except: pass` 混在噪音里（2 分钟可刷 130+ 条），
+  日志反而更难判断是偶发跳拍还是永久哑火——`degraded` 是一条**可 grep 的定性证据**。
+
+### 22.5 子代理证伪清单（六条"严重缺陷"不成立，别再当真）
+
+| 主张 | 复核结论 |
+|---|---|
+| `recheck_dropped` 全仓无 connect，是死信号 | ❌ 假：`main_window.py:1295` 已连 `_on_recheck_dropped`（定义 1945） |
+| `check_updates` 写 `app_version.json` 只写不读 | ❌ 假：**全仓库不存在该字符串** |
+| `silero_vad` 键无消费方（仅注释） | ❌ 假：`engine.py:210/226-228/259/629`、`main_window.py:1283` 真实消费（映射 `vad_filter=True`） |
+| `AsrThread.submit` 无 spec 位会挤掉终版 | ❌ 错域：`submit` 只收音频段；推测式在 `translate.submit`，那里 spec 明确"绝不挤终版" |
+| `_on_asr_finished` 冲刷不 bump `_tgroup_gen` → 终版被代数校验丢弃 | ❌ 假：bump 就在 `_flush_tgroup`（2194）内，它调的正是该函数 |
+| 集成测试从不设 `overlay_layout` | ❌ 假：`test_integration.py:1367/1413/1464`（本轮改锁后行号有位移）均在设 |
+
+另：**"muted 信号无人接"亦为假**（`main_window.py:1344` 有 connect）。子代理报的缺陷命中率本轮约 3/10——**逐条自己验 + 真机取证**这条纪律继续保留。
+
+### 22.6 已核实、本轮**未修**的技术债（下轮优先候选）
+
+1. **112 项集成测试（含两把像素锁）不在任何 CI 闸门**：`build.yml` 只跑单元 + smoke；`deep-test.yml` 仅 `workflow_dispatch`。最强的回归保障全靠本地手跑。
+2. **重复实现/死代码**：`_restyle_dual_tgt` 在 `caption_overlay.py:810` 与 `:1388` **定义两次**（后者生效、前者被遮蔽）；
+   `_starts_new_sentence` 在 `main_window.py:2176` 与 `caption_overlay.py:464` 各一份（"必须同源"仅靠注释纪律）；
+   `capture.py:476` `frames_per_buffer` 死代码。
+   （⚠ 更正：子代理报的 `is_dual()` 零消费方**不成立**——`main_window.py:1558/1675/2309/2592` 四处调用；
+   它只在本文件内 grep 才得出该结论。**证伪"死代码"必须跨文件 grep 调用方**，本轮自己也踩了这一下。）
+3. **收尾**：`_stop_stream_preview`（1597-1602）不看 `wait(2000)` 返回值即置 `None`——capture/asr 有孤儿容器，preview 没有。
+4. **异常静默**：`app/` 内 168 处 `except`、66 处以裸 `pass` 吞掉（≈39%，本人实数统计，非子代理报的 228/101）。
+5. `probe_text_clip.py` 文字裁剪探测器**无任何测试/CI 消费方**（实 grep 0 引用）→ 版式回归全靠人记得手跑。
+6. `scripts/qa/` 被 gitignore 且绝对路径写死（`Administrator` / 设备索引 5/26）→ 真机测试台知识换机即失传。
+7. 依赖全下限无上限 + 本机 3.14 与 CI 3.11 双轨；`ctranslate2` 未显式声明（靠传递依赖），`requirements-offline.txt` 与 `build_exe.bat` 说法互斥。
+
+### 22.7 新增取证方法论（可复用，别重新发明）
+
+- **参数类缺陷用"离线快照直载"30 秒定案**，不必搭真机音源：
+  `WhisperModel(str(hf/hub/models--Systran--faster-whisper-tiny/snapshots/<hash>), device="cpu", compute_type="int8")`
+  → 直接调被测函数看真实异常。**注意必须传快照目录**，传 `.../model.bin` 会被 faster-whisper 1.2.1 当作"模型名"
+  报 `Invalid model size`（本轮踩过）。配合 `HF_HUB_OFFLINE=1` 保证不联网。
+- **面板层行为锁**用 `offscreen` + 真实 `CaptionOverlay()` 构造（集成测试既有用法），
+  主窗层用 **spy 替换实例方法计数**（`w.overlay.show_pending = spy`）断言"每片段恰好一次"。
+  ⚠ 这只对"**方法体内按属性查找调用**"的入口有效；**已 `connect` 的 Qt 槽改不动**（详见 22.8 血泪条）。
+- **验证"某主张是否成立"先看全库 grep 命中数**：本轮 6 条假缺陷里 4 条只需一次 grep 即可证伪。
+- 跑测试：判定只看 `TOTAL:` 行 / `test_report.txt`；PowerShell `*>` 重定向落的是 **UTF-16LE**，
+  读回要 `read_bytes().decode("utf-16-le")`（本轮按 UTF-8 读出满屏 `C u r r e n t` 空格字，白查一次）。
+
+### 22.8 发版前真机复测（无占屏 / 无外放 / 不动用户配置 · **双 PASS**）
+
+形态：隔离 home（`%TEMP%\ls_e2e_home2` + 拷 `argos`）+ `HF_HOME` 注入复用缓存 + `QT_QPA_PLATFORM=offscreen`
++ **SAPI(Zira en-US) 6 句长句 53.5s wav 经 `decode_audio` 数字直注**（`raw_chunk.emit` 喂预览、`Segmenter.feed`→`asr.submit` 喂正式）
++ 关掉一切占屏动作。素材与设备索引都不写死进仓库。
+
+| 复测项 | 判据（全部实测） | 结果 |
+|---|---|---|
+| **D-1** 流式原文在 `asr_language=auto` 下工作 | 预览开：`preview.started ×1`、`preview.beat ×3`（interval_avg=0.95 / infer_avg=0.54）、**`round_failed ×0`、`degraded ×0`**；**"无新片段仍生长" 40 次**（=草稿逐拍长，正是修复目标）；轨迹 t=3.3s 时 pieces=0 已出 "the research team announced yesterday that the" | **PASS** |
+| **D-2** dual 原文不重复 | **专门关掉预览**（去掉"每拍整体覆盖"的掩盖源）跑一轮：13 片段 ↔ `show_pending` **恰好 13 次**（1:1），203 个面板快照**零重复 n-gram** | **PASS** |
+| 顺带复验 v2.18.1 缓存修复 | `trans_cache` 13 条 = 13 次终版翻译，推测版 0 条入库 | PASS |
+| 退出链 | 收尾存活线程仅 MainThread；`管线线程对象存活=[]`；`orphan ×0` | PASS |
+
+**本轮新观察**
+1. **同族 D-3（已修 + 已复验）**：草稿送译在语言锁定前取 `config.asr_language`（`main_window.py` 草稿路径）→
+   值为 `"auto"` 时 `translator.py:537` 把它挡成 `source=None` → argos 抛 `缺少源语言信息…`。
+   **第一次复测实测到 `('auto', True)` 提交 + 12 条 spec 回复里 4 条带该 error**（第二次复测因首个终版片先落而没触发
+   → 时序相关、首句几拍内中招、自愈）。
+   **修法（已落地）**：新增 `_spec_source_lang()` 统一回退链——`_tgroup_lang` → **`_last_asr_lang`（本会话最近识别到的语言，
+   在 `_on_asr_text` 里记录、`start_pipeline` 清零）** → 配置项，**`"auto"`（含大小写/空格）视同未知**；
+   解不出语言时 `_maybe_spec_submit` 与草稿路径**都跳过这一拍**（不写 `_spec_inflight`、不留错误态），终版路径一字未改。
+   **真机复验**（44.4s 素材、dual+cuda+argos+auto）：68 次送译语言位**只有 `en`**、`auto`/空 **0 处**、
+   60 条 spec 回复 **0 条 error**（修复前 4/12）、`preview.beat ×2`、失败日志 0 条。
+   ⚠ **改这一处打破了一把旧锁**：v2.13.0 的 `t_main_draft_translation_flow` 原先断言"草稿以 auto 送译"
+   （itest_home 的 asr_language 恰为 auto）——**那是把缺陷行为当契约锁住**，与第二十节 `objectName` 那把旧锁同类。
+   已**升级**该锁为双分支（语言未知→不送；会话已解出语言→带真语言送），不是删断言。
+2. **流式草稿尾部近似重复仍有残留**（复测 Round 2 末句实测到
+   `…training session held. in the main reading room. session held in the main reading room.`）：
+   标点差异（`held.` vs `held`）让词级锚与"整词相等"的重复检测双双漏过。与 21.2 第 1 条同源
+   （那里记的是"旧 2 次/68 词 → 新 1 次/39 词"，本就是降频未清零）。
+   **注意：这不是本轮改动引入的**——关掉预览的那一轮零重复。
+
+**取证方法论补两条血泪（第一版复测脚本自伤，差点得出错误结论）**
+- **改实例属性拦不住已连接的 Qt 槽**：`w._on_asr_text = spy` 之后信号仍派发原绑定方法 → 计数恒 0，
+  一度看起来像"修复没生效"。要计数就 spy **被动态查找的那个入口**（如 `w.overlay.show_pending`，
+  方法体内是 `self.overlay.show_pending(...)` 属性查找，替换有效），或直接连 `signal.connect(spy, unique=False)`。
+- **隔离驱动脚本必须自己装日志 handler**：`app.log.get(<home>/logs/app.log)`（那是 `main.py` 的活）。
+  漏掉时 `app.log` 整个是空的，会把"零 error/零 preview 事件"读成天大的结论。
+- 数字直注喂出来的 `pipeline.latency` 里 `n_reco=0`、`hold_p50` 失真属**注入副作用**（`submit` 裸数组 → `t_flush=-1`），
+  不要拿它当产品指标。
+
+
+### 22.9 本轮产物与状态
+
+- 代码：`app/asr/preview.py`（`normalize_language` + `_fail_streak`/`preview.degraded` 一次性告警）、
+  `app/ui/main_window.py`（D-2：`_on_asr_text` 删第二次 `show_pending`；D-3：新增 `_spec_source_lang()`
+  回退链 + `_last_asr_lang` 会话语言记忆，推测式两处送译点改为"解不出语言就不送"，终版路径零改动）。
+- 发版：`bump_version.py 2.18.2` → `--check` = 「版本一致: 2.18.2」→ CHANGELOG v2.18.2 一节 →
+  单提交（**务必含 `app/config.py`**，这是 CI 版本校验的历史坑）→ push main → tag v2.18.2 → CI 双资产。
+- 锁：单元 +2（79→81）、集成 +2（110→112）**并升级 1 把 v2.13.0 旧锁**，终态 **81 / 112 全绿**（判定看 `TOTAL:` / `UNIT:` 行；两套件退出码 1 均为已知 Qt 收尾 AV，非失败）。
+- 文档：本文件就地纠偏 7 处（套件计数 78→80 / 106→111 / 69→111 / 102→111、PATH python 告警、
+  开场建议 v2.10.0→v2.18.2、第四节用户配置**磁盘现值勘误**、21.4 观察项关闭、
+  22.6 内更正 `is_dual()` 并非死代码）+ 新增第二十二节全文。
+- 提交：本地单次提交（缺陷修复 + 补锁 + 文档纠偏合一，**含 `app/config.py`**）→ push → tag
+- 待办（下一会话接续）：
+  1. **流式草稿尾部近似重复仍有残留**（22.8 观察 2：标点差异让词级锚与重复检测双双漏过，非本轮引入）；
+     D-3 已在本轮一并修掉并真机复验（语言位仅 `en`、60 条推测回复零 error）。
+  2. **把 112 项集成测试拉进 `build.yml` 闸门**（当前 CI 只跑单元 + smoke）——本轮所有技术债里价值最高的一项。
+  3. 22.6 其余：`_restyle_dual_tgt` 双定义、`_starts_new_sentence` 两份拷贝、`probe_text_clip` 无自动化消费方、
+     qa 脚本绝对路径写死、依赖无上限、`app/` 内 66 处 `except: pass`。
+
+
 

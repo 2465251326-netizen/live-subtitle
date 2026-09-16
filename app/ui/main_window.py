@@ -1244,6 +1244,7 @@ class MainWindow(QMainWindow):
         self.status_text.setText("运行中")
         self.stack.setCurrentIndex(1)
         self.session_count = 0
+        self._last_asr_lang = ""      # v2.18.2（D-3）：会话级语言记忆随新会话清零
 
         c = self.config
         engine = c.get("engine")
@@ -1708,9 +1709,12 @@ class MainWindow(QMainWindow):
                 # v2.13.0a：语言必须回退到配置项——首片到达前 _tgroup_lang 是
                 # 空串，argos 找不到 ""→zh 的语言包直接抛错（spec 不走备援链），
                 # 草稿译文全灭（真机密集拍实证：译文 4.2s 才随首片出现）
-                lang = (getattr(self, "_tgroup_lang", "")
-                        or str(self.config.get("asr_language") or ""))
-                tr.submit(cur, lang, spec=True)
+                # v2.18.2（D-3）：回退链升级为"攒句语言→会话最近识别语言→配置"，
+                # 且 **"auto" 不再当语言用**（translator 会挡成 source=None 抛错）；
+                # 仍解析不出就本拍不送，下一拍（0.9s 后）语言通常已锁定
+                lang = self._spec_source_lang()
+                if lang:
+                    tr.submit(cur, lang, spec=True)
 
     def _on_level(self, value):
         """电平槽。契约：value 为 capture 的 0~1 比例（见 CaptureThread
@@ -2001,6 +2005,9 @@ class MainWindow(QMainWindow):
         s = self.sender()
         if s is not None and s is not getattr(self, "_sid_asr", None):
             return
+        # v2.18.2（D-3）：记录本会话"最近一次识别到的语言"——推测式送译在
+        # 攒句尚未拿到语言时（草稿早于首个终版片段）用它兜底，见 _spec_source_lang
+        self._last_asr_lang = detected or getattr(self, "_last_asr_lang", "")
         if getattr(self, "_caption_seen", False) is False:
             self._caption_seen = True
             # v2.7.5（R-8）：首片上屏同时复位低电平告警标志——v2.4.4 BUG-3
@@ -2022,6 +2029,12 @@ class MainWindow(QMainWindow):
         self._last_asr_timing = self._asr_timing(duration)
         # v2.2.3：连续流模式下原文是否入流由 overlay 自行按 show_source 决定
         # （"只显示译文"时原文不入流）
+        # v2.18.2（D-2）：本方法内**只此一次**面板占位调用。此处曾有第二处调用
+        # （建卡之后，v2.4.0 遗留），同一片段两次进 dual 原文区：延续片段
+        # （小写开头=_starts_new_sentence 判为续接）被 _dual_join 拼接两遍，
+        # 实测原文区出现 "Hello everyone and welcome to the show and welcome
+        # to the show"。GPU+dual 下被流式预览每拍整体覆盖而掩盖，**CPU 用户
+        # （预览按闸门关闭）直接可见**；列表模式因 _find_pending 幂等不受影响。
         if self.overlay.isVisible():
             self.overlay.show_pending(text)
         # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
@@ -2058,8 +2071,8 @@ class MainWindow(QMainWindow):
                 pass
         self._active_card = card
         card.set_active(True)
-        if self.overlay.isVisible():
-            self.overlay.show_pending(text)   # v2.4.0：面板恒历史滚动，占位直入
+        # v2.18.2（D-2）：此处第二次 overlay.show_pending(text) 已删除——
+        # 面板占位统一在方法开头（同一 text 调两遍会让 dual 原文区重复拼接）
         sb = self.scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         if self._active_translate() is not None:   # v2.6.2（P1-4）：排水期解析
@@ -2255,10 +2268,31 @@ class MainWindow(QMainWindow):
             return False
         return str(getattr(tr, "_active_engine", "") or "") == "argos"
 
+    def _spec_source_lang(self):
+        """推测式送译可用的**源语言**（v2.18.2 D-3）。
+
+        回退链：本攒句语言 → 本会话最近一次识别到的语言 → 配置项
+        （**"auto" 视同未知**，与 translator.py:537 的既有闸门口径一致）。
+        解析不出真语言时返回空串，调用方**跳过这一拍的推测送译**——
+        真机实测：首句草稿在语言锁定前拿配置里的 "auto" 去送 argos，
+        translator 挡成 source=None → 抛"缺少源语言信息…"，spec 不走备援链，
+        12 条推测回复里 4 条带错，用户观感=原文在长、译文区不动。
+        草稿每 0.9s 一拍，下一拍语言通常就有了，跳过比送注定失败的请求更好：
+        省一次引擎调用、不产生错误态、也不污染 _spec_inflight 簿记。"""
+        lang = (getattr(self, "_tgroup_lang", "")
+                or getattr(self, "_last_asr_lang", "")
+                or str(self.config.get("asr_language") or ""))
+        lang = str(lang or "").strip()
+        return "" if lang.lower() == "auto" else lang
+
     def _maybe_spec_submit(self, grp):
         """把"当前已攒文本"送一次翻译。中间版失败静默忽略（终版随后到达），
         队列满时 translator.submit(spec=True) 放弃自己、绝不挤掉终版。"""
         if not grp or not self._spec_enabled():
+            return
+        lang = self._spec_source_lang()
+        if not lang:
+            # v2.18.2（D-3）：语言未知——本拍不送（终版路径不受影响）
             return
         combined = self._combine_pieces(grp)
         if not combined.strip():
@@ -2270,7 +2304,7 @@ class MainWindow(QMainWindow):
         self._spec_inflight[combined] = (getattr(self, "_tgroup_gen", 0), list(grp))
         self._spec_ts = getattr(self, "_spec_ts", {})
         self._spec_ts[combined] = time.monotonic()
-        tr.submit(combined, getattr(self, "_tgroup_lang", ""), spec=True)
+        tr.submit(combined, lang, spec=True)
 
     def _peek_pending(self, source_text):
         """v2.7.6（A）：按原文查待决卡但**不摘走**——推测版更新必须保住配对，

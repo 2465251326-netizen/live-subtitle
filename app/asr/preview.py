@@ -26,6 +26,20 @@ INTERVAL_S = 0.9    # 刷新周期：端到端原文延迟 ≈ INTERVAL + 单次
 MIN_AUDIO_S = 1.2   # 短于这个不识别（whisper 对超短音频输出噪声）
 
 
+def normalize_language(value):
+    """识别语言配置值 → 转写参数（纯函数，便于回归锁）。
+
+    "auto"（**出厂默认值**）与空串一律归一为 None——faster-whisper 只在
+    language is None 时才做自动检测，把字符串 "auto" 直接喂给 transcribe
+    会在 Tokenizer 构造处抛 `ValueError: 'auto' is not a valid language
+    code`，而本文件的每拍 try 会把它整拍静默吞掉：现象=开了"流式原文"
+    却永远不出草稿、界面无任何报错（只在日志刷 preview.round_failed）。
+    正式识别通道从一开始就按同一规约处理（asr/engine.py 在 auto 时
+    根本不传 language 参数），此处补齐，两轨对齐。"""
+    v = str(value or "").strip()
+    return None if v.lower() in ("", "auto") else v
+
+
 class StreamPreview(QThread):
     partial_ready = Signal(str)          # 窗口草稿文本（可能为空串=本轮无话）
     error_occurred = Signal(str)
@@ -33,10 +47,11 @@ class StreamPreview(QThread):
     def __init__(self, model, language="", parent=None):
         super().__init__(parent)
         self._model = model
-        self._lang = str(language or "") or None
+        self._lang = normalize_language(language)
         self._buf = deque()              # [(np.float32 16k mono, t_mono)]
         self._buf_len = 0.0
         self._stop = False
+        self._fail_streak = 0            # 连续失败拍数（整条通道哑火的一次性告警）
         # v2.13.0：节拍遥测（每 20 拍汇总一条）——排查"GPU 分时排队拖慢
         # 预览节奏"时，间隔均值 vs INTERVAL_S、推理均值一眼可辨
         self._beat_n = 0
@@ -56,6 +71,7 @@ class StreamPreview(QThread):
         self._buf.clear()
         self._buf_len = 0.0
         self._beat_last_t = None
+        self._fail_streak = 0
 
     def feed(self, audio, t_mono):
         """采集线程的原始 16k 单声道块（约 90ms 一块）。"""
@@ -92,11 +108,23 @@ class StreamPreview(QThread):
                     ti = _t.monotonic()
                     text = self._transcribe(audio)
                     infer_s = _t.monotonic() - ti
+                    self._fail_streak = 0
                     self.partial_ready.emit(text)
             except Exception as e:   # 单拍失败静默跳过（下一周期即恢复）
+                # v2.18.2：整条通道哑火不再无声——首拍记一条，连续 3 拍升级
+                # 一条 degraded 并停止刷屏（此前每拍一条同内容 error，等于
+                # 把"功能整体失效"混在噪音里，实测该模式下 2 分钟可刷 130+ 条）
+                self._fail_streak += 1
                 try:
                     from app import log as app_log
-                    app_log.log("preview.round_failed", err=str(e)[:120])
+                    if self._fail_streak == 1:
+                        app_log.log("preview.round_failed", err=str(e)[:120])
+                    elif self._fail_streak == 3:
+                        app_log.log("preview.degraded",
+                                    consecutive=self._fail_streak,
+                                    language=self._lang or "auto-detect",
+                                    hint="流式原文连续失败，通道可能整体不可用",
+                                    err=str(e)[:120])
                 except Exception:
                     pass
             self._beat_n += 1
