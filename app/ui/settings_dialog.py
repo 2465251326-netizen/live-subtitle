@@ -163,6 +163,8 @@ _FIELD_SPECS = {
     # neural_vad：实测零收益于 v2.8.0 回退，v2.9.0 应**用户要求**恢复为
     # 默认关的实验开关（留档见 capture.py Segmenter.feed）
     "spec_translate":       ("pipeline", "check"),
+    # v2.19.0：关攒句=逐片即译（每片段送译时实时读配置，无需重启管线）
+    "translate_grouping":   ("instant", "check"),
     "neural_vad":           ("pipeline", "check"),
     "segment_cap_s":        ("pipeline", "combo"),
     "asr_hotwords":         ("pipeline", "text"),
@@ -182,6 +184,8 @@ _FIELD_SPECS = {
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_layout":       ("overlay", "combo"),
+    # v2.19.0：dual 历史区开关（默认关=当前句独占面板）
+    "overlay_dual_hist":    ("overlay", "check"),
     "stream_preview":       ("pipeline", "check"),
     "overlay_dual_hist_h":  ("internal", "hidden"),
     "overlay_dual_src_h":   ("internal", "hidden"),
@@ -302,6 +306,15 @@ _STD_ROWS = [
               "「译文可能不完整」。**仅离线 Argos 引擎生效**——在线引擎有额度与限流"
               "（MyMemory 每天约 5000 字符免费额度），逐片加发中间版会成倍消耗，故一律保持整句翻译。",
      "opts": {}},
+    {"key": "translate_grouping", "attr": "grouping_check", "page": "asr", "section": "语言与计算",
+     "kind": "check", "title": "翻译攒句合并（关掉＝逐片实时翻译）",
+     "desc": "开（默认）＝识别碎片照常逐片上屏，但翻译等整句攒完再送，译文更连贯"
+               "（一句被切段切成两半时不会被分别翻译）。关＝每个识别片段一到达就立刻送去翻译，"
+               "译文跟着片段出，观感最「实时」；代价如实说明：切段处的译文会不完整、机翻味更重，"
+               "在线引擎请求量随之上升（离线 Argos 语言包无额度压力，建议配离线引擎使用）。"
+               "本开关只决定「要不要攒整句」，不改变切句节奏（那由「低延迟模式」与"
+               "「连续语流分段上限」决定），保存后立即生效、无需重新开始翻译。",
+     "opts": {}},
     {"key": "neural_vad", "attr": "neural_vad_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "神经 VAD 句末判定（实验性，默认关）",
      "desc": "用 Silero 模型判定「这块是不是人声」来找句末停顿，代替能量判据。默认关闭的原因如实相告："
@@ -382,9 +395,17 @@ _STD_ROWS = [
      "desc": "「列表历史」= 现在的面板：原文+译文成对的历史滚动区，可回看整场。\n"
              "「上下双语」= 豆包式实时翻译：上半是随识别**流式生长的原文**（淡色小字），"
              "下半是**加粗大字译文**——原文一出就上屏，译文随即就地更新（配合推测式增量翻译几乎"
-             "无等待），说完即换下一句，不保留历史（历史仍在主窗口与导出里）。\n"
+             "无等待），说完即换下一句，是否保留可回看的历史见下方「双语面板历史区」。\n"
              "面板 ⋯ 菜单可随时互切，保存后立即生效。",
      "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
+    {"key": "overlay_dual_hist", "attr": "dual_hist_check", "page": "display", "section": "字幕显示",
+     "kind": "check", "title": "双语面板历史区（默认关）",
+     "desc": "关闭（默认）＝「上下双语」面板只显示正在说的这一句，整个面板都给原文+译文，字大、不拥挤；"
+             "说过的句子仍在主窗口与导出文件里完整保留。"
+             "开启＝面板上半部多一块历史区：每句翻译完成后自动沉入（原文小灰+译文小白成对），"
+             "可用滚轮回看前几句，代价是面板变高、当前句区缩小。"
+             "面板 ⋯ 菜单里也有同名开关，随手可切、重启保持。",
+     "opts": {}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
      "desc": "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
@@ -1028,7 +1049,8 @@ class SettingsDialog(QDialog):
                        keys=("hallucination_filter", "silero_vad", "lang_recheck",
                              "low_latency_mode", "early_flush", "perf_turbo",
                              # v2.7.6/v2.9.0：延迟优化项紧随榨干模式（同为速度权衡项）
-                             "spec_translate", "neural_vad", "segment_cap_s",
+                             "spec_translate", "translate_grouping",
+                             "neural_vad", "segment_cap_s",
                              "stream_preview",
                              "prewarm_model"))
         self._section(page, "识别质量调优")

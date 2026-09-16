@@ -22,7 +22,7 @@ $env:QT_QPA_PLATFORM = "offscreen"          # 无头测试必须
 $PY = "C:\Python314\python.exe"              # ⚠ 2026-09-16 复核：本机 PATH 里的 python 已指向 C:\Python314\python.exe（3.14.7，依赖齐全），
 #   旧记录"PATH python=3.13 缺 PySide6"在本机已不成立；仍建议显式写绝对路径，防 PATH 漂移
 & $PY tests/test_units.py                    # 81 项单元测试
-& $PY tests/test_integration.py              # 112 项集成测试（判定以 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
+& $PY tests/test_integration.py              # 115 项集成测试（判定以 TOTAL 行为准，退出码有 Qt 收尾竞态噪声）
 python scripts/bump_version.py X.Y.Z         # 同步 app/config.py + setup.iss + version_info.txt
 python scripts/bump_version.py --check       # 必须输出「版本一致」
 # 更新 CHANGELOG.md 更新日志（v2.3.0 起 README 为门面文档不再内嵌日志；发版说明同时进 Release body）
@@ -145,7 +145,7 @@ gh release view vX.Y.Z --json name,assets     # 确认双资产
 ### 5.3 环境与测试陷阱
 - `QT_QPA_PLATFORM=offscreen` 跑无头测试，但 **offscreen 无字体** → 测量文字宽高必须用 `QT_QPA_PLATFORM=windows`（真实 Windows 平台）
 - 文字裁剪检测：`scripts/probe_text_clip.py`（真实 Windows 平台逐控件比对所需尺寸 vs 实际尺寸；v2.2.13 起 word-wrap/多行标签按"当前宽度换行后需要高度"比对——旧版只比单行高度，曾漏掉速览卡热键压行 bug 被用户实拍抓包；用 `git worktree` 挂旧代码可做探测器双向验证）
-- 集成测试：`tests/test_integration.py`（112 项，覆盖配置/缓存/重采样/字幕面板(成对行·淘汰·清空·收起·拖移契约·空状态·图钉·引导·未读计数·高度收敛)/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
+- 集成测试：`tests/test_integration.py`（115 项，覆盖配置/缓存/重采样/字幕面板(成对行·淘汰·清空·收起·拖移契约·空状态·图钉·引导·未读计数·高度收敛)/字幕卡生命周期/热键/设置字段/QSS 括号/向导/退出清理/声明式行表/SRT/呼吸与贴边等体验回归）
 - 阻塞式 `stream.read` 在静音环回上会挂死 → 探测脚本必须轮询 `get_read_available`
 - 探测脚本用完即删，产物走 `.gitignore`
 
@@ -181,7 +181,7 @@ app/ui/first_run.py      首启向导
 scripts/bump_version.py  版本同步（唯一正确入口）
 scripts/probe_text_clip.py 文字裁剪探测
 tests/test_units.py      81 项单元测试
-tests/test_integration.py 112 项集成测试
+tests/test_integration.py 115 项集成测试
 docs/UX-REPORT-R7.md     体验审查报告（R7：UI 全量走查 + 修复状态）
 CHANGELOG.md             更新日志（用户可见；README 只留链接，v2.3.0 起）
 README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把日志塞回去）
@@ -190,7 +190,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ## 七、新会话开场建议
 
-> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.18.2 已发布（第二十二节＝最近一轮：工作区深度体检实测出 D-1 流式原文在 auto 下静默哑火、D-2 dual 原文重复拼接、D-3 首句草稿译文必错，三缺陷全修 + 真机复测；第二十一节＝真实英语新闻端到端 5 项悬浮窗缺陷；第二十节＝面板"一条线"补漏与像素锁方法论）。第十三节有延迟结构定性与 A/B 方法论，第十四节有神经 VAD 恢复始末，第十五节有常驻行为矩阵。」
+> 「读 `HANDOFF.md` 接手 LiveSubtitle 项目。当前 v2.18.2 已发布、**v2.19.0 已实现待发版**（第二十三节＝最近一轮：用户实拍三改——双语历史区默认关 / 分割线几何恒等式修正 / 新增关攒句实时翻译开关；第二十二节＝工作区深度体检实测出 D-1 流式原文在 auto 下静默哑火、D-2 dual 原文重复拼接、D-3 首句草稿译文必错，三缺陷全修 + 真机复测；第二十一节＝真实英语新闻端到端 5 项悬浮窗缺陷；第二十节＝面板"一条线"补漏与像素锁方法论）。第十三节有延迟结构定性与 A/B 方法论，第十四节有神经 VAD 恢复始末，第十五节有常驻行为矩阵。」
 
 **注意事项**：
 - 工作区里的 `.session-archive.md` **含令牌等敏感信息，已加入 .gitignore，不要读取或提交**
@@ -439,7 +439,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - `neural_vad=true` + `segment_cap_s=2.5` 仍是用户设置，第十八节的"神经 VAD 黏滞拉长切段"嫌疑未做 A/B 复测。**→ 2026-09-16 10:49 已消解**：用户自己把配置改回 `segment_cap_s=4.0` + `neural_vad=false`（对照备份 `config.json.bak-20260916_104939`），该观察项关闭；如需再验，重新开开关跑 `scripts/qa/qa_news_drive.py`。
 - 历史区文字与当前句字号差偏小（0.55×/0.66× vs 1.0×），真实新闻密集语流下"哪句是正在说的"仍需用户主观确认。
 
-## 二十二、会话快照（2026-09-16 工作区深度体检 · 实测出两个真缺陷并修复补锁）
+## 二十二、会话快照（2026-09-16 工作区深度体检 · 实测出三个真缺陷并修复补锁）
 
 ### 22.1 本轮性质与基线数字（全部实跑，非转述）
 
@@ -454,6 +454,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
   `reco_p50=0.34 tr_p50=0.08 hold_p50=2.74 spec_p50=0.09`。
 - 收尾状态：修复 + 补锁 + **发版前真机复测双 PASS**；同族第三项 D-3 也已一并修掉（见 22.8），
   终态 **单元 81 / 集成 112 全绿**，v2.18.2 已 bump + CHANGELOG + 发布。
+  （随后 v2.19.0 面板改造又加 3 把锁、升级 2 把旧锁 → 现为 **单元 81 / 集成 115**，见第二十三节）
 
 ### 22.2 D-1（严重，出厂默认配置即中招）：流式原文通道在 `asr_language=auto` 下**整条静默哑火**
 
@@ -508,7 +509,7 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 
 ### 22.6 已核实、本轮**未修**的技术债（下轮优先候选）
 
-1. **112 项集成测试（含两把像素锁）不在任何 CI 闸门**：`build.yml` 只跑单元 + smoke；`deep-test.yml` 仅 `workflow_dispatch`。最强的回归保障全靠本地手跑。
+1. **115 项集成测试（含两把像素锁）不在任何 CI 闸门**：`build.yml` 只跑单元 + smoke；`deep-test.yml` 仅 `workflow_dispatch`。最强的回归保障全靠本地手跑。
 2. **重复实现/死代码**：`_restyle_dual_tgt` 在 `caption_overlay.py:810` 与 `:1388` **定义两次**（后者生效、前者被遮蔽）；
    `_starts_new_sentence` 在 `main_window.py:2176` 与 `caption_overlay.py:464` 各一份（"必须同源"仅靠注释纪律）；
    `capture.py:476` `frames_per_buffer` 死代码。
@@ -590,9 +591,93 @@ README.md                门面：亮点/下载/反馈/使用详解/FAQ（勿把
 - 待办（下一会话接续）：
   1. **流式草稿尾部近似重复仍有残留**（22.8 观察 2：标点差异让词级锚与重复检测双双漏过，非本轮引入）；
      D-3 已在本轮一并修掉并真机复验（语言位仅 `en`、60 条推测回复零 error）。
-  2. **把 112 项集成测试拉进 `build.yml` 闸门**（当前 CI 只跑单元 + smoke）——本轮所有技术债里价值最高的一项。
+  2. **把 115 项集成测试拉进 `build.yml` 闸门**（当前 CI 只跑单元 + smoke）——本轮所有技术债里价值最高的一项。
   3. 22.6 其余：`_restyle_dual_tgt` 双定义、`_starts_new_sentence` 两份拷贝、`probe_text_clip` 无自动化消费方、
      qa 脚本绝对路径写死、依赖无上限、`app/` 内 66 处 `except: pass`。
 
+## 二十三、会话快照（2026-09-16 用户实拍三改 · v2.19.0）
 
+### 23.1 用户诉求原话（附打码截图一张）
 
+> "这是我打开上下双语，然后开始翻译的真实效果图，我觉得好别扭（我希望删掉红色框框的历史区域），
+> 还有，那个分割线，你应该测试一下，我往上拉的时候他就往下，反之亦然，这是个 BUG，
+> 还有能否添加一个关闭攒句的开关，我想进行实时的翻译"
+
+截图实测状态：面板 619×515、字号 22、`原文 开`、**历史区吃掉上半部约 400px**、
+当前句只剩 `you / 你个` 两行。
+
+### 23.2 分割线 BUG：不是手感问题，是**几何恒等式错了**（真实事件流取证）
+
+旧分配：`body = 贴内容(≤45%总高)`、`hist = 总高 − 工具条 − body`。于是分割线绝对位置
+
+```
+y = chrome + hist + src = total − sep − tgt − 边距      ← 与用户拖的 src 高度**完全无关**
+```
+
+`QMouseEvent + sendEvent` 实测（用户同一形态：619×515 + 历史 302px + src_h_user=87）：
+
+```
+往上拖 60px ：鼠标 −60 → 线 y +28（**反向**） src 87→30  hist 302→359
+往下拖 120px：鼠标 +120 → 线 y −39（**反向**） src →150  hist →239
+关原文时    ：鼠标 ±60/120 → **0 位移**（body 塌到 46px 地板 → 钳制区间 [30, max(30,46-8-24)=30] 宽度为 0）
+```
+
+**新分配（v2.19.0）**：历史区份额先按内容定（`≤45% 屏` 且 **`≤可用高度一半`** 且给 body 留
+`body_min=92`（原文30+把手8+译文30+边距）），**`body = avail − hist` 与 src 无关** →
+`y = chrome + hist + src` 一对一跟手；拖拽与恢复两处的钳制上限统一为 `body − sep − 30`（旧值 −24 与 −40 各处不一致）。
+
+### 23.3 历史区：默认关（**不拆代码**，按第二十二节 22.6 与 v2.9.0 的教训）
+
+- 新键 `overlay_dual_hist`，**DEFAULTS=False**：当前句独占面板，且面板**贴内容**（不再撑到 0.68 屏剩一个空框）。
+- 关闭时 `dual_push_history` **直接 return**（不建控件、不占内存），`set_hist_enabled(False)` 会清空已建历史行。
+- 能力完整保留：设置页「显示-字幕显示-双语面板历史区」与面板 ⋯ 菜单「显示历史区（上下双语）」都能开回来，
+  回调 `on_hist_toggled` → `_on_panel_hist_toggled` 落盘（与 layout 开关同一套路）。
+- `apply_overlay_from_config` 顺序契约：**layout → hist → src_h_user**（后两者都触发 _relayout，
+  先定历史份额再定原文高度，最终几何才与"一次拖出"的结果一致）。
+
+### 23.4 关攒句开关：`translate_grouping`（默认开=现状）
+
+- 新键 `translate_grouping`，group=**instant**（每片段送译时实时读配置，**保存即生效、不重启管线**）。
+- 关＝`_submit_for_translation` 走"逐片直送终版"通路（复用原 `low_latency_mode=False` 那条），
+  但**分段仍由 low_latency_mode / segment_cap_s 决定** —— 关键取舍：用户要"实时"，
+  若直接关低延迟会把切段退回 14s 慢档（更慢），故两开关解耦。
+- 代价按项目红线如实写进设置页文案：切段处译文不完整、机翻味更重、在线引擎请求量上升（离线包无额度压力）。
+
+### 23.5 锁与验收
+
+- 集成 **+3**：`t_overlay_split_follows_mouse`（真实事件流，历史开/关两态各测"先下后上"，
+  断言方向不反向 + 原文区跟手 + body ≥92 不塌缩 + 松手记录值=实际高度）、
+  `t_overlay_dual_hist_default_off`（默认关：不建行/不可见/当前句独占 + 打开后能力回来 + DEFAULTS 断言）、
+  `t_translate_grouping_off`（开=两片攒一组只送一次；关=两片各送一次且不进组；低延迟仍为真）。
+- 升级 **2** 把旧锁（它们锁的正是本次要改的行为）：
+  `panel: dual 拉高→历史区吃剩余、当前句贴内容` → 改为新契约（历史按内容、当前句吃剩余、保 92px 可拖下限）；
+  `pipeline: dual 流式原文接线与对齐` → 显式 `overlay_dual_hist=True`（终版沉历史是"开启态"能力）。
+- 套件：**单元 81 / 集成 115 全绿**（112→115）。
+- 真机 A/B（同一 44s 素材、dual+cuda+argos+auto、无占屏）：见 23.6。
+
+### 23.6 待办
+
+1. 发版 v2.19.0（行为变更走 minor）：bump → CHANGELOG → add（含 `app/config.py`）→ push → tag → CI 双资产；
+2. README「界面与功能详解-显示」需同步：面板布局段仍写着 dual"不保留历史"与新默认一致，但需补
+   「双语面板历史区」开关与「翻译攒句合并」两条说明（红线：**文案不许与实际不符**）；
+3. 用户旧配置里 `overlay_h=515` 会让面板保持 515 高（当前句独占，可拖分割线分配）——
+   若用户嫌高，⋯ 菜单「恢复自动高度」即可，无需改代码。
+
+### 23.7 新会话接手清单（本会话因图片审核反复 400 而中断，状态如下）
+
+- **代码与测试已完成**（未提交？见下条）：三个诉求全部落地——
+  `overlay_dual_hist`（默认关）/ dual 高度分配几何修正 / `translate_grouping`（默认开，关＝逐片即译），
+  设置页三处登记与面板 ⋯ 菜单开关均已接好，README 两条说明已同步。
+- **套件**：单元 **81** / 集成 **115** 全绿（判定看 `UNIT:` / `TOTAL:` 行，退出码 1 是 Qt 收尾 AV）。
+- **真机 A/B 已过**（同一 44s 素材、dual+cuda+argos+auto、无占屏）：
+  攒句开＝终版送译 7 次；攒句关＝11 次（逐片即译）；两轮历史区均 0 占位，
+  `当前句区 + 工具条 66px = 面板总高`（188 / 214px）严丝合缝＝当前句独占面板。
+- **待办（新会话第一件事）**：
+  1. `git status` 确认改动清单 → 若未提交则按第二十三节内容提交（**含 `app/config.py`**）；
+  2. 发版 v2.19.0：`python scripts/bump_version.py 2.19.0` → `--check` →
+     CHANGELOG 新增 v2.19.0 一节（三条：历史区默认关 / 分割线跟手修正 / 攒句开关）→
+     `git add`（含 app/config.py + README.md + HANDOFF.md）→ commit → push origin main →
+     `git tag -a v2.19.0` → `git push origin +refs/tags/v2.19.0:refs/tags/v2.19.0` →
+     `gh run list --branch v2.19.0` 轮询到 completed → `gh release view v2.19.0 --json assets` 核双资产；
+  3. 用户侧提醒：其旧配置里 `overlay_h=515` 会让面板保持 515 高（当前句独占，可拖分割线分配）；
+     嫌高就 ⋯ 菜单「恢复自动高度」。

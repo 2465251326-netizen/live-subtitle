@@ -94,7 +94,8 @@ class CaptionOverlay(QWidget):
                  on_correct=None, on_export_srt=None, on_language=None,
                  on_font_size=None, on_pin_changed=None, on_collapsed=None,
                  on_first_show=None, on_opacity=None, on_height_changed=None,
-                 on_layout_changed=None, on_dual_split=None):
+                 on_layout_changed=None, on_dual_split=None,
+                 on_hist_toggled=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -140,6 +141,7 @@ class CaptionOverlay(QWidget):
         self._on_height_changed = on_height_changed
         self._on_layout_changed = on_layout_changed
         self._on_dual_split = on_dual_split
+        self._on_hist_toggled = on_hist_toggled   # v2.19.0：历史区开关落盘回调
         # v2.5.3：手动高度（用户裁决回归——面板支持上下拉长）。None=自动贴内容；
         # 拖底缘/主窗配置恢复后锁定手动高度，⋯ 菜单可恢复自动
         self._user_height = None
@@ -309,6 +311,9 @@ class CaptionOverlay(QWidget):
         outer.addWidget(self._dual_hist, 1)
         self._dual_hist.hide()
         self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
+        # v2.19.0：历史区总开关（默认 True 保持独立构造时的旧行为；主窗按配置
+        # overlay_dual_hist 下发，用户实拍裁决后**出厂默认关**=当前句独占面板）
+        self._dual_hist_enabled = True
         self._hist_follow = True           # 用户上滚回看时不自动滚底
         self._dual_hist.verticalScrollBar().valueChanged.connect(self._on_hist_scroll)
         # v2.18.1：原文/译文两个可滚动区各自的"跟底"状态（用户上滚回看不打断）
@@ -706,6 +711,38 @@ class CaptionOverlay(QWidget):
         if self._layout_mode == "dual" and not self._collapsed:
             self._relayout()
 
+    def set_hist_enabled(self, on):
+        """v2.19.0：dual 历史区总开关（主窗按配置 overlay_dual_hist 下发）。
+
+        关=当前句独占整个面板（用户实拍裁决："红色框框的历史区域删掉"）；
+        开=保留 v2.14.0 的"终版句沉历史 + 滚轮回看"。关闭时**清空已建历史行**
+        （控件不留在布局里占内存），重新打开后从当前句之后重新开始累积。"""
+        on = bool(on)
+        if on == self._dual_hist_enabled:
+            return
+        self._dual_hist_enabled = on
+        if not on:
+            while self._dual_hist_rows > 0:
+                it = self._dual_hist_lay.itemAt(0)
+                if it and it.widget():
+                    it.widget().deleteLater()
+                    self._dual_hist_lay.removeItem(it)
+                self._dual_hist_rows -= 1
+        if self._layout_mode == "dual" and not self._collapsed:
+            self._relayout()
+
+    def is_hist_enabled(self):
+        return bool(self._dual_hist_enabled)
+
+    def _menu_toggle_hist(self):
+        """⋯ 菜单就地切换历史区：本地生效 + 通知主窗落盘（重启后保持）。"""
+        self.set_hist_enabled(not self._dual_hist_enabled)
+        if self._on_hist_toggled:
+            try:
+                self._on_hist_toggled(self._dual_hist_enabled)
+            except Exception:
+                pass
+
     def _dual_hist_scroll_bottom(self):
         sb = self._dual_hist.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -735,6 +772,10 @@ class CaptionOverlay(QWidget):
         超上限删最老；跟随状态下自动滚底（用户上滚回看时不打断）。
         主窗在整句终版翻译到达时调用。"""
         if self._layout_mode != "dual":
+            return
+        if not self._dual_hist_enabled:
+            # v2.19.0：历史区关闭（出厂默认）——不建控件、不占内存；
+            # 终版句仍正常显示在当前句区与主窗卡片里
             return
         src = (src or "").strip()
         tgt = (tgt or "").strip()
@@ -1029,30 +1070,51 @@ class CaptionOverlay(QWidget):
             # dl 纵向 margins 14 + 可见控件之间的 spacing 5×(n-1)
             body_want = (src_want + tgt_want + sep_h + 14
                          + 5 * (2 if src_on else 0))
-            # v2.17.0：分配语义——当前句区贴内容（≤45% 总高，超长句滚动），
-            # 历史区吃全部剩余。
-            # v2.18.0：**简化**——移除历史区手动分割（v2.15.x），历史上/当前
-            # 下的比例本就该自动（历史吃剩余），三把手并存让用户困惑
-            # "为什么会有三条线"。唯一保留的可拖分割线 = 原文/译文之间。
-            total = (self._user_height
-                     or int((QGuiApplication.primaryScreen().availableGeometry().height()
-                             or 800) * 0.68))
-            body_h = max(46, min(body_want, int(total * 0.45)))
-            hist_h = max(40, total - chrome - body_h)
+            # ---------- v2.19.0：dual 高度分配几何恒等式修正 ----------
+            # 用户实拍："分割线我往上拉的时候他就往下，反之亦然"。真实鼠标事件
+            # 流实测坐实（面板 619×515 / 历史区 302px / src_h_user=87）：
+            #   鼠标 −60px → 分割线 y **+28px（反向）**，src 87→30、hist 302→359
+            #   关原文时：鼠标 ±60/120px → **0 位移**（彻底拖不动）
+            # 根因不是手感而是**几何**：旧分配 body=贴内容、hist=剩余，于是
+            #   线绝对位置 y = chrome + hist + src = total − sep − tgt − 边距
+            # ——**与用户拖的 src 高度完全无关**，只随译文内容高度跳。
+            # 新分配：先定 hist 份额（按历史内容，且给 body 留可拖下限），
+            # body = 剩余且**与 src 无关** → y = chrome + hist + src，一对一跟手。
+            screen_h = int(QGuiApplication.primaryScreen().availableGeometry().height()
+                           or 800)
+            hist_want = min(self._dual_hist_lay.sizeHint().height() + 4,
+                            int(screen_h * 0.45))
+            if self._user_height:
+                total = self._user_height          # 用户拖过底缘：总高锁定
+            elif self._dual_hist_enabled:
+                total = min(chrome + body_want + hist_want, int(screen_h * 0.68))
+            else:
+                # 历史区关闭（v2.19.0 出厂默认）：面板**贴内容**，不再撑到
+                # 0.68 屏——否则关掉历史区只剩一个两行字的大空框（用户实拍吐槽的
+                # 就是这个空框感）
+                total = min(chrome + max(body_want, 46), int(screen_h * 0.68))
+            avail = max(46, total - chrome)
+            body_min = 92 if src_on else 60        # 原文30+把手8+译文30+边距：可拖下限
+            if self._dual_hist_enabled:
+                hist_h = max(0, min(hist_want, int(avail * 0.5), avail - min(body_min, avail)))
+            else:
+                hist_h = 0
+            body_h = max(46, avail - hist_h)
             self._dual_body.setFixedHeight(body_h)
-            # v2.17.0a：历史区**恒显示**（无行时为空白占位）——否则面板总高
-            # 无法锁定（拖底缘拉高会再次"弹回"，v2.14.0 同款回归）
-            self._dual_hist.setVisible(True)
+            # v2.17.0a 的"恒显示"是为锁总高服务的；新模型里 body = 剩余，总高
+            # 天然锁定，故关闭/无内容时直接收起，不留空白块
+            self._dual_hist.setVisible(bool(self._dual_hist_enabled) and hist_h > 0)
             self._dual_hist.setFixedHeight(hist_h)
-            # v2.16.0：当前句区内部——原文区用户高度（拖 sep 分割线得出）
-            # 固定生效，译文区吃剩余（两者各自可滚动，永不互相裁切）。
-            # v2.18.0：钳制上限与 _dual_split_apply_drag 统一为
-            # body_h - sep_h - 24（旧的 -40 是 tgt 保底残留——tgt 现已独立
-            # 可滚动，两处不一致会让松手记录的值与实际高度差 40px）
+            # v2.16.0：当前句区内部——原文区用户高度（拖 sep 分割线得出）固定生效，
+            # 译文区吃剩余（两者各自可滚动，永不互相裁切）。
+            # v2.19.0：可拖区间上限统一为 body_h − sep_h − 30（译文保底 30px）——
+            # 旧值 −24 与 _dual_split_apply_drag 不一致，且旧分配下 body 会塌到
+            # 46px 地板，使钳制区间 [30, max(30, 46-8-24)=30] **宽度为 0**
+            # → 分割线彻底拖不动（真实事件流实测 0 位移）。
             if self._dual_src_h_user:
                 self._dual_src_wrap.setFixedHeight(
                     max(30, min(self._dual_src_h_user,
-                                max(30, body_h - sep_h - 24))))
+                                max(30, body_h - sep_h - 30))))
             else:
                 self._dual_src_wrap.setMinimumHeight(0)
                 self._dual_src_wrap.setMaximumHeight(16777215)
@@ -1489,10 +1551,13 @@ class CaptionOverlay(QWidget):
 
     def _dual_split_apply_drag(self, g):
         """v2.16.0：按当前全局鼠标位置应用分割拖拽（原文区高度=起始值+dy，
-        上移原文区变小、下移变大；译文区吃剩余，各自可滚动）。"""
+        上移原文区变小、下移变大；译文区吃剩余，各自可滚动）。
+        v2.19.0：上限统一为 body − sep − 30（译文保底），且 body 已改为与 src
+        无关的固定值 → 分割线现在**一对一跟手**（旧几何下拖拽区间宽度为 0，
+        实测鼠标 ±60/120px 线位移 0，或反向跳变）。"""
         dy = g.y() - self._dual_split_start_y.y()
         new_h = max(30, min(self._dual_split_start_h + dy,
-                            max(30, self._dual_body.height() - 8 - 24)))
+                            max(30, self._dual_body.height() - 8 - 30)))
         self._dual_src_h_user = new_h
         self._relayout()
 
@@ -1711,6 +1776,12 @@ class CaptionOverlay(QWidget):
         act_auto_h = menu.addAction("恢复自动高度")
         act_auto_h.setEnabled(bool(self._user_height))
         act_auto_h.triggered.connect(lambda _c=False: self._reset_user_height())
+        # v2.19.0：历史区就地开关（用户实拍"删掉红框那块"，但能力保留可回退）
+        acts["hist"] = menu.addAction("显示历史区（上下双语）")
+        acts["hist"].setCheckable(True)
+        acts["hist"].setChecked(self._dual_hist_enabled)
+        acts["hist"].setEnabled(self._layout_mode == "dual")
+        acts["hist"].triggered.connect(self._menu_toggle_hist)
         menu.addSeparator()
         acts["hide"] = menu.addAction("隐藏字幕面板")
         src, tgt = self._last_result

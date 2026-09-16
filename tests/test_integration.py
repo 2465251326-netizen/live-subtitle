@@ -949,13 +949,16 @@ def t_overlay_dual_layout():
 check("panel: 上下双语布局（dual）全链路", t_overlay_dual_layout)
 
 def t_overlay_dual_user_height_body():
-    """v2.17.0：拉高面板 → **历史区吃剩余**（内容多正好多显示），当前句区
-    贴内容（上限 45% 总高）——v2.14.1"拉高全给当前句区"在可滚动历史区之后
-    严重失衡（用户截图"？？？"：当前句两三行配巨幅留白、历史被挤裁）。"""
+    """v2.17.0 立、v2.19.0 改：拉高面板的高度分配契约。
+    旧契约（历史区吃剩余、当前句贴内容）在几何上是错的——它让分割线位置
+    与用户拖的原文高度无关（实测鼠标 -60px → 线 +28px 反向跳）。
+    新契约：**历史按内容定份额（≤45% 屏），当前句区吃剩余**；
+    无历史内容时不预留空间（拉高 = 当前句区变大，用户可拖分割线再分配）。"""
     from app.ui.caption_overlay import CaptionOverlay
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
+    ov.set_hist_enabled(True)          # 本锁专测"历史区开启"形态
     ov._dual_show_pending("The quick brown fox jumps over the lazy dog")
     for _ in range(4):
         app.processEvents()
@@ -963,21 +966,24 @@ def t_overlay_dual_user_height_body():
     ov.set_user_height(620)
     for _ in range(6):
         app.processEvents()
-    # 当前句区：贴内容（不因拉高被强行撑大产生巨幅留白）
-    assert abs(ov._dual_body.height() - body_before) <= 8, \
-        f"当前句区应贴内容，不随拉高暴涨：{body_before} -> {ov._dual_body.height()}"
-    assert abs(ov.height() - 620) <= 14, f"面板总高锁定：{ov.height()} vs 620"
-    # 历史行出现：吃剩余空间（显示更多历史）
+    # 无历史内容：拉高的空间给当前句区（不再凭空留一块空历史）
+    assert ov._dual_body.height() > body_before, \
+        f"无历史内容时拉高应落到当前句区：{body_before} -> {ov._dual_body.height()}"
+    assert ov.height() >= 620 - 14, f"面板总高锁定：{ov.height()} vs 620"
+    # 历史行出现：按内容增长，且当前句区不被挤到不可拖
     for i in range(6):
         ov.dual_push_history(f"Historical sentence number {i}",
                              f"历史句第 {i} 句")
     for _ in range(6):
         app.processEvents()
     assert ov._dual_hist.isVisible()
-    assert ov._dual_hist.height() > ov._dual_body.height(), \
-        f"拉高后剩余空间应归历史区：hist={ov._dual_hist.height()} body={ov._dual_body.height()}"
+    assert ov._dual_hist.height() > 40, f"历史区应按内容占位：{ov._dual_hist.height()}"
+    assert ov._dual_body.height() >= 92, \
+        f"当前句区必须保住可拖下限（原文+把手+译文）：{ov._dual_body.height()}"
+    assert ov._dual_hist.height() + ov._dual_body.height() <= ov.height(), "两区不得超出面板总高"
     ov.deleteLater()
-check("panel: dual 拉高→历史区吃剩余、当前句贴内容", t_overlay_dual_user_height_body)
+check("panel: dual 拉高分配（历史按内容、当前句吃剩余、保住可拖下限）",
+      t_overlay_dual_user_height_body)
 
 def t_overlay_dual_split_drag():
     """v2.18.0：唯一可拖分割 = 原文/译文之间的 sep——拖出的原文区高度
@@ -1064,6 +1070,113 @@ def t_overlay_dual_split_real_drag():
         f"松手记录的用户高度应与实际一致：{ov._dual_src_h_user} vs {ov._dual_src_wrap.height()}"
     ov.deleteLater()
 check("panel: 分割线真实事件流拖拽（事件过滤器）", t_overlay_dual_split_real_drag)
+
+
+def t_overlay_split_follows_mouse():
+    """v2.19.0：分割线必须**跟手**——用户实拍"我往上拉的时候他就往下，反之亦然"。
+
+    旧几何（hist=总高−工具条−body、body=贴内容）下，线的位置算出来等于
+    `total − sep − 译文内容高`，**与用户拖的原文高度无关**，只随译文跳。
+    真实事件流实测（面板 619×515 + 历史区 302px + src_h_user=87）：
+      鼠标 −60px → 线 y **+28px（反向）**；关原文时 ±60/120px → **0 位移**。
+    本锁在**同一形态**下断言方向与跟手幅度，两态都测（历史区开 / 关）。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    def drag(ov, dy_total, step=10):
+        def send(target, gtype, gpos, button=None):
+            local = target.mapFromGlobal(gpos)
+            ev = QMouseEvent(QEvent.Type(gtype), QPointF(local), QPointF(gpos),
+                             button or Qt.NoButton, button or Qt.NoButton, Qt.NoModifier)
+            QApplication.sendEvent(target, ev)
+            for _ in range(3):
+                app.processEvents()
+        sep = ov._dual_sep
+        start = sep.mapToGlobal(QPoint(sep.width() // 2, max(2, sep.height() // 2)))
+        send(sep, QEvent.Type.MouseButtonPress, start, Qt.LeftButton)
+        y = start.y()
+        for _ in range(abs(dy_total) // step):
+            y += step if dy_total > 0 else -step
+            send(sep, QEvent.Type.MouseMove, QPoint(start.x(), y), Qt.LeftButton)
+        send(sep, QEvent.Type.MouseButtonRelease, QPoint(start.x(), y), Qt.LeftButton)
+        return start.y(), y
+
+    for hist_on in (True, False):
+        ov = CaptionOverlay()
+        ov.show()
+        ov.set_layout_mode("dual")
+        ov.set_hist_enabled(hist_on)
+        if hist_on:
+            for i in range(8):
+                ov.dual_push_history(f"sentence {i} of the report", f"第{i}句译文内容")
+        ov._dual_show_pending("The only control that AI needs is strong and smart.")
+        ov._dual_spec("The only control that AI needs is strong and smart.",
+                      "AI 需要的控制是坚固而聪明", True)
+        ov.set_user_height(515)
+        for _ in range(6):
+            app.processEvents()
+        base_y = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
+
+        # ① 先**往下**拖 90：线必须下移、原文区变大（证明控制件没死）
+        s0 = ov._dual_src_wrap.height()
+        drag(ov, 90)
+        y1 = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
+        s1 = ov._dual_src_wrap.height()
+        assert y1 > base_y, \
+            f"hist_on={hist_on}：往下拖线不动/反向（旧几何实测 0 位移）：{base_y} -> {y1}"
+        assert s1 >= s0 + 60, f"hist_on={hist_on}：原文区未跟手变大：{s0} -> {s1}"
+
+        # ② 再**往上**拖 120：线必须上移——绝不允许反向（用户实拍正是这一条）
+        drag(ov, -120)
+        y2 = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
+        s2 = ov._dual_src_wrap.height()
+        assert y2 < y1, f"hist_on={hist_on}：往上拖线却下移（反向）：{y1} -> {y2}"
+        assert s2 < s1, f"hist_on={hist_on}：往上拖原文区未变小：{s1} -> {s2}"
+
+        # ③ 可拖区间不得塌缩（旧几何下 body 塌到 46px 地板 → 钳制区间宽度为 0）
+        body = ov._dual_body.height()
+        assert body >= 92, f"hist_on={hist_on}：当前句区塌到 {body}px，分割线将拖不动"
+        assert ov._dual_src_h_user == ov._dual_src_wrap.height(), \
+            f"hist_on={hist_on}：松手记录值与实际高度不一致 " \
+            f"{ov._dual_src_h_user} vs {ov._dual_src_wrap.height()}"
+        ov.deleteLater()
+check("panel: 分割线跟手（上下拖方向正确、可拖区间不塌缩）",
+      t_overlay_split_follows_mouse)
+
+
+def t_overlay_dual_hist_default_off():
+    """v2.19.0：用户实拍裁决——"红色框框的历史区域删掉"。
+    出厂默认 **关**：当前句独占面板、终版句不再沉历史（不建控件、不占内存），
+    面板贴内容不再撑到 0.68 屏；开关（设置页 / ⋯ 菜单）打开后旧能力完整回来。"""
+    from app.config import DEFAULTS
+    from app.ui.caption_overlay import CaptionOverlay
+    assert DEFAULTS["overlay_dual_hist"] is False, \
+        "历史区出厂默认必须为关——用户实拍判定它把当前句挤成两行"
+
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    ov.set_hist_enabled(False)
+    ov._dual_show_pending("Hello there, this is the live report")
+    ov.dual_push_history("some finished sentence", "已经翻完的一句")
+    for _ in range(6):
+        app.processEvents()
+    assert ov._dual_hist_rows == 0, "关闭时不得建历史行（不占内存）"
+    assert not ov._dual_hist.isVisible(), "关闭时历史区不得出现在面板上"
+    assert ov._dual_body.height() >= ov.height() - 80, \
+        f"关闭后当前句应独占面板：body={ov._dual_body.height()} 总高={ov.height()}"
+    # 打开后能力回来：历史行照常累积
+    ov.set_hist_enabled(True)
+    ov.dual_push_history("another finished sentence", "又一句译文")
+    for _ in range(6):
+        app.processEvents()
+    assert ov._dual_hist_rows == 1, "重新打开后应能正常累积历史"
+    assert ov._dual_hist.isVisible()
+    ov.deleteLater()
+check("panel: 双语历史区默认关（独占面板 + 可回退）",
+      t_overlay_dual_hist_default_off)
+
 
 
 def t_overlay_single_divider():
@@ -1365,6 +1478,8 @@ def t_main_partial_preview_alignment():
     w.show()
     w.running = True
     w.config.set("overlay_layout", "dual")
+    # v2.19.0：本锁断言"终版句沉入历史区"，须显式打开历史区（出厂默认已关）
+    w.config.set("overlay_dual_hist", True)
     w.apply_overlay_from_config()
 
     class _Tr(object):                     # _StubTr 定义在文件后段，此处内联
@@ -1575,6 +1690,73 @@ def t_main_draft_waits_for_real_language():
             w.config.set(k, v)
 check("pipeline: 草稿送译拿不到真语言就不送（auto 视同未知）",
       t_main_draft_waits_for_real_language)
+
+def t_translate_grouping_off():
+    """v2.19.0：用户"能否添加一个关闭攒句的开关，我想进行实时的翻译"。
+    开（默认）＝两轨制：碎片逐片上屏、翻译等整句攒完再送（译文更连贯）；
+    关＝**每个识别片段一到达就立刻送翻译**（逐片实时），且不进攒句组。
+    关键约束：关攒句**不得**连带把分段退回慢档——low_latency_mode 仍独立生效。"""
+    w = MainWindow()
+    w.show()
+    w.running = True
+    old = {k: w.config.get(k) for k in
+           ("translate_grouping", "low_latency_mode", "spec_translate", "instant_caption")}
+    w.config.set("low_latency_mode", True)     # 分段侧保持低延迟
+    w.config.set("spec_translate", False)      # 本锁只看终版通路，排除推测式干扰
+    w.config.set("instant_caption", True)
+
+    class _Tr(object):
+        _active_engine = "argos"
+
+        def __init__(self):
+            self.sent = []
+
+        def isRunning(self):
+            return True
+
+        def submit(self, text, lang, spec=False):
+            self.sent.append((text, lang, bool(spec)))
+            return []
+
+    tr = _Tr()
+    w._active_translate = lambda: tr
+    try:
+        # ① 开攒句：两片（新句 + 小写延续）攒在一起，未冲刷前**没有终版送译**
+        w.config.set("translate_grouping", True)
+        w._tgroup = []
+        w._tgroup_lang = ""
+        tr.sent.clear()
+        w._on_asr_text("The report says the deal was signed", "en", "1.0")
+        w._on_asr_text(" after months of difficult negotiation", "en", "1.0")
+        assert [x for x in tr.sent if not x[2]] == [], \
+            f"开攒句时不应逐片送终版翻译：{tr.sent}"
+        assert len(w._tgroup) == 2, f"两片应攒在同一组：{w._tgroup}"
+        w._flush_tgroup()
+        finals = [x for x in tr.sent if not x[2]]
+        assert len(finals) == 1 and "months" in finals[0][0] and "signed" in finals[0][0], \
+            f"冲刷时应送出合并后的整句：{finals}"
+
+        # ② 关攒句：每片到达立即送终版翻译，且不进攒句组
+        w.config.set("translate_grouping", False)
+        w._tgroup = []
+        w._tgroup_lang = ""
+        tr.sent.clear()
+        w._on_asr_text("The report says the deal was signed", "en", "1.0")
+        w._on_asr_text(" after months of difficult negotiation", "en", "1.0")
+        finals2 = [x for x in tr.sent if not x[2]]
+        assert len(finals2) == 2, f"关攒句应逐片即送，实送 {len(finals2)} 次：{finals2}"
+        assert finals2[0][0] == "The report says the deal was signed" \
+            and finals2[1][0] == " after months of difficult negotiation", \
+            f"逐片送译应各送原文、不合并：{[f[0] for f in finals2]}"
+        assert not getattr(w, "_tgroup", []), "关攒句后不得再往攒句组里塞片段"
+        # ③ 分段侧不受牵连：低延迟仍为真（关掉攒句≠退回 14s 慢档）
+        assert bool(w.config.get("low_latency_mode")) is True
+    finally:
+        w.stop_pipeline()
+        for k, v in old.items():
+            w.config.set(k, v)
+check("pipeline: 关攒句＝逐片实时送译（且不退回慢档）", t_translate_grouping_off)
+
 
 def t_overlay_layout_config_roundtrip():
     """overlay_layout 配置经 apply_overlay_from_config 恢复布局；

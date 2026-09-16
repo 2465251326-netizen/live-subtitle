@@ -562,7 +562,9 @@ class MainWindow(QMainWindow):
                                         # v2.11.0：面板 ⋯ 菜单切换布局 → 回调落盘
                                         on_layout_changed=self._on_panel_layout_changed,
                                         # v2.15.0：分割线拖拽 → 历史区高度落盘
-                                        on_dual_split=self._on_panel_dual_split)
+                                        on_dual_split=self._on_panel_dual_split,
+                                    # v2.19.0：⋯ 菜单切换历史区 → 落盘
+                                    on_hist_toggled=self._on_panel_hist_toggled)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -1032,6 +1034,13 @@ class MainWindow(QMainWindow):
             v = 0
         self.config.set("overlay_dual_src_h", v)
 
+    def _on_panel_hist_toggled(self, on):
+        """v2.19.0：面板 ⋯ 菜单切换历史区 → 落盘 overlay_dual_hist。
+        幂等双保险：overlay 已就地生效，这里只写配置并把状态再同步一次
+        （与 _on_panel_layout_changed 同一套路，防菜单与设置页漂移）。"""
+        self.config.set("overlay_dual_hist", bool(on))
+        self.overlay.set_hist_enabled(bool(on))
+
     def apply_overlay_from_config(self):
         c = self.config
         # v2.4.0 面板形态：三形态/穿透/描边全部退役，只剩内容相关的外观项
@@ -1043,15 +1052,16 @@ class MainWindow(QMainWindow):
         )
         self.overlay.set_show_source(bool(c.get("show_source")))
         self.overlay.set_target_lang(str(c.get("target_lang") or "zh-CN"))
-        # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复；
-        # v2.13.0：恢复后按闸门热启/暂停流式预览（设置页保存路径同样生效）
-        # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复
-        # v2.11.0：面板布局（list/dual）随配置恢复——**必须最先**（后续
-        # 分割高度恢复与 _relayout 都依赖布局模式）
+        # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复——
+        # **必须最先**（后续历史区开关、分割高度恢复与 _relayout 都依赖布局模式）
+        self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
+        # v2.19.0：dual 历史区开关（用户实拍裁决默认关=当前句独占面板）；
+        # 必须在 set_dual_src_h_user 之前——两者都会触发 _relayout，
+        # 先定历史份额再定原文区高度，最终几何才与"一次拖出"的结果一致
+        self.overlay.set_hist_enabled(bool(c.get("overlay_dual_hist")))
         # v2.16.0：原文区高度（拖原文/译文分割线）随配置恢复（0=自动）
         # v2.18.0：历史区分割已移除（overlay_dual_hist_h 键保留兼容旧配置
-        # 文件但不再读取——历史区恒自动吃剩余）
-        self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
+        # 文件但不再读取）
         self.overlay.set_dual_src_h_user(int(c.get("overlay_dual_src_h") or 0))
         self._maybe_start_stream_preview()
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
@@ -2090,7 +2100,10 @@ class MainWindow(QMainWindow):
         辅以 5 片硬上限与 7 秒静默兜底（v2.3.9：兜底窗口必须 > 6s 分片
         周期——2.5s 实测会在前后片之间先行冲出，攒句永不发生）。
         默认模式行为不变。"""
-        if not bool(self.config.get("low_latency_mode")):
+        if not bool(self.config.get("low_latency_mode")) or not self._grouping_enabled():
+            # v2.19.0：`translate_grouping=False`（关攒句）走同一条逐片直送通路——
+            # 与"低延迟关"的区别只在于**分段仍由 low_latency_mode 决定**，
+            # 所以关掉攒句不会把切段退回 14s 慢档（用户要的是"实时"，不是"更慢"）。
             tr = self._active_translate()
             if tr is None:
                 return
@@ -2284,6 +2297,12 @@ class MainWindow(QMainWindow):
                 or str(self.config.get("asr_language") or ""))
         lang = str(lang or "").strip()
         return "" if lang.lower() == "auto" else lang
+
+    def _grouping_enabled(self):
+        """v2.19.0：翻译侧"攒句合并"开关（默认开=两轨制：上屏碎、翻译整句送）。
+        关=每个识别片段一到达就立即送翻译（逐片实时）。每片段实时读配置，
+        与 low_latency_mode（分段侧）解耦，故设置页保存即时生效、无需重启管线。"""
+        return bool(self.config.get("translate_grouping"))
 
     def _maybe_spec_submit(self, grp):
         """把"当前已攒文本"送一次翻译。中间版失败静默忽略（终版随后到达），
