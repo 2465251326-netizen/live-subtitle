@@ -1178,6 +1178,81 @@ check("panel: 双语历史区默认关（独占面板 + 可回退）",
       t_overlay_dual_hist_default_off)
 
 
+def t_dual_pair_atomic_swap():
+    """v2.19.1：关攒句实测反馈"一旦有新的翻译和识别，已翻译的译文和原文就消失了"
+    （探针 scripts/qa/dual_disappear_probe.py 真实事件流取证）。用户裁决：维持
+    当前句独占，但修两条衔接缺陷——
+    ① 错配窗口：上一句终版收口后，新句流式拍只覆盖原文区，译文区仍挂着**上一句
+      的终版**（B 的原文配 A 的译文）1~2 拍，随后被草稿译冲掉；
+    ② 闪白：同句的正式片段晚于流式草稿到达时，被"大写开头=新句"误判整句重置，
+      把该句已在生长的推测译打回 "…"，译文再长一遍。
+    本锁在**旧实现上必红**（可证伪），驱动面板公开入口复现真机拍序。"""
+    from app.ui.caption_overlay import CaptionOverlay
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    ov.set_hist_enabled(False)
+    A_src = "Hello everyone and welcome to the show."
+    A_tgt = "大家好，欢迎收看本期节目。"
+
+    # ── 句1：草稿生长 → 终版收口 ─────────────────────────────
+    ov.show_pending("Hello everyone")
+    ov.update_partial("Hello everyone and welcome")
+    ov.update_dual_draft_tgt("大家好，欢迎")
+    ov.show_pending_result(A_src, A_tgt, True)
+    app.processEvents()
+    assert ov._dual_tgt.text() == A_tgt and not bool(ov._dual_tgt.property("spec")), \
+        "前置条件：句1 终版必须已定格"
+
+    # ① 错配锁：新句首拍到来 = **原子换句**（原文译文同刻切），
+    #    绝不允许 "B 原文 + A 终版译文" 的中间态存在
+    B_draft = "Today we talk about AI"
+    ov.update_partial(B_draft)
+    app.processEvents()
+    assert ov._dual_src.text() == B_draft, "新句原文必须上屏（独占语义保留）"
+    assert ov._dual_tgt.text() != A_tgt, \
+        f"错配窗口复现：上一句终版译文仍挂在屏上（旧行为） tgt={ov._dual_tgt.text()!r}"
+    assert bool(ov._dual_tgt.property("spec")), "换句后译文区必须回到占位/推测态"
+
+    # ② 闪白锁：同句草稿已在屏 + 正式片段（大写开头、与草稿同源）到达
+    #    → 就地校准原文，**译文区不得被打回 "…"**
+    ov.update_dual_draft_tgt("今天我们聊 AI")
+    B_final = "Today we talk about AI and robotics."
+    B_tgt_draft = "今天我们聊 AI"
+    assert ov._dual_tgt.text() == B_tgt_draft
+    ov.show_pending(B_final)
+    app.processEvents()
+    assert ov._dual_src.text() == B_final, "正式片段应校准为完整句"
+    assert ov._dual_tgt.text() == B_tgt_draft, \
+        f"闪白复现：同句正式片段把在生长的推测译重置了 tgt={ov._dual_tgt.text()!r}"
+
+    # 句2 收口 → 闭合
+    B_tgt = "今天我们聊聊 AI 与机器人。"
+    ov.show_pending_result(B_final, B_tgt, True)
+    app.processEvents()
+
+    # ③ 迟到草稿防御：句2 已终版，其更早拍的草稿回复迟到 → 不得冲淡定稿
+    ov.update_dual_draft_tgt("迟到的半句草稿", B_final)
+    assert ov._dual_tgt.text() == B_tgt and not bool(ov._dual_tgt.property("spec")), \
+        "迟到草稿回复不得把已收口译文刷回淡色推测态"
+
+    # ④ 尾重复延伸防御：终版句后 whisper 把同句再转一遍（前缀同源更长版）
+    #    → 只长文本，译文终版保持（不得误判新句重置）
+    ov.update_partial(B_final + " and more")
+    assert ov._dual_src.text() == B_final + " and more"
+    assert ov._dual_tgt.text() == B_tgt, "同句尾重复不得重置译文区"
+
+    # ⑤ CPU 节奏（无流式拍）：终版 → 下一片段直接到达 = 同刻成对切换，无错配帧
+    ov.show_pending("Tomorrow the summit begins.")
+    app.processEvents()
+    assert ov._dual_src.text() == "Tomorrow the summit begins."
+    assert ov._dual_tgt.text() != B_tgt, \
+        "CPU 路径同样禁止 '新句原文 + 旧句终版' 的错配帧"
+    ov.deleteLater()
+check("panel: dual 原子换句（无错配窗口 + 同句片段不闪白 + 迟到草稿不冲淡终版）",
+      t_dual_pair_atomic_swap)
+
+
 
 def t_overlay_single_divider():
     """v2.18.1：面板上「可见横线」必须恰好一条 = 原文/译文那条可拖分割线。

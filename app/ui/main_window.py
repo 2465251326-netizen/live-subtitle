@@ -2355,7 +2355,8 @@ class MainWindow(QMainWindow):
                 self._dual_draft = None
                 if (not error and translated and self.overlay.is_dual()
                         and getattr(self, "running", False)):
-                    self.overlay.update_dual_draft_tgt(translated)
+                    # v2.19.1：带上草稿原文做配对——该句若已终版收口，迟到回复作废
+                    self.overlay.update_dual_draft_tgt(translated, source_text)
             return
         gen, pieces = ent
         if gen != getattr(self, "_tgroup_gen", 0):

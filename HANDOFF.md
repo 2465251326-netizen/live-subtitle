@@ -681,3 +681,60 @@ y = chrome + hist + src = total − sep − tgt − 边距      ← 与用户拖
      `gh run list --branch v2.19.0` 轮询到 completed → `gh release view v2.19.0 --json assets` 核双资产；
   3. 用户侧提醒：其旧配置里 `overlay_h=515` 会让面板保持 515 高（当前句独占，可拖分割线分配）；
      嫌高就 ⋯ 菜单「恢复自动高度」。
+
+## 二十四、会话快照（v2.19.0 已发布 → 用户回访反馈"关攒句后旧句消失"·v2.19.1 修复）
+
+### 24.1 v2.19.0 发布记录（本会话按 23.7 SOP 完成）
+
+- 发版提交 `c81b2f1`（三处版本号 + CHANGELOG，**显式含 app/config.py**——提交对象 blob 逐个核过）；
+  push main → `git tag -a v2.19.0` → refspec push；
+- CI run `35059311737`：`status=completed, conclusion=success`（版本一致性门 / 单元 / smoke / EXE 存活 / Inno 全过）；
+- `gh release view v2.19.0`：**双资产齐**（Setup exe ≈91.3MB、portable zip ≈136.2MB，与 v2.18.2 体积差 ±3KB）；
+- 发版前本地复跑：`UNIT: 81 PASS` / `TOTAL: 115 PASS`（offscreen 判定行，退出码 1=Qt 收尾 AV 不变）。
+
+### 24.2 用户回访反馈与取证（真实 Qt 事件流，探针 `scripts/qa/dual_disappear_probe.py`）
+
+> "即便我关闭了攒句，译文和原文还是有攒句感觉，一旦有新的翻译和识别，已翻译的译文和原文就会在悬浮字幕里消失了"
+
+探针按主窗真实调用序打拍快照，结论拆两半：
+
+1. **设计后果**（不是 bug）：历史区关（23.3 用户实拍裁决）后当前句区是**单句槽**；
+   攒句关→片段短、终版频繁，上一句终版在 GPU 流式下只活 **1~2 拍（≈0.9~1.8s）**，
+   CPU 无流式则下一片段一到即整对消失（t6 处 tgt 还闪 '…'）。hist_rows=0，终版在面板**无任何驻留**——
+   这正是"当前句独占"的字面含义。
+2. **两条真缺陷**：
+   - **错配窗口**：`update_partial` 只覆盖原文区 → t4 屏上=「B 句草稿原文 + A 句终版译文」，
+     随后草稿译再冲掉 A——即用户看到的"乱跳"；
+   - **同句闪白**：流式草稿已在屏生长（t5 已有 B 的推测译），正式片段（大写开头、与草稿同源）
+     晚到被 `_starts_new_sentence` 误判为新句 → tgt 打回 '…'，B 译文重长一遍。
+
+### 24.3 用户裁决与修复（v2.19.1）
+
+ask_user_question 四选一 → 用户选：**维持当前句独占，只修错配/闪白缺陷**
+（历史区驻留 / 上一句驻留 / 列表布局三项均被否——别再往那个方向提）。
+
+实现（全部在 `app/ui/caption_overlay.py` + 主窗 1 行配对参数）：
+
+- 新状态位 `_dual_cur_open`：`_dual_new_sentence`=True、`_dual_show_result`=False、`clear_caption`=False；
+- `update_partial` **原子换句**：闭合态 + 新拍不是屏上句的同源延伸 → 走 `_dual_new_sentence`
+  （原文+译文同刻切，杜绝错配帧）；同源尾重复只长文本不动译文态；
+- `_dual_show_pending`：大写开头片段先过 `_dual_same_sentence`（前缀包含 / 前 3 词同源）——
+  同句 → 就地校准原文、**不重置译文区**；确属新句才重置；
+- `update_dual_draft_tgt(translated, source_text=None)`：该句已收口时迟到草稿回复丢弃，
+  不把淡定稿刷回淡色（主窗 2358 传 source 配对）；旧单参调用兼容。
+
+### 24.4 锁与验收
+
+- 集成新增 `t_dual_pair_atomic_swap`（**旧实现上必红**，探针 before/after 已实证）：
+  ① 错配锁（新句首拍后 tgt≠A 终版）② 闪白锁（同句正式片段到达 tgt 保持）
+  ③ 迟到草稿防御 ④ 尾重复延伸防御 ⑤ CPU 成对切换无错配帧；
+- 套件：**单元 81 / 集成 116 全绿**；9 条 dual 相关既有锁零回归；
+- 真机听感复验留给用户（新装 v2.19.1 后确认）——设备索引会漂（29↔33 教训），
+  本会话未占用户音箱跑回放链路。
+
+### 24.5 待办
+
+1. 若用户确认体验 OK：发版 v2.19.1（补丁号，行为修正）——bump → CHANGELOG → add（含 app/config.py）
+   → push → tag → CI 核双资产（同 23.7 套路）；
+2. 遗留小项：CI 的 Node.js 20 弃用告警（actions/cache@v4 等四件），非阻塞，择机统一升版；
+3. `dual_clear_current` 仍是应用侧零调用的死方法（仅测试引用）——留着无害，清理属另一条战线。

@@ -314,6 +314,10 @@ class CaptionOverlay(QWidget):
         # v2.19.0：历史区总开关（默认 True 保持独立构造时的旧行为；主窗按配置
         # overlay_dual_hist 下发，用户实拍裁决后**出厂默认关**=当前句独占面板）
         self._dual_hist_enabled = True
+        # v2.19.1：当前句"在说态"——终版收口后置 False（闭合）。流式拍/新片段
+        # 在闭合态到来即触发**原子换句**（原文+译文同刻切换），杜绝
+        # "新句原文 配 上一句终版译文"的错配窗口（用户实拍反馈的"攒句感"元凶之一）
+        self._dual_cur_open = False
         self._hist_follow = True           # 用户上滚回看时不自动滚底
         self._dual_hist.verticalScrollBar().valueChanged.connect(self._on_hist_scroll)
         # v2.18.1：原文/译文两个可滚动区各自的"跟底"状态（用户上滚回看不打断）
@@ -602,16 +606,36 @@ class CaptionOverlay(QWidget):
         t = (text_full or "").strip()
         if not t:
             return
+        cur = self._dual_src.text().strip()
+        if not self._dual_cur_open:
+            # v2.19.1 原子换句：上一句已终版收口（或屏上无句），而这一拍带来
+            # 的是**新句**文本（不是屏上句的延伸）→ 走新句起点，原文与译文
+            # 同刻切换。旧行为只整体覆盖原文，留下一拍~两拍的
+            # "新句原文 + 上一句终版译文"错配窗口（用户实拍"攒句感/乱跳"元凶）。
+            if not cur or not self._dual_same_sentence(cur, t):
+                self._dual_new_sentence(t)
+                return
+            # 同源尾重复（whisper 对已终版句的多拍转写抖动）：只长文本，
+            # 不动译文终版
+            self._dual_src.setText(t)
+            self._sync_dual_visibility()
+            self._schedule_relayout()
+            return
         self._dual_src.setText(t)
         self._sync_dual_visibility()
         self._schedule_relayout()
 
-    def update_dual_draft_tgt(self, translated):
+    def update_dual_draft_tgt(self, translated, source_text=None):
         """v2.13.0：草稿推测译文——**只更新译文区**（spec 淡样式），不碰原文/
         行簿记/_last_result/未读计数；片段级推测版（_dual_spec）与整句终版
         （_dual_show_result）随后自然覆盖。dual 专属（调用方已按布局闸门过滤，
-        这里再防一道）。效果：译文区与原文区同节奏实时生长（0.9s 级）。"""
+        这里再防一道）。效果：译文区与原文区同节奏实时生长（0.9s 级）。
+        v2.19.1：可选 `source_text` 配对——该句已终版收口时迟到的草稿回复
+        直接丢弃，不得把已定稿译文刷回淡色。"""
         if self._layout_mode != "dual" or not translated:
+            return
+        if (source_text and not self._dual_cur_open
+                and self._dual_same_sentence(self._dual_src.text(), source_text)):
             return
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
@@ -641,6 +665,7 @@ class CaptionOverlay(QWidget):
                     self._dual_hist_lay.removeItem(it)
                 self._dual_hist_rows -= 1
             self._hist_follow = True
+            self._dual_cur_open = False    # v2.19.1：无在说句
             self._dual_src.setText("")
             self._dual_tgt.setProperty("spec", False)
             self._dual_tgt.setProperty("empty", True)
@@ -880,6 +905,7 @@ class CaptionOverlay(QWidget):
     def _dual_new_sentence(self, src_text):
         """新句起点：原文区重置为该片段，译文区进入占位态（推测版淡样式）。"""
         self._dual_src.setText(src_text)
+        self._dual_cur_open = True
         # v2.18.1：新句开始重新跟底——用户在上半句里上滚回看，不应把下一句
         # 的最新文字也一起挡住（回看语义属于过去那句）
         self._dual_follow = {"src": True, "tgt": True}
@@ -891,17 +917,51 @@ class CaptionOverlay(QWidget):
         self._update_empty_hint()
         self._schedule_relayout()
 
+    @staticmethod
+    def _dual_same_sentence(a, b):
+        """同句判据（v2.19.1）：流式草稿与随后到达的正式片段是否**同一句**。
+        前缀包含关系，或（分词后）前 3 词同源即算同句。
+        用途：① 正式片段落在已上屏的同句草稿上时，校准原文而非重置译文区
+        （消灭"译文闪白再来一遍"）；② 终版闭合后，流式拍只有**不是当前句
+        延伸**才判为新句并原子换句。两句连贯新闻共享前 3 词的概率极低，
+        误并的代价远小于误切（闪白）的代价。"""
+        a = (a or "").strip()
+        b = (b or "").strip()
+        if not a or not b:
+            return False
+        if a.startswith(b) or b.startswith(a):
+            return True
+        ta = a.lower().split()
+        tb = b.lower().split()
+        if len(ta) < 3 or len(tb) < 3:
+            return False
+        return all(x == y for x, y in zip(ta[:3], tb[:3]))
+
     def _dual_show_pending(self, source_text):
         t = (source_text or "").strip()
         if not t:
             return
         cur = self._dual_src.text().strip()
-        if not cur or self._starts_new_sentence(t):
+        if not cur:
             self._dual_new_sentence(t)
-        else:
+            return
+        if not self._starts_new_sentence(t):
+            # 延续片段（小写开头）：拼进当前句（D-2：主窗每段只发一次占位）
             self._dual_src.setText(self._dual_join(cur, t))
             self._sync_dual_visibility()
             self._schedule_relayout()
+            return
+        # 大写/CJK/数字开头名义上是"新句起点"——v2.19.1 修正：流式路径下同一句
+        # 的草稿往往已在屏上生长（真机时序：draft beat 先行，正式片段晚到），
+        # 此时重置会把该句已就位/正生长的推测译打回 "…"（用户实拍"闪白"）。
+        # 同句 → 就地校准原文，译文区状态**不动**。
+        if self._dual_same_sentence(cur, t):
+            if len(t) > len(cur) or self._dual_cur_open and len(t) >= len(cur):
+                self._dual_src.setText(t)
+            self._sync_dual_visibility()
+            self._schedule_relayout()
+            return
+        self._dual_new_sentence(t)
 
     def _dual_spec(self, source_text, target_text, show_source):
         """推测中间版：原文校准为整句、译文淡色就地更新（失败静默等终版）。"""
@@ -918,9 +978,11 @@ class CaptionOverlay(QWidget):
         self._schedule_relayout()
 
     def _dual_show_result(self, source_text, target_text, show_source):
-        """终版收口：译文转正式样式（主字号加粗纯色），原文校准为整句。"""
+        """终版收口：译文转正式样式（主字号加粗纯色），原文校准为整句。
+        v2.19.1：收口即闭合当前句——此后的第一个流式拍/新片段将原子换句。"""
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
+        self._dual_cur_open = False
         if source_text:
             self._dual_src.setText(source_text)
         self._dual_tgt.setProperty("spec", False)
