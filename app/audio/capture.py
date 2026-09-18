@@ -229,10 +229,20 @@ class Segmenter:
             voiced = rms > threshold
         else:
             voiced = bool(voiced_override)
+        # v2.20.2：碎片的"等待下一句"计时改成**按是否在说话推进**。旧实现任何
+        # voiced 块都把 pending_idle 归零，于是周期性咔哒/咳嗽/极弱起音会一直
+        # 续命、`PENDING_MAX_IDLE_S` 永不触发：实测 100s 静音里每 5s 一声瞬态，
+        # 100 秒前的碎片仍以 1.97s 挂在 pending 上、被粘进下一段（字幕开头冒出
+        # 一句陈年旧话）。现在只有"真的在说话"（越过起音迟滞）才归零。
+        if self.in_speech and voiced:
+            self.pending_idle = 0.0
+        elif not self.in_speech:
+            self.pending_idle += duration
+            if self.pending and self.pending_idle > PENDING_MAX_IDLE_S:
+                self._drop_pending()
 
         if voiced:
             self.silence_run = 0.0
-            self.pending_idle = 0.0        # 语音续上了，碎片的等待计时归零
             self.speech_run += duration
             self.speech_len += duration
             self.buffer.append(chunk)
@@ -253,13 +263,10 @@ class Segmenter:
                 # 还没起步（in_speech=False）：缓冲里是"疑似起音/瞬态噪声"。
                 # v2.20.1 不再扔掉——留作下一段开头。弱读起音（"Analysts"、
                 # "In other news," 这类）正是用户能看见的段首掉词来源。
-                self._stash_pending(self.buffer, self.speech_len, self.buffer_len)
+                # v2.20.2：陈旧作废的计时移到 feed() 顶部统一处理（旧实现只在
+                # `not self.buffer` 的纯静默分支里累加，且任何 voiced 块都归零）。
+                self._stash_pending(self.buffer, self.speech_len)
                 self._reset_state()
-            elif not self.buffer:
-                # 纯静默期：给已攒碎片计时，超时作废（免得把几十秒前的音频粘进新段）
-                self.pending_idle += duration
-                if self.pending and self.pending_idle > PENDING_MAX_IDLE_S:
-                    self._drop_pending()
         return None
 
     def flush(self):
@@ -268,7 +275,7 @@ class Segmenter:
 
     def _flush(self):
         # v2.20.1：段首先接上"未达门限的碎片"，语音不再被静默丢弃
-        chunks = [c for grp in self.pending for c in grp[0]] + self.buffer
+        chunks = list(self.pending) + self.buffer
         audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
         spoken = self.speech_len + self.pending_speech
         buffered = self.buffer_len + self.pending_len
@@ -280,7 +287,7 @@ class Segmenter:
             # hours"…）。现在转存为下一段的开头，MIN_SPEECH_S 的原始目的不变——
             # 碎片永远不会单独成段送进 whisper（那才是幻觉与浪费推理的来源）。
             self._drop_pending()
-            self._stash_pending([audio], spoken, buffered)
+            self._stash_pending([audio], spoken)
             return None
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         if peak < 0.002:
@@ -290,33 +297,40 @@ class Segmenter:
         self._adapt_silence_end(spoken, buffered)
         return audio
 
-    def _stash_pending(self, chunks, speech_s, buffered_s):
-        """把未达门限的音频留作下一段开头，并守住累计上限（超出丢最老的组）。"""
-        keep = [c for c in chunks if c is not None and c.shape[0]]
-        if not keep or buffered_s <= 0:
-            return
-        self.pending.append((keep, float(speech_s), float(buffered_s)))
-        self.pending_len += float(buffered_s)
-        self.pending_speech += float(speech_s)
-        while self.pending_len > PENDING_MAX_S and len(self.pending) > 1:
-            old = self.pending.pop(0)
-            self.pending_len -= old[2]
-            self.pending_speech -= old[1]
-        if self.pending_len > PENDING_MAX_S:
-            # 单组就超上限：截掉最老的部分（保留尾部，它离下一段最近）
-            grp_chunks, grp_speech, _grp_buf = self.pending[0]
-            drop = self.pending_len - PENDING_MAX_S
-            keep_chunks, bs, acc = [], 0.0, 0.0
-            for c in grp_chunks:
-                d = c.shape[0] / TARGET_SR
-                if acc < drop:
-                    acc += d
-                    continue
-                keep_chunks.append(c)
-                bs += d
-            self.pending[0] = (keep_chunks, max(0.0, grp_speech - acc), bs)
-            self.pending_len = bs
-            self.pending_speech = max(0.0, self.pending_speech - acc)
+    def _stash_pending(self, chunks, speech_s):
+        """把未达门限的音频留作下一段开头，并守住累计上限。
+
+        v2.20.2：pending 从"分组三元组"摊平成**裸块列表 + 两个标量**。旧结构
+        的截断只能整块跳过，而 `_flush` 短路径转存的恰好是**一整块**拼接后的
+        ndarray——`if acc < drop: continue` 把它整块跳过，`keep_chunks=[]`，
+        实测 `_stash_pending([2.4s], 0.6, 2.4)` 保留 **0.000s**：超上限时不是
+        裁到 2s 而是全丢，稀疏语音（0.15s 语音 + 长静音）场景下 pending 永远
+        在 0 与 1.8s 之间循环、一段都出不来。现在按样本数在块内切。"""
+        for c in chunks:
+            if c is None or not c.shape[0]:
+                continue
+            self.pending.append(c)
+            self.pending_len += c.shape[0] / TARGET_SR
+        self.pending_speech += max(0.0, float(speech_s))
+        self._trim_pending()
+
+    def _trim_pending(self):
+        """累计超过 PENDING_MAX_S 就从最老的一端切掉（切在块内，不整块丢）。"""
+        while self.pending_len > PENDING_MAX_S and self.pending:
+            over = self.pending_len - PENDING_MAX_S
+            head = self.pending[0]
+            cut = min(head.shape[0], max(1, int(round(over * TARGET_SR))))
+            if cut >= head.shape[0]:
+                self.pending.pop(0)
+            else:
+                self.pending[0] = head[cut:]
+            lost = cut / TARGET_SR
+            # 语音时长按**当前语音占比**折算。旧实现把"切掉的缓冲时长"直接当成
+            # "切掉的语音时长"扣减，语音被超额扣光——够长的段也因此被判成碎片、
+            # 再转存一轮（实测 3.0s 语音/3.0s 缓冲切掉 1.5s 缓冲后语音只剩 1.5s）
+            ratio = min(1.0, self.pending_speech / self.pending_len) if self.pending_len else 0.0
+            self.pending_len -= lost
+            self.pending_speech = max(0.0, self.pending_speech - lost * ratio)
 
     def _drop_pending(self):
         self.pending = []

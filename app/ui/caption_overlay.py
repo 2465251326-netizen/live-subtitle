@@ -163,7 +163,10 @@ class CaptionOverlay(QWidget):
         # v2.20.1：面板上的「开始 / 停止翻译」把手（与全局热键 Ctrl+Alt+S、
         # 托盘「开始 / 停止翻译」同一个动作，回调由主窗注入 = toggle_running）
         self._on_toggle_running = on_toggle_running
-        self._running = True
+        # v2.20.2：初值改为「没在跑」。旧初值 True 让面板在启动瞬间就显示绿色
+        # 「⏸ 暂停」，而此时管线还没开始（主窗按钮写着「开始翻译」）——正是这颗
+        # 把手要防的谎报。真态一律由主窗 update_overlay_status 回灌。
+        self._running = False
         # v2.20.0：翻译侧「攒句合并」在面板的镜像状态（主窗按 translate_grouping
         # 下发；菜单勾选与设置页勾选同源，set_grouping_enabled 是唯一写入口）
         self._grouping = True
@@ -202,7 +205,7 @@ class CaptionOverlay(QWidget):
         self._run_btn.setObjectName("PanelRun")
         self._run_btn.clicked.connect(self._toggle_running)
         bl.addWidget(self._run_btn)
-        self.set_running(True)
+        self.set_running(False)
 
         self._lang_btn = QToolButton()
         self._lang_btn.setPopupMode(QToolButton.InstantPopup)
@@ -266,7 +269,7 @@ class CaptionOverlay(QWidget):
         self._close_btn = QToolButton()
         self._close_btn.setText("✕")
         self._close_btn.setObjectName("PanelClose")
-        self._close_btn.setToolTip("关闭面板（可从主窗重新打开）")
+        self._close_btn.setToolTip("隐藏面板（热键或托盘右键「显隐字幕面板」再显示；下次启动自动显示）")
         self._close_btn.clicked.connect(self._request_close)
         bl.addWidget(self._close_btn)
         outer.addWidget(self._bar)
@@ -649,11 +652,17 @@ class CaptionOverlay(QWidget):
         v2.20.1：刷新范围只有"当前句"这一条——上一句已收口的行原地不动。"""
         if self._layout_mode != "dual":
             return
+        if not self.isVisible():
+            # v2.20.2：面板隐藏期间不喂草稿。终版/收口那条路（show_pending_result）
+            # 本来就带可见性闸门，只有这一路在偷偷写——隐藏 5 拍就把整段文本并进
+            # 同一行、`_dual_rows_closed` 恒 False、译文卡恒 "…"，重新显示时是一张
+            # 永不收口的僵尸卡（真机复现：1 行 99 字符未收口）。
+            return
         t = (text_full or "").strip()
         if not t:
             return
         cur = self._dual_cur_src().strip()
-        if cur and self._dual_same_sentence(cur, t):
+        if cur and self._dual_same_sentence(cur, t, not self._dual_cur_open):
             # 同一句（还在生长，或终版之后 whisper 又转了一遍的尾重复）：
             # 只刷新**最新一行**的原文，该行译文状态一律不动
             # （v2.19.1 的"不闪白""不重置终版"两条契约）
@@ -682,7 +691,7 @@ class CaptionOverlay(QWidget):
         if self._dual_tgt is None:
             return
         if (source_text and not self._dual_cur_open
-                and self._dual_same_sentence(self._dual_cur_src(), source_text)):
+                and self._dual_same_sentence(self._dual_cur_src(), source_text, True)):
             return
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
@@ -702,42 +711,43 @@ class CaptionOverlay(QWidget):
         self._count_unread()
         self._sync_bar_texts()
 
-    def clear_caption(self):
-        if self.is_dual():
-            # v2.19.2：dual 分支漏清"最近一句"——清空后面板空白，但「复制最近一句 /
-            # 纠正最近识别 / 纠正译文」仍指向已被清掉的句子（列表分支无此问题）
-            self._last_result = ("", "")
-            # v2.20.1：两栏逐句累积 → 清空要把**所有**条目删掉（旧实现只有一对
-            # 标签，setText("") 就够）。当前句指针一并归 None、逐行收口账目清空，
-            # 下一句重新开槽。
-            gone_s, gone_t = self._dual_src_items, self._dual_tgt_items
-            self._dual_src_items, self._dual_tgt_items = [], []
-            self._dual_rows_closed = []
-            self._dual_src = None
-            self._dual_tgt = None
-            for it in gone_s:
-                it["lab"].setParent(None)
-                it["lab"].deleteLater()
-            for it in gone_t:
-                it["card"].setParent(None)
-                it["card"].deleteLater()
-            self._dual_unwatch(*[it["lab"] for it in gone_s],
-                               *[w for it in gone_t
-                                 for w in (it["card"], it["lab"])])
-            self._sync_dual_visibility()
-            self._update_empty_hint()
-            self._clear_btn.setEnabled(False)
-            self._relayout()
+    def _dual_clear_items(self):
+        """删掉两栏全部累积条目、指针与收口账目（v2.20.2 从 clear_caption 拆出）。"""
+        if not self._dual_src_items and not self._dual_tgt_items:
             return
+        gone_s, gone_t = self._dual_src_items, self._dual_tgt_items
+        self._dual_src_items, self._dual_tgt_items = [], []
+        self._dual_rows_closed = []
+        self._dual_src = None
+        self._dual_tgt = None
+        for it in gone_s:
+            it["lab"].setParent(None)
+            it["lab"].deleteLater()
+        for it in gone_t:
+            it["card"].setParent(None)
+            it["card"].deleteLater()
+        self._dual_unwatch(*[it["lab"] for it in gone_s],
+                           *[w for it in gone_t
+                             for w in (it["card"], it["lab"])])
+        self._sync_dual_visibility()
+
+    def clear_caption(self):
+        # v2.20.2：**两种布局的内容一起清**。旧实现按当前布局分支——在列表布局下按
+        # 「清空」只清列表行，dual 两栏的逐句条目原封不动，切回上下双语就看见
+        # "清空之后还在"（真机停/启压力测实测：清空后 dual_src 仍为 3）。
+        # v2.19.2 的教训保留：清空后「复制最近一句 / 纠正最近识别 / 纠正译文」
+        # 不得仍指向已被清掉的句子。
+        self._last_result = ("", "")
+        self._dual_clear_items()
         for it in self._rows:
             it["row"].setParent(None)
             it["row"].deleteLater()
         self._rows = []
-        self._last_result = ("", "")
         self._unread = 0
         self._sync_unread_btn()
         self._update_empty_hint()
         self._update_mini()
+        self._clear_btn.setEnabled(False)
         self._relayout()
         self._schedule_relayout()
 
@@ -1011,13 +1021,18 @@ class CaptionOverlay(QWidget):
         self._schedule_relayout()
 
     @staticmethod
-    def _dual_same_sentence(a, b):
+    def _dual_same_sentence(a, b, closed_row=False):
         """同句判据（v2.19.1）：流式草稿与随后到达的正式片段是否**同一句**。
         前缀包含关系，或（分词后）前 3 词同源即算同句。
         用途：① 正式片段落在已上屏的同句草稿上时，校准原文而非重置译文区
         （消灭"译文闪白再来一遍"）；② 终版闭合后，流式拍只有**不是当前句
         延伸**才判为新句并原子换句。两句连贯新闻共享前 3 词的概率极低，
-        误并的代价远小于误切（闪白）的代价。"""
+        误并的代价远小于误切（闪白）的代价。
+
+        `closed_row`（v2.20.2）：a 是**已收口**的那一行时才做"最小对否决"。
+        草稿→终版那一趟纠正（whisper 改一个词）必须继续判同句、就地收口，
+        否则又会开出一行重复；而对着已定稿的句子判断"这是新句还是重播"时，
+        只差一个编号/数字的两句必须判成两句。"""
         a = (a or "").strip()
         b = (b or "").strip()
         if not a or not b:
@@ -1028,6 +1043,15 @@ class CaptionOverlay(QWidget):
         tb = b.lower().split()
         if len(ta) < 3 or len(tb) < 3:
             return False
+        # v2.20.2：最小对否决——必须排在"前 3 词同源"快判**之前**，否则编号类
+        # 句子（"The grid deal cleared item 7 of the checklist" vs "…item 8…"）
+        # 先被前三词判成同句、整句被吞掉。形态："两句只差一两个词、其余逐位
+        # 相同"＝两句；回声是"整段错位重播"，逐位比对会差一大片，不会被误否决。
+        if closed_row and abs(len(ta) - len(tb)) <= 2:
+            n = min(len(ta), len(tb))
+            diffs = sum(1 for k in range(n) if ta[k] != tb[k])
+            if 0 < diffs <= max(1, n // 6):
+                return False
         if all(x == y for x, y in zip(ta[:3], tb[:3])):
             return True
         # v2.20.1：回声判据——b 的词 ≥85% 已在 a 里出现过，算同一句。真机 91s
@@ -1035,8 +1059,29 @@ class CaptionOverlay(QWidget):
         # （"…across the board. on the sports desk" 之后跟来 "inflation readings
         # … on the sports desk"）。单行时代它只是覆盖同一块文本无人看见，累积
         # 形态下会变成并排的两句重复。
-        sa = set(ta)
-        return sum(1 for w in tb if w in sa) / len(tb) >= 0.85
+        # v2.20.2 改版：判据从"词集合包含"换成**有序 LCS 占比**。集合判据会把
+        # 近义改写的两句误并成一句（"The president met with the prime minister
+        # in Warsaw" / "The prime minister met with the president in Berlin"
+        # 词集几乎相同、词序完全不同），前一句就此从屏上消失——比重复更难发现。
+        # 回声是"同一段文字被重播"：词序不变、允许漏词与标点差异，LCS 占比高；
+        # 换序的两句 LCS 占比上不去。分母取**较短一句**——判据问的是"短的那句是否
+        # 被长的那句按序包含"，写死成"新来的那句"会在"草稿短、终版长"时漏判
+        # （真机：收口行 + 半句草稿行 + 整句终版又开一行，草稿行成孤儿）。
+        na = [w.strip(".,!?;:\"'()") for w in ta]
+        nb = [w.strip(".,!?;:\"'()") for w in tb]
+        prev = [0] * (len(na) + 1)
+        for w in nb:
+            row = [0]
+            for k, v in enumerate(na):
+                row.append(prev[k] + 1 if w == v else max(prev[k + 1], row[k]))
+            prev = row
+        # 0.85 是实测校准出来的：真回声（同一段被重播）稳定在 1.0；近义改写的
+        # 两句 0.44；而 "Sentence number 0 arrives live" vs "…number 1 arrives
+        # live" 这种**只差一个数字的最小对**是 0.80——再松就会把下一句吞掉。
+        # 代价：带结巴的回声（真机那条 "…on the sport on the sports desk"，词级
+        # 统计与最小对无法区分，实测 0.82）仍会多出一行重复。**宁多一行重复，
+        # 不吞一句真话**——丢句子比重复更难被发现。
+        return prev[-1] / min(len(na), len(nb)) >= 0.85
 
     def _dual_set_src(self, text):
         """写当前句原文，并同步累积条目里的簿记文本（高度/有无内容判据都读它）。"""
@@ -1054,17 +1099,21 @@ class CaptionOverlay(QWidget):
         if not cur:
             self._dual_new_sentence(t)
             return
-        if not self._starts_new_sentence(t):
+        if not self._starts_new_sentence(t) and self._dual_cur_open:
             # 延续片段（小写开头）：拼进当前句（D-2：主窗每段只发一次占位）
             self._dual_set_src(self._dual_join(cur, t))
             self._sync_dual_visibility()
             self._schedule_relayout()
             return
+        # v2.20.2：当前行**已收口**时不再往里拼接。旧实现无脑 join，于是收口行
+        # 文本变长而译文停在半句，其终版再到达时 `_dual_row_for` 跳过收口行、
+        # 另起一行——屏上两行同文、其中一行配错译且永不修复（真机复现）。
+        # 落到下面的同句判据：不是同句就另起一行。
         # 大写/CJK/数字开头名义上是"新句起点"——v2.19.1 修正：流式路径下同一句
         # 的草稿往往已在屏上生长（真机时序：draft beat 先行，正式片段晚到），
         # 此时重置会把该句已就位/正生长的推测译打回 "…"（用户实拍"闪白"）。
         # 同句 → 就地校准原文，译文区状态**不动**。
-        if self._dual_same_sentence(cur, t):
+        if self._dual_same_sentence(cur, t, not self._dual_cur_open):
             if len(t) > len(cur) or self._dual_cur_open and len(t) >= len(cur):
                 self._dual_set_src(t)
             self._sync_dual_visibility()

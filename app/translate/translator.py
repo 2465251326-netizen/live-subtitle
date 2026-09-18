@@ -62,7 +62,27 @@ class TranslationCache:
                 # v2.6.3（P1-3）：合法 JSON 但顶层非 dict（如 [] / "x" / null）
                 # 按 corrupt 处理为空——此前 list 直接赋给 _data，后续每条
                 # get/put 都 AttributeError，翻译全挂且落盘持续写坏文件
-                self._data = data if isinstance(data, dict) else {}
+                # v2.20.2：这条分支**同样要进"读失败"状态**。旧实现只把 _data
+                # 置空、`_load_failed` 留在 False，于是 v2.19.2 那道"未成功加载
+                # 不许写盘"的闸门对它无效：一次攒批落盘就把整份缓存覆写成近空
+                # dict（实测 60 条 → 1 条），既不留 .json.bad 原件也不记日志，
+                # 与用户 2.19.2 报的那条数据丢失路径同构、只是入口不同。
+                if not isinstance(data, dict):
+                    self._data = {}
+                    self._load_failed = True
+                    keep = ""
+                    try:
+                        import shutil
+                        dst = f.with_name(f.name + ".bad")
+                        shutil.copyfile(f, dst)
+                        keep = str(dst)
+                    except Exception:
+                        pass
+                    app_log.log("translate.cache_unreadable", path=str(f),
+                                err="顶层不是对象（%s）" % type(data).__name__,
+                                preserved=keep or "未留存（复制失败）")
+                else:
+                    self._data = data
         except Exception as e:
             # v2.19.2：**读失败 ≠ 空缓存**。旧实现把异常吞成 `_data={}` 且照常
             # 置 `_loaded=True`，于是 v2.2.1 那道"未加载禁写盘"的守卫被绕过——
@@ -139,8 +159,11 @@ class TranslationCache:
                 json.dump(self._data, fp, ensure_ascii=False)
             import os
             os.replace(tmp, f)
-        except Exception:
-            pass
+        except Exception as e:
+            # v2.20.2：写失败不再静默——一条不可序列化的值（如引擎响应里解出的
+            # 孤立代理对）会让**此后每一次**攒批落盘都抛在这里，用户看到"缓存
+            # 已清空/已保存"而磁盘上什么都没变，且全程零日志。记一条不影响功能。
+            app_log.exception("translate.cache_save_failed", e)
 
     def save(self):
         with self._lock:
@@ -154,6 +177,10 @@ class TranslationCache:
     def clear(self):
         with self._lock:
             self._loaded = True
+            # v2.20.2：磁盘上那份读不开的原件已被删除，"读失败禁写盘"的前提不再成立。
+            # 不重置的话，用户从设置页点「清空翻译缓存」（文件删了、UI 报成功）之后
+            # 整场新译文都再也落不了盘——静默丢失，且没有任何日志。
+            self._load_failed = False
             self._data.clear()
             self._dirty_puts = 0
             self._last_flush = time.monotonic()
@@ -377,6 +404,20 @@ def unescape_html(text: str) -> str:
         return text
 
 
+def _is_junk(text):
+    """译文是否含"任何语言正文都不该出现的码位"（v2.20.2 缓存读写两侧共用）。
+
+    判据与离线引擎的乱码守卫同源（`offline_pack._has_junk`），故惰性导入、
+    不另立一套规则；离线包不可用时按"不是乱码"处理，绝不为一道校验把翻译链路打断。"""
+    if not text:
+        return False
+    try:
+        from .offline_pack import _has_junk
+    except Exception:
+        return False
+    return _has_junk(str(text))
+
+
 def probe_engine(name, timeout=2.5, src="", tgt=""):
     """探测引擎连通性，返回 (ok, 详情)。
 
@@ -536,6 +577,13 @@ class TranslateThread(QThread):
                 while self.queue_in.qsize() >= 5:
                     try:
                         old = self.queue_in.get_nowait()
+                        # v2.20.2：被挤掉的若是**推测中间版**，不许上报成"终版丢了"。
+                        # 单片段的 spec 文本与终版文本相同，调用方一收到 dropped 就把
+                        # 那张卡置失败（"翻译队列繁忙"），而真正的终版还在队列里等着
+                        # 出结果——结果是一句红字 + 终版到达时再建一张重复卡、会话条数
+                        # 多算一次。中间版本就是可以丢的，丢了慢一拍而已。
+                        if len(old) > 2 and old[2]:
+                            continue
                         dropped.append((old[0], old[1]))
                     except queue.Empty:
                         break
@@ -560,18 +608,23 @@ class TranslateThread(QThread):
     def _do_translate(self, text, detected, store=True):
         """翻译一句（带持久缓存）。
 
-        v2.18.1：新增 `store` 开关——**推测式中间版不再写缓存**。
-        真机英语新闻实测（BBC Global News Podcast，150s 会话）：222 条缓存里
-        41 组是同一句话的渐进变体（最长一句被存了 7 个版本："GMT on Tuesday
-        15th September. …" 长度 58/86/99/160/168/192/201）。半句前缀几乎不会
-        再被原样查到（终版文本更长），写进去纯属污染：LRU 只有 800 格，
-        真整句的缓存被这些一次性碎片挤掉，磁盘上还永久留着大量半截译文。
-        读侧不变——文本恰好相同（如重复播出的台标句）时推测版照样命中受益。"""
+        v2.20.2：缓存**读侧与写侧都加乱码闸**。v2.20.1 的守卫只长在生成侧
+        （`PackTranslator._translate_chunk`），于是历史脏缓存原样端出来——用户
+        机器上那句 `"I don't know how" → "иぃ\ue01d笵"` 早在 2.20.1 之前就进了
+        `trans_cache.json`，升级后照样上屏，等于没修。缓存键格式没变、也没版本
+        位，LRU 800 格里存量脏条目不会自己消失。现在：命中即验，脏了当没命中、
+        重译并覆写；生成结果脏了不写盘（否则备援/在线引擎的乱译同样永久驻留）。
+
+        v2.18.1：`store` 开关——**推测式中间版不写缓存**。真机实测（BBC Global
+        News Podcast，150s 会话）：222 条缓存里 41 组是同一句话的渐进变体（最长
+        一句被存了 7 个版本）。半句前缀几乎不会再被原样查到（终版文本更长），
+        写进去纯属污染：LRU 只有 800 格，真整句的缓存被一次性碎片挤掉。
+        """
         # v2.0.1：key 加入源语言维度——同文本被 whisper 判为不同源语言时，
         # 旧 key 会让 MyMemory/Argos 命中错误语言方向的缓存译文
         key = self._cache_key(detected, text)
         cached = _cache.get(key)
-        if cached:
+        if cached and not _is_junk(cached[0]):
             return cached[0], cached[1]
         engine = ENGINES[self._active_engine]
         source = None
@@ -585,7 +638,7 @@ class TranslateThread(QThread):
         result = engine.translate(text, source, self.target)
         # v2.6.0（R1）：实体还原后再入缓存——缓存中的译文即上屏所见
         result = (unescape_html(result[0]), result[1])
-        if store:
+        if store and not _is_junk(result[0]):
             _cache.put(key, result)
         return result
 
@@ -683,7 +736,12 @@ class TranslateThread(QThread):
             # v2.7.6（A）：队列项为 (text, lang, spec) 三元组；兼容裸二元组
             # （测试/脚本直接 put 的历史格式，见 tests、deep_windows、smoke_test）
             try:
-                text, detected = item[0], item[1]
+                # v2.20.2：`text` 在 try 之外做 `.strip()`，一条非字符串队列项
+                # （脚本/测试直接 put）会把 AttributeError 抛出 run()——线程当场死，
+                # 之后每张卡都收到误导性的「翻译队列繁忙」（来自 isRunning 守卫），
+                # 而未攒句路径连那个守卫都没有，卡片永久停在 "⟳ …"。
+                text = str(item[0])
+                detected = item[1]
                 spec = bool(item[2]) if len(item) > 2 else False
             except Exception:
                 continue
@@ -691,10 +749,16 @@ class TranslateThread(QThread):
                 continue
             norm_detected = WHISPER_LANG_MAP.get(detected, detected)
             if self.target.startswith("zh") and norm_detected and norm_detected.startswith("zh"):
+                # v2.20.2：源=目标语言的"直通"也要过 `unescape_html` 与修正词典。
+                # 旧实现直接 emit 原文，于是同一份词典在 en→zh 生效、在 zh→zh 失效
+                # （实测 `&quot;` 原样上屏、`台湾海峡` 类条目不被替换）——用户视角
+                # 就是"词典时灵时不灵"。
+                passthrough = apply_fix_map(unescape_html(text), self.fix_map,
+                                            self._fix_whole_word)
                 if spec:
-                    self.spec_result_ready.emit(text, text, self._active_engine, detected, "")
+                    self.spec_result_ready.emit(text, passthrough, self._active_engine, detected, "")
                 else:
-                    self.result_ready.emit(text, text, self._active_engine, detected, "")
+                    self.result_ready.emit(text, passthrough, self._active_engine, detected, "")
                 continue
             error = ""
             translated = ""

@@ -66,7 +66,12 @@ def main():
         if done[0] >= 8 and time.time() - t0 > 60:
             break
 
-    w.set_overlay_enabled(True)
+    # v2.20.2：`MainWindow.set_overlay_enabled` 已随 `overlay_enabled` 键一起删除
+    # （面板改常驻实时显示）。旧写法在这里抛 AttributeError，让 deep-test 工作流
+    # 跑完 ~25 分钟真实 ASR 之后当场死掉、白烧一次 runner。
+    w.overlay.show()
+    for _ in range(6):
+        app.processEvents()
     overlay_ok = w.overlay.isVisible()
     config_ok = CONFIG_FILE.exists()
     w.stop_pipeline()

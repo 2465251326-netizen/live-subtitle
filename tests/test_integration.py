@@ -1786,17 +1786,26 @@ def t_overlay_dual_preview_echo_no_dup_row():
         app.processEvents()
     rows = [i["text"] for i in ov._dual_src_items]
     assert len(rows) == 1, f"前置：应只有一行，实得 {rows}"
+    # 干净回声：收口句的一段被原样重播（词序一致）
     echo = ("inflation readings this month helped lift sentiment across the "
-            "board on the sport on the sports desk")
+            "board on the sports desk")
     ov.update_partial(echo)
     app.processEvents()
     rows = [i["text"] for i in ov._dual_src_items]
     assert len(rows) == 1, f"回声拍另起了一行：{rows}"
     assert rows[0] == S1, f"收口行被更短的回声打回半句：{rows[0]!r}"
+    # v2.20.2 记录一条**已知不吸收**的形态：带结巴的回声（真机原文如此，
+    # whisper 重播时多吐了 "on the sport"）。它在词级统计上与"只差一个数字的
+    # 两句最小对"不可区分（0.82 vs 0.80），而阈值必须守住 0.85 才不吞真句子
+    # ——所以这种回声仍会多出一行重复。判据偏向：**宁多一行重复，不丢一句真话**。
+    ov.update_partial("inflation readings this month helped lift sentiment "
+                      "across the board on the sport on the sports desk")
+    app.processEvents()
+    assert len(ov._dual_src_items) == 2, "结巴回声被吸收了＝阈值又松回去了"
     # 真正的新句照旧开新行（判据收紧不得把新内容也吞掉）
     ov.update_partial("The national team secured qualification with a late goal")
     app.processEvents()
-    assert len(ov._dual_src_items) == 2, [i["text"] for i in ov._dual_src_items]
+    assert len(ov._dual_src_items) == 3, [i["text"] for i in ov._dual_src_items]
     ov.deleteLater()
 
 
@@ -1834,6 +1843,197 @@ def t_panel_run_toggle_button():
 
 check("panel: 工具条「开始/停止翻译」把手接线与回灌（v2.20.1）",
       t_panel_run_toggle_button)
+
+
+def _dual_panel():
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 100)
+    ov.set_show_source(True)
+    ov.set_layout_mode("dual")
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    return ov
+
+
+def t_overlay_dual_paraphrase_kept_apart():
+    """v2.20.2：回声判据必须**有序**，近义改写的两句不许并成一句。
+
+    v2.20.1 的判据是"新拍的词 ≥85% 在旧行出现过"（词集合包含）。真机推演：
+    "The president met with the prime minister in Warsaw" 与
+    "The prime minister met with the president in Berlin" 词集几乎相同、词序完全
+    不同 → 被判同一句 → 前一句从没在屏上出现过。丢句子比多一行重复难发现得多。
+    现在判据换成有序 LCS 占比（分母取较短一句），回声仍命中、换序不命中。"""
+    ov = _dual_panel()
+    A = "The president met with the prime minister in Warsaw"
+    B = "The prime minister met with the president in Berlin"
+    ov.show_pending(A)
+    ov.show_pending(B)
+    texts = [i["text"] for i in ov._dual_src_items]
+    assert len(texts) == 2, f"近义改写的两句被并成一行：{texts}"
+    assert texts[0] == A, texts
+    ov.show_pending_result(A, "总统在华沙会晤总理。")
+    ov.show_pending_result(B, "总理在柏林会晤总统。")
+    assert ov._dual_src_items[1]["text"] == B
+    assert ov._dual_tgt_items[1]["lab"].text() == "总理在柏林会晤总统。"
+    # 真回声（同一段被重播、词序一致）仍须被吸收，不许并排出两行
+    C = ("Economists say lower inflation readings this month helped lift "
+         "sentiment across the board. on the sports desk")
+    ov.update_partial(C)
+    ov.show_pending_result(C, "经济学家说本月通胀回落提振了情绪。")
+    n = len(ov._dual_src_items)
+    ov.update_partial("inflation readings this month helped lift sentiment "
+                      "across the board on the sports desk")
+    assert len(ov._dual_src_items) == n, "真回声没被吸收，屏上并排重复行"
+    # 只差一个数字的"最小对"两句必须各自成行——套件里真实踩过：
+    # "Sentence number 0 arrives live" / "…number 1 arrives live" 词级重合 0.80，
+    # 阈值一旦放到 0.85 以下就会把第二句整个吞掉（丢句子比重复更难发现）。
+    # 编号放在前三词之后，绕开 v2.19.1 的"前 3 词同源"快判，专打这条 LCS 阈值。
+    ov.show_pending_result("The grid deal cleared item 7 of the checklist", "第七项通过。")
+    ov.show_pending("The grid deal cleared item 8 of the checklist")
+    texts = [i["text"] for i in ov._dual_src_items]
+    assert texts[-1] == "The grid deal cleared item 8 of the checklist", \
+        f"只差编号的两句被并成一行：{texts[-2:]}"
+    ov.deleteLater()
+
+
+check("panel: dual 回声判据有序化——近义两句不并、真回声仍吸收（v2.20.2）",
+      t_overlay_dual_paraphrase_kept_apart)
+
+
+def t_overlay_dual_closed_row_not_appended():
+    """v2.20.2：收口行不许再被"延续片段"拼接，否则同文双行 + 半句配错译。
+
+    真机复现（停/启压力测 + 离线复放）：`The meeting started` 已收口并配好译文，
+    随后到的小写开头片段被 join 进这一行 → 该行文本变长而译文停在半句；整句
+    终版再到达时 `_dual_row_for` 跳过收口行、另起一行 → 屏上两行原文完全相同，
+    其中一行配错译且**永远不会被修复**。"""
+    ov = _dual_panel()
+    ov.show_pending_result("The meeting started", "会议开始了。")
+    ov.show_pending("and then the chair spoke about the budget")
+    full = "The meeting started and then the chair spoke about the budget"
+    ov.show_pending_result(full, "然后主席谈了预算。")
+    for _ in range(4):
+        app.processEvents()
+    texts = [i["text"] for i in ov._dual_src_items]
+    assert len(set(texts)) == len(texts), f"两行原文一模一样：{texts}"
+    assert texts[0] == "The meeting started", \
+        f"收口行被拼接变长（译文仍停在半句）：{texts}"
+    assert ov._dual_tgt_items[0]["lab"].text() == "会议开始了。"
+    assert texts[-1] == full, texts
+    assert ov._dual_rows_closed[-1] is True, "终版没把自己的行收口"
+    ov.deleteLater()
+
+
+check("panel: dual 收口行不被延续片段拼接（v2.20.2 同文双行）",
+      t_overlay_dual_closed_row_not_appended)
+
+
+def t_overlay_dual_hidden_no_zombie_row():
+    """v2.20.2：面板隐藏期间不喂流式草稿，否则攒出一张永不收口的僵尸卡。
+
+    终版/收口那条路（`show_pending_result`）本来就带可见性闸门，只有
+    `update_partial` 没看 `isVisible()`——真机复现：隐藏期间喂 5 拍，得到
+    **1 行 99 字符、未收口、译文恒为 "…"**，重新显示后用户看到一坨糊在一起的
+    原文配一个省略号。"""
+    ov = _dual_panel()
+    base = "Economists say lower inflation readings this month helped lift sentiment"
+    for i in range(5):
+        ov.update_partial(base + " part%d" % i)
+    app.processEvents()
+    assert len(ov._dual_src_items) == 1, "前置：显示态应正常累积"
+    ov.hide()
+    for _ in range(4):
+        app.processEvents()
+    n = len(ov._dual_src_items)
+    for i in range(5):
+        ov.update_partial(base + " hidden%d" % i)
+    app.processEvents()
+    assert len(ov._dual_src_items) == n, "隐藏期间仍在写草稿"
+    assert all(not t.endswith("hidden4") for t in
+               [i["text"] for i in ov._dual_src_items])
+    ov.show()
+    for _ in range(4):
+        app.processEvents()
+    ov.update_partial("The national team secured qualification late")
+    assert len(ov._dual_src_items) == n + 1, "重新显示后草稿照常"
+    ov.deleteLater()
+
+
+check("panel: dual 隐藏期不喂草稿，不再攒出僵尸未收口行（v2.20.2）",
+      t_overlay_dual_hidden_no_zombie_row)
+
+
+def t_panel_clear_empties_both_layouts():
+    """v2.20.2：「清空」一次清掉**两种布局**的内容。
+
+    真机停/启压力测实测：列表布局下点清空 → 列表行清了、dual 两栏的逐句条目
+    原封不动（dual_src 仍为 3），切回上下双语就看见"清空之后还在"。
+    旧实现按当前布局分支，两边各走各的。"""
+    ov = _dual_panel()
+    ov.show_pending_result("First sentence about the grid deal", "第一句。")
+    ov.show_pending_result("Second sentence about the market", "第二句。")
+    assert len(ov._dual_src_items) == 2
+    ov.set_layout_mode("list")
+    app.processEvents()
+    ov.clear_caption()
+    for _ in range(4):
+        app.processEvents()
+    assert ov._rows == [], "列表行没清"
+    assert ov._dual_src_items == [] and ov._dual_tgt_items == [], \
+        "切到列表布局点清空，dual 两栏的累积条目没清"
+    assert ov._dual_rows_closed == []
+    ov.set_layout_mode("dual")
+    app.processEvents()
+    assert ov._dual_src is None
+    ov.deleteLater()
+
+
+check("panel: 清空一次清掉双语两栏与列表行（v2.20.2 真机实测）",
+      t_panel_clear_empties_both_layouts)
+
+
+def t_panel_run_button_state_at_startup():
+    """v2.20.2：面板把手启动那一刻就得说真话。
+
+    `__init__` 里初值是 True 且 `set_running(True)`，而 `_load_settings` 显示
+    面板时没人调 `update_overlay_status`——实测新建主窗：`running=False`、主窗
+    按钮写「开始翻译」，面板却显示绿色「⏸ 暂停」。这正是该把手要防的谎报。"""
+    w = MainWindow()
+    try:
+        want = "⏸ 暂停" if w.running else "▶ 开始"
+        assert w.overlay._run_btn.text() == want, (w.running, w.overlay._run_btn.text())
+        assert w.overlay.status_lbl.text(), "启动时状态行还是空的"
+    finally:
+        w.deleteLater()
+
+
+check("panel: 把手与状态行启动即与真态一致（v2.20.2）",
+      t_panel_run_button_state_at_startup)
+
+
+def t_first_run_wizard_no_deleted_control():
+    """v2.20.2：首次向导不许再教已删除的「启用字幕面板」勾选。
+
+    v2.20.1 删了那个勾选与 `overlay_enabled` 键（面板改常驻），向导两支文案
+    还在指它——新用户的第一动作就是去设置页找一个不存在的勾。设置页侧有锁
+    钉住"该行已删"，向导侧此前没人看。"""
+    from app.ui.first_run import FirstRunWizard
+    from PySide6.QtWidgets import QLabel
+    w = MainWindow()
+    try:
+        dlg = FirstRunWizard(w)
+        texts = " ".join(l.text() for l in dlg.findChildren(QLabel))
+        assert "启用字幕面板" not in texts, "向导仍在教一个已删除的控件"
+        assert "常驻" in texts or "打开软件就在" in texts or "显隐" in texts, \
+            "向导没给出面板的真实开关方式"
+        dlg.deleteLater()
+    finally:
+        w.deleteLater()
+
+
+check("panel: 首次向导文案与常驻实况一致、不教已删控件（v2.20.2）",
+      t_first_run_wizard_no_deleted_control)
 
 
 def t_overlay_list_draft_longer_than_final():

@@ -734,7 +734,15 @@ class MainWindow(QMainWindow):
         self.overlay.set_show_source(show_source)
         dlg = getattr(self, "_settings_dlg", None)
         if dlg is not None and hasattr(dlg, "show_source_check"):
-            dlg.show_source_check.setChecked(show_source)
+            # v2.20.2：回写设置页勾选必须**先屏蔽信号**。这个勾选框是
+            # toggled→_stage 的，裸 setChecked 会自己塞一条暂存、又被 _stage 的
+            # "改回原值"分支 pop 掉——用户尚未保存的「同时显示原文」改动被静默丢弃，
+            # 「保存并应用」按钮重新置灰（同族的 sync_target_lang / sync_overlay_keys
+            # 都屏蔽了信号，只有这条漏网）。
+            _w = dlg.show_source_check
+            _w.blockSignals(True)
+            _w.setChecked(bool(show_source))
+            _w.blockSignals(False)
 
     # ---------- 全局热键 ----------
 
@@ -930,6 +938,10 @@ class MainWindow(QMainWindow):
         # 必须先 show 再刷仪表盘——速览卡按 isVisible() 取文案（顺序反了会
         # 显示"已关闭"谎报常驻实况）
         self.overlay.show()
+        # v2.20.2：显示即回灌真态——面板把手/状态行在启动那一刻还没人同步过
+        # （只有 start/stop 与显隐热键会调），于是"没开始翻译"的面板写着
+        # 绿色「⏸ 暂停」。
+        self.update_overlay_status()
         self._refresh_quick_panel()
 
     def _save_settings(self):

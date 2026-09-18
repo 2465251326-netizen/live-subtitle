@@ -8,7 +8,8 @@
 - 单轮语义：全部词条编译为一个 alternation 正则，一次遍历替换完成，
   替换产物在当轮不再参与匹配（根除链式误替换）
 - 长键优先：分支按键长度降序排列，同位置长短键同时命中时长键胜出
-- 词边界：whole_word=True 且词条为纯拉丁时加 \\b 边界（英文整词替换）；
+- 词边界：whole_word=True 且词条为纯拉丁时加"相邻不得是拉丁字母/数字"的
+  环视（v2.20.2；`\\b` 的 `\\w` 含 CJK，会让中英混排词条整批失效）；
   CJK 词条始终按子串匹配，中文纠错习惯不受影响
 
 线程安全：_COMPILED 的读写走 GIL 原子操作，竞态最坏后果是重复编译一次，
@@ -40,7 +41,11 @@ def _compile(mapping, whole_word):
     for wrong, _right in items:
         body = re.escape(wrong)
         if whole_word and is_latin_key(wrong):
-            body = r"\b" + body + r"\b"
+            # v2.20.2：整词边界从 `\b` 换成"相邻不得是拉丁字母/数字"。Python 的
+            # `\w` 含 CJK，于是 `\bUber\b` 在 `我们使用Uber应用` 里**两侧都不成立**
+            # ——全词模式下中英混排的词条（中文语境里最常见的那批）静默失效，
+            # 用户视角是"词典时灵时不灵"（实测关掉全词才生效）。
+            body = r"(?<![A-Za-z0-9])" + body + r"(?![A-Za-z0-9])"
         parts.append(body)
     pattern = re.compile("|".join(parts)) if parts else None
     return pattern, dict(items)

@@ -5,6 +5,7 @@
 """
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -410,10 +411,21 @@ class PackTranslator:
         # v2.6.0（R4）：beam 每次调用传入（质量档热切换无需重建模型实例）；
         # 默认 2 保持 v2.5.3 速度语义
         out = self._decode_chunk(tokens, beam_size)
-        # v2.20.1：见模块级乱码守卫注释——高 beam 偶发退化假设，退回安全档重译
-        if _has_junk(out) and beam_size != self.SAFE_BEAM:
-            app_log.log("argos.junk_retried", beam=beam_size, text=text[:40])
-            out = self._decode_chunk(tokens, self.SAFE_BEAM)
+        # v2.20.1：见模块级乱码守卫注释——高 beam 偶发退化假设，退回安全档重译。
+        # v2.20.2：退档改成**阶梯**（用户档 → 2 → 1）。旧实现 `beam_size != 2`
+        # 让守卫在「快速」档下完全失效，而实测 beam 2 同样会吐乱码（int8 扫描里
+        # "Good evening, welcome to the 9 o'clock World Report." 在 beam 2 就是
+        # 一串 U+FFFD）——正好把一半用户挡在保护之外。beam 1（贪心）在实测里
+        # 与 beam 2 一样干净，作为最后一级；三级都脏才认输。
+        for try_beam in (self.SAFE_BEAM, 1):
+            if not _has_junk(out):
+                break
+            if try_beam == beam_size:
+                continue
+            # 只记长度不记正文（v2.20.2：日志承诺不落字幕原文）
+            app_log.log("argos.junk_retried", beam=beam_size, retry=try_beam,
+                        chars=len(text))
+            out = self._decode_chunk(tokens, try_beam)
         if out.count(",") > max(3, len(out) * 0.3) and len(out) > len(text):
             raise RuntimeError("离线翻译输出异常，请重试或切换在线引擎")
         return out
@@ -428,8 +440,14 @@ class PackTranslator:
 def _split_long(text, limit=400):
     if len(text) <= limit:
         return [text]
+    # v2.20.2：零宽切分，**分隔符留在原段**（与 MyMemory._split_sentences 同一
+    # 条规则）。旧写法 `replace(". ", ".|") + split("|")` 把句号后的空格吃掉了，
+    # 而 `translate()` 用 "".join 拼回——实测 593 字符英文长文回拼少 17 个空格，
+    # "…today. And then…" 变成 "…today.And then…"，整句被焊死后才送进模型。
     parts, buf = [], ""
-    for seg in text.replace("。", "。|").replace(". ", ".|").split("|"):
+    for seg in re.split(r"(?<=[。！？；])|(?<=[.!?])(?=\s)", text):
+        if not seg:
+            continue
         if len(buf) + len(seg) > limit and buf:
             parts.append(buf)
             buf = seg

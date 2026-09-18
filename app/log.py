@@ -12,11 +12,17 @@
 QMessageBox 级 GUI 线程安全：log() 只是普通写文件，可在任意线程调用。
 """
 import logging
+import re
 import threading
 import time
 
 _handler_lock = threading.Lock()
 _handler = None
+
+# v2.20.2 脱敏规则（见 log() 的 docstring）：待译文本会随在线接口的请求 URL 混进
+# 异常消息，而日志是被要求"贴到公开 Issues"的。
+_RE_Q = re.compile(r"([?&]q=)[^&\s]+")
+_RE_URL = re.compile(r"(with url:\s*)\S+")
 
 
 class _Utf8RotatingHandler(logging.Handler):
@@ -118,12 +124,30 @@ def rebind(path):
 
 
 def log(event, **fields):
-    """便捷入口：结构化事件一行流（值统一 str()，防 None/Path 拼接报错）。"""
+    """便捷入口：结构化事件一行流（值统一 str()，防 None/Path 拼接报错）。
+
+    v2.20.2：落盘前过一道脱敏。本模块 docstring 承诺"不记录字幕正文"，而实测
+    会漏：在线翻译请求失败时 `app_log.exception` 记的是异常文本，urllib3 那句
+    `… with url: /translate_a/single?...&q=<整句字幕> …` 把当句字幕原样带了进来
+    （README 又让用户把 app.log 贴到公开 Issues）。字幕里可能有会议内容、私聊
+    朗读、病历等，必须在这里截掉。"""
     if fields:
         extra = " | " + " ".join(f"{k}={v}" for k, v in fields.items())
     else:
         extra = ""
-    get().info(f"{event}{extra}")
+    get().info(_redact(f"{event}{extra}"))
+
+
+_REDACT = (
+    (_RE_Q, r"\1***"),          # 查询串里的待译文本
+    (_RE_URL, r"\1***"),        # urllib3 "with url: …" 整条
+)
+
+
+def _redact(msg):
+    for pat, rep in _REDACT:
+        msg = pat.sub(rep, msg)
+    return msg
 
 
 def exception(event, exc, **fields):

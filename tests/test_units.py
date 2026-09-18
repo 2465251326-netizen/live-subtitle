@@ -823,8 +823,13 @@ def test_capture_pop_tail_seg():
 
 
 def test_cache_load_non_dict_treated_empty():
-    """v2.6.3（P1-3）：缓存文件为合法 JSON 但顶层非 dict 时按空处理，
-    get/put 照常工作——此前 list 赋给 _data 后每条字幕都 AttributeError。"""
+    """v2.6.3（P1-3）立的锁，v2.20.2 换代：非 dict 顶层＝**读失败**，不是"空缓存"。
+
+    旧断言「落盘文件应恢复为 dict」把数据丢失路径钉成了契约——内存里 put/get
+    正常，但一次攒批落盘就把整份历史缓存 `os.replace` 覆写成近空 dict，且不留
+    原件、不记日志（v2.19.2 的"读失败禁写盘"闸门因 `_load_failed` 没置位而绕过）。
+    现在保留"不抛 AttributeError、本次会话照常翻译"这半条契约，持久化侧改钉
+    "脏原件原样保留"。"""
     import json
     import tempfile
     import pathlib
@@ -840,8 +845,10 @@ def test_cache_load_non_dict_treated_empty():
         c.put("k", ("v", "en"))
         assert c.get("k") == ("v", "en"), "corrupt 后 put/get 应恢复正常"
         c.save()
-        data = json.loads((tmp / "cache.json").read_text(encoding="utf-8"))
-        assert isinstance(data, dict), "落盘文件应恢复为 dict"
+        raw = (tmp / "cache.json").read_text(encoding="utf-8")
+        assert json.loads(raw) == ["not", "a", "dict"], \
+            f"脏原件被覆写（v2.19.2 数据丢失路径复发）：{raw[:60]}"
+        assert (tmp / "cache.json.bad").exists(), "原件未另存留底"
     finally:
         tr.TranslationCache._path = orig_path_fn
 
@@ -1507,12 +1514,25 @@ def test_submit_spec_never_evicts_final():
     assert tt2.submit("piece A", "en", spec=True) == []
     assert tt2.queue_in.get_nowait() == ("piece A", "en", True)
     # dropped 恒为二元组：保住主窗两处 `for d_text, _d_lang in (tr.submit(...) or [])` 解包契约
+    # v2.20.2 换代：被挤掉的**推测中间版不再上报**（旧实现把 spec 也当"终版丢了"
+    # 报出去，主窗据此把卡片置成红字"翻译队列繁忙"，而真正的终版还在队列里）。
     tt3 = TranslateThread("argos", "zh-CN")
-    for i in range(7):
+    for i in range(2):
+        tt3.submit(f"f{i}", "en")
+    for i in range(3):
         tt3.submit(f"s{i}", "en", spec=True)
     assert tt3.queue_in.qsize() == 5
     d = tt3.submit("overflow", "en")
-    assert d and all(len(x) == 2 for x in d), f"dropped 应为二元组，实得 {d}"
+    assert [t for t, _l in d] == ["f0"], d       # 队头是终版 → 照旧上报
+    assert all(len(x) == 2 for x in d), f"dropped 应为二元组，实得 {d}"
+    assert [q[0] for q in tt3.queue_in.queue] == \
+        ["f1", "s0", "s1", "s2", "overflow"], "被挤掉的只能是队头"
+    # 队头是中间版时：它被挤掉但**不上报**，队列腾出位置后照常入队
+    tt4 = TranslateThread("argos", "zh-CN")
+    for i in range(5):
+        tt4.submit(f"only-spec-{i}", "en", spec=True)
+    assert tt4.submit("a final", "en") == [], "全是中间版时不该上报任何丢句"
+    assert [q[0] for q in tt4.queue_in.queue][-1] == "a final"
 
 
 def test_coerce_float_segment_cap():
@@ -2055,7 +2075,8 @@ def test_argos_junk_hypothesis_retried():
         def translate_batch(self, batch, **kw):
             beam = kw.get("beam_size")
             self.calls.append(beam)
-            return [_Res([[self.table["junk" if beam != 2 else "clean"]]])]
+            key = beam if beam in self.table else "junk"
+            return [_Res([[self.table[key]]])]
 
     class _FakeSp:
         def encode(self, text, out_type=None):
@@ -2067,17 +2088,203 @@ def test_argos_junk_hypothesis_retried():
         pt.translator = _FakeCT2(table)
         return pt
 
-    pt = make({"junk": "и\u3043\ue01d笵", "clean": "我不知道如何"})
+    JUNK = "и\u3043\ue01d笵"
+    pt = make({"junk": JUNK, 2: "我不知道如何"})
     assert pt._translate_chunk("I don't know how", beam_size=5) == "我不知道如何"
     assert pt.translator.calls == [5, 2], pt.translator.calls
     # 正常输出不许白跑第二遍
-    pt2 = make({"junk": "我不知道", "clean": "不对"})
+    pt2 = make({5: "我不知道", "junk": "不对"})
     assert pt2._translate_chunk("I don't know", beam_size=5) == "我不知道"
     assert pt2.translator.calls == [5]
-    # 已是安全档：无可退，原样返回（不误杀、不死循环）
-    pt3 = make({"junk": "\ufffd\ufffd", "clean": "\ufffd\ufffd"})
-    assert pt3._translate_chunk("a b", beam_size=2) == "\ufffd\ufffd"
-    assert pt3.translator.calls == [2]
+    # v2.20.2：安全档 beam 2 自己吐乱码时也必须有兜底——旧守卫写着
+    # `beam_size != SAFE_BEAM`，于是「快速」档用户完全没保护，而实测 int8 下
+    # beam 2 同样会吐一串 U+FFFD。阶梯：用户档 → 2 → 1（贪心），三级都脏才认输。
+    pt3 = make({"junk": "\ufffd\ufffd", 1: "正常"})
+    assert pt3._translate_chunk("a b", beam_size=2) == "正常"
+    assert pt3.translator.calls == [2, 1], pt3.translator.calls
+    # 阶梯走完仍脏：原样返回（不误杀、不死循环，最多两次额外解码）
+    pt4 = make({"junk": "\ufffd\ufffd"})
+    assert pt4._translate_chunk("a b", beam_size=5) == "\ufffd\ufffd"
+    assert pt4.translator.calls == [5, 2, 1], pt4.translator.calls
+
+
+def test_translate_cache_never_serves_junk():
+    """v2.20.2：乱码守卫必须同时长在**缓存读侧与写侧**。
+
+    v2.20.1 的守卫只在生成侧（`PackTranslator._translate_chunk`），而脏译文早在
+    升级前就进了 `trans_cache.json`（键格式没变、无版本位，LRU 800 格不会自己
+    洗掉）——命中即原样端出来，等于那次修复对老用户完全无效。"""
+    from app.translate import translator as T
+
+    th = T.TranslateThread.__new__(T.TranslateThread)
+    th.target = "zh-CN"
+    th._active_engine = "argos"
+    junk = "и\u3043\ue01d笵"
+    key = th._cache_key("en", "cache junk probe")
+    key2 = th._cache_key("en", "write side probe")
+    calls = []
+
+    class _Eng:
+        @staticmethod
+        def translate(text, source, target):
+            calls.append(text)
+            return ("缓存乱码探针正常译文", "en")
+
+    class _Bad:
+        @staticmethod
+        def translate(text, source, target):
+            return (junk, "en")
+
+    saved = T.ENGINES["argos"]
+    try:
+        T.ENGINES["argos"] = _Eng
+        T._cache.put(key, [junk, "en"])
+        out, _lang = th._do_translate("cache junk probe", "en")
+        assert out == "缓存乱码探针正常译文", f"脏缓存被原样端出：{out!r}"
+        assert len(calls) == 1, "命中脏缓存必须重译一次"
+        assert T._cache.get(key)[0] == out, "重译结果要覆写脏条目"
+        # 写侧：引擎给的仍是乱码时不许进缓存（否则一次脏译终身脏）
+        T.ENGINES["argos"] = _Bad
+        th._do_translate("write side probe", "en")
+        assert T._cache.get(key2) is None, "乱码结果被写进了持久缓存"
+    finally:
+        T.ENGINES["argos"] = saved
+        for k in (key, key2):
+            T._cache._data.pop(k, None)
+
+
+def test_fixmap_whole_word_matches_inside_cjk():
+    """v2.20.2：全词模式在**中英混排**里必须仍然命中。
+
+    `\\b` 的 `\\w` 含 CJK，`\\bUber\\b` 在 `我们使用Uber应用` 两侧都不成立——
+    开着「整词匹配」（默认开）时，用户词典在最常见中文语境里整批静默失效。"""
+    from app.fixmap import apply_dict
+
+    got = apply_dict("我们使用Uber应用，AI很好，但UberEATS不算",
+                     {"Uber": "优步", "AI": "人工智能"}, True)
+    assert "优步应用" in got and "人工智能很好" in got, got
+    assert "UberEATS" in got, f"整词判据过松，把 UberEATS 也拆了：{got}"
+    assert apply_dict("the strikes were strikes", {"strikes": "罢工"}, True) == \
+        "the 罢工 were 罢工", "纯英文句里的整词替换语义不得退化"
+    assert apply_dict("the strikeship sank", {"strikes": "罢工"}, True) == \
+        "the strikeship sank", "整词判据过松：strikeship 被拆了"
+
+
+def test_translate_submit_drops_only_finals():
+    """v2.20.2：队列满时**推测中间版被挤掉**不许上报成"终版丢了"。
+
+    单片段的 spec 文本与终版文本相同，调用方一收到 dropped 就把那张卡置失败
+    （"翻译队列繁忙"），而真正的终版还在队列里——红字 + 终版到达时再建一张重复卡。"""
+    from app.translate.translator import TranslateThread
+
+    th = TranslateThread("argos", "zh-CN")
+    for i in range(5):
+        th.queue_in.put(("spec %d" % i, "en", True))
+    dropped = th.submit("the real final", "en")
+    assert all(not t.startswith("spec ") for t, _l in dropped), dropped
+    assert list(th.queue_in.queue)[-1][0] == "the real final", "终版必须入队"
+
+
+def test_cache_non_dict_file_is_load_failure():
+    """v2.20.2：合法 JSON 但顶层不是对象＝**读失败**，必须禁写并留原件。
+
+    v2.6.3 只把 `_data` 置空、`_load_failed` 留在 False，于是 v2.19.2 那道
+    "未成功加载不许写盘"的闸门对这条分支无效：一次攒批落盘就把整份缓存覆写成
+    近空 dict（实测 60 条 → 1 条），不留 .json.bad、不记日志。"""
+    import shutil
+    import tempfile as tf
+    from pathlib import Path
+    from app.translate.translator import TranslationCache
+
+    d = Path(tf.mkdtemp())
+    f = d / "trans_cache.json"
+    c = TranslationCache()
+    c._path = lambda: f
+    try:
+        f.write_text("[]", encoding="utf-8")
+        c._load()
+        assert c._load_failed is True, "非 dict 顶层没被当读失败"
+        c.put("zh-CN:en:x", ["y", "en"])
+        c.save()
+        assert f.read_text(encoding="utf-8").strip() == "[]", "脏文件被覆写"
+        assert (d / "trans_cache.json.bad").exists(), "原件未留存"
+        # 清空 = 用户主动放弃旧文件，此后必须恢复可写（否则整场新译文静默不落盘）
+        c.clear()
+        assert c._load_failed is False, "clear() 后仍禁写"
+        c.put("zh-CN:en:z", ["w", "en"])
+        c.save()
+        assert "zh-CN:en:z" in f.read_text(encoding="utf-8"), "clear 后写不进去"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_argos_split_long_keeps_separators():
+    """v2.20.2：超长文本切块不得吃掉了英文句号后的空格。
+
+    旧写法 `replace(". ", ".|") + split("|")` 把分隔空格当分隔符吃掉，而
+    `translate()` 用 "".join 拼回——实测 593 字符英文长文回拼少 17 个空格，
+    "today. And then" 被焊成 "today.And then" 才送进模型。"""
+    from app.translate.offline_pack import _split_long
+
+    text = ("Sentence number one about the grid deal. And then a second one that is "
+            "quite long. ") * 14
+    assert len(text) > 400, len(text)
+    assert "".join(_split_long(text)) == text, "切分丢字/改字"
+
+
+def test_log_redacts_subtitle_text():
+    """v2.20.2：日志承诺"不记录字幕正文"，异常路径必须真做到。
+
+    在线翻译失败时 urllib3 的异常文本形如 `… with url: /translate_a/single?…&q=<
+    整句字幕> …`，把字幕带进 app.log；README 又让用户把 app.log 贴到公开 Issues。"""
+    from app.log import _redact
+
+    s = ("HTTPSConnectionPool(host='translate.googleapis.com', port=443): "
+         "Max retries exceeded with url: /translate_a/single?client=x&sl=auto"
+         "&tl=zh-CN&dt=t&q=%E7%A7%98%E5%AF%86 "
+         "(Caused by NewConnectionError)")
+    out = _redact(s)
+    assert "%E7%A7%98" not in out, out
+    assert "translate.failed" == _redact("translate.failed")
+
+
+def test_segmenter_pending_cap_and_expiry():
+    """v2.20.2：碎片队列的两道闸各自被实测打穿过，这里一起钉住。
+
+    ① 上限截断：`_flush` 短路径转存的是一**整块**拼接后的 ndarray，旧截断只能整块
+       跳过 → `keep_chunks=[]`，实测 `_stash_pending([2.4s])` 保留 0.000s——超上限
+       时不是裁到 2s 而是全丢，稀疏语音场景 pending 在 0~1.8s 之间循环、一段都
+       出不来。现在切在块内，且语音时长按占比折算而不是按缓冲时长超额扣减。
+    ② 陈旧作废：旧实现任何 voiced 块都把 pending_idle 归零，周期性咔哒一直续命
+       → 100 秒前的碎片仍被粘进下一段。现在只有"真的在说话"才归零。"""
+    from app.audio.capture import Segmenter, TARGET_SR, PENDING_MAX_S
+
+    def ch(sec, amp=0.2):
+        return np.ones(int(TARGET_SR * sec), dtype=np.float32) * amp
+
+    # ① 单块超限：裁到上限，且语音时长不被超额扣减
+    s = Segmenter(low_latency=False, turbo=False)
+    s._stash_pending([ch(2.4)], 0.6)
+    kept = sum(c.shape[0] for c in s.pending) / TARGET_SR
+    assert abs(kept - PENDING_MAX_S) < 0.05, f"超上限没裁到 2s，保留 {kept}s"
+    assert s.pending_speech > 0.0, "语音时长被按缓冲时长超额扣光"
+    # ② 瞬态续命：碎片必须在纯静音超时后作废，即使期间不断有咔哒
+    s2 = Segmenter(low_latency=False, turbo=False)
+    s2.feed(ch(0.4))
+    s2.feed(ch(1.0, 0.0))
+    assert s2.pending, "前置：短碎片应已转存"
+    for _ in range(10):
+        s2.feed(ch(4.97, 0.0))
+        s2.feed(ch(0.03, 0.6))          # 周期性瞬态（旧实现据此无限续命）
+    assert s2.pending_len <= 0.2, \
+        f"陈旧碎片没作废：pending_len={s2.pending_len:.2f}s"
+    # ③ 真的续上语音时计时归零（别把刚说的句子当陈货扔了）
+    s3 = Segmenter(low_latency=False, turbo=False)
+    s3.feed(ch(0.4))
+    s3.feed(ch(1.0, 0.0))
+    for _ in range(6):
+        s3.feed(ch(0.5, 0.6))
+    assert s3.pending_idle == 0.0, s3.pending_idle
 
 
 if __name__ == "__main__":
