@@ -361,7 +361,32 @@ def _detokenize(pieces):
     return "".join(out)
 
 
+# v2.20.1：离线乱码守卫——beam>2 时 CTranslate2 偶发选出"吐码位"的对齐假设。
+# 真机英语新闻实测（beam 5、离线 argos en→zh、48 句）：2 句上屏为不可读串
+# （"I don't know how" → "иぃ\ue01d笵"：西里尔+假名+私用区）。换 float32 复现出
+# 另一串乱码，故与量化无关，是高 beam 搜索本身的退化假设。
+# 判据只取"任何语言的正文里都不该出现的码位"（控制符 / 私用区 / 代理区 /
+# 替换符 / 非字符），不判语种——避免误伤 zh→en 等拉丁方向的合法译文。
+_JUNK_RANGES = (
+    (0x00, 0x08), (0x0B, 0x0C), (0x0E, 0x1F), (0x7F, 0x9F),
+    (0xE000, 0xF8FF), (0xFFF9, 0xFFFD), (0xFFFE, 0xFFFF),
+    (0x1FFFE, 0x1FFFF), (0xD800, 0xDFFF),
+)
+
+
+def _has_junk(text):
+    for ch in text:
+        code = ord(ch)
+        for lo, hi in _JUNK_RANGES:
+            if lo <= code <= hi:
+                return True
+    return False
+
+
 class PackTranslator:
+    # beam 2 在实测 48 句里零乱码，且比 beam 5 快 ~1.4 倍——乱码时退回它重译
+    SAFE_BEAM = 2
+
     def __init__(self, pack_dir: Path):
         import ctranslate2
         import sentencepiece as spm
@@ -384,13 +409,20 @@ class PackTranslator:
             return text
         # v2.6.0（R4）：beam 每次调用传入（质量档热切换无需重建模型实例）；
         # 默认 2 保持 v2.5.3 速度语义
-        res = self.translator.translate_batch(
-            [tokens], max_batch_size=8, beam_size=beam_size
-        )
-        out = _detokenize(res[0].hypotheses[0])
+        out = self._decode_chunk(tokens, beam_size)
+        # v2.20.1：见模块级乱码守卫注释——高 beam 偶发退化假设，退回安全档重译
+        if _has_junk(out) and beam_size != self.SAFE_BEAM:
+            app_log.log("argos.junk_retried", beam=beam_size, text=text[:40])
+            out = self._decode_chunk(tokens, self.SAFE_BEAM)
         if out.count(",") > max(3, len(out) * 0.3) and len(out) > len(text):
             raise RuntimeError("离线翻译输出异常，请重试或切换在线引擎")
         return out
+
+    def _decode_chunk(self, tokens, beam_size):
+        res = self.translator.translate_batch(
+            [tokens], max_batch_size=8, beam_size=beam_size
+        )
+        return _detokenize(res[0].hypotheses[0])
 
 
 def _split_long(text, limit=400):

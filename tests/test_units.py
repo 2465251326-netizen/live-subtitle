@@ -1975,6 +1975,111 @@ def test_merge_stream_drops_tail_reshuffle_repeat():
         "we say goodbye now and then goodbye now"
 
 
+def test_segmenter_keeps_short_fragments():
+    """v2.20.1：未达 MIN_SPEECH_S 的碎片必须**并入下一段**，不许静默丢弃。
+
+    真机实测（90.5s 合成英语新闻，低延迟 + cap=4s）：旧实现 11 次整段丢弃、
+    扔掉 9.4s 语音（cap=6s 也扔 7 次 / 6.6s），用户看到的段首/段尾掉词
+    （"Analysts"、"In other news,"、"three continents"、"more than eight hours"）
+    全部出在这一条判据上。修完产出音频 65.4s → 74.9s。
+    同时钉住两道防失控闸：累计上限 PENDING_MAX_S、纯静音超时作废 PENDING_MAX_IDLE_S
+    （否则会把几十秒前的音频粘进新段）。"""
+    from app.audio.capture import (Segmenter, TARGET_SR, MIN_SPEECH_S,
+                                   PENDING_MAX_S, PENDING_MAX_IDLE_S)
+
+    def ch(sec, amp=0.2):
+        return np.ones(int(TARGET_SR * sec), dtype=np.float32) * amp
+
+    # ① 短碎片 + 长静音 + 正常段：两段语音都必须完整产出
+    s = Segmenter(low_latency=True, turbo=True, cap_s=4.0)
+    out = []
+    for c in (ch(0.35), ch(1.0, 0.0), ch(1.5), ch(1.0, 0.0)):
+        r = s.feed(c)
+        if r is not None:
+            out.append(r)
+    r = s.flush()
+    if r is not None:
+        out.append(r)
+    got = sum(len(o) / TARGET_SR for o in out)
+    assert got >= 0.35 + 1.5, f"短碎片被丢弃：产出 {got:.2f}s"
+    assert any(len(o) / TARGET_SR >= 1.8 for o in out), \
+        "碎片应作为下一段的**开头**被并入，而不是单独成段"
+    # ② 累计上限：碎片不许无限增长
+    s2 = Segmenter(low_latency=True, turbo=True, cap_s=4.0)
+    for _ in range(40):
+        s2.feed(ch(0.3))
+        s2.feed(ch(1.2, 0.0))
+        assert s2.pending_len <= PENDING_MAX_S + 0.1, s2.pending_len
+    # ③ 超时作废：长时间纯静音后的陈旧碎片不许再粘进下一段
+    s3 = Segmenter(low_latency=True, turbo=True, cap_s=4.0)
+    s3.feed(ch(0.35))
+    s3.feed(ch(1.0, 0.0))
+    assert s3.pending, "前置：短碎片应已转入 pending"
+    s3.feed(ch(PENDING_MAX_IDLE_S + 1.0, 0.0))
+    assert not s3.pending, "陈旧碎片未作废"
+    # ④ 近静音（peak 过低）的碎片仍然丢掉，不许污染下一段
+    s4 = Segmenter(low_latency=True, turbo=True, cap_s=4.0)
+    s4.feed(ch(0.35, 0.0001))
+    s4.feed(ch(1.0, 0.0))
+    assert not s4.pending, f"peak<0.002 的静音碎片不该转存：{s4.pending_len}"
+
+
+def test_argos_junk_hypothesis_retried():
+    """v2.20.1：离线高 beam 吐出不可读码位时必须退回 beam 2 重译，不许上屏。
+
+    真机英语新闻实测（离线 argos en→zh，beam 5，48 句）：2 句上屏为乱码串，
+    典型 "I don't know how" → "иぃ\\ue01d笵"（西里尔 + 假名 + 私用区）。
+    同模型 float32 复现出**另一串**乱码 → 与量化无关，是 beam 搜索本身的退化
+    假设；beam 2 同批 48 句零乱码。守卫只认"任何语言正文都不该出现的码位"，
+    不判语种，免伤 zh→en 等拉丁方向的合法译文。"""
+    from app.translate.offline_pack import PackTranslator, _has_junk
+
+    # 判据边界：乱码 / 替换符 / 控制符命中，正常中英与"师便打"这类合法生僻字不命中
+    assert _has_junk("и\u3043\ue01d笵")
+    assert _has_junk("好\ufffd")
+    assert _has_junk("a\u0001b")
+    assert not _has_junk("我不知道如何做。")
+    assert not _has_junk("DW News.")
+    assert not _has_junk("师便打.")
+
+    class _Res(list):
+        @property
+        def hypotheses(self):
+            return self[0]
+
+    class _FakeCT2:
+        def __init__(self, table):
+            self.table = table
+            self.calls = []
+
+        def translate_batch(self, batch, **kw):
+            beam = kw.get("beam_size")
+            self.calls.append(beam)
+            return [_Res([[self.table["junk" if beam != 2 else "clean"]]])]
+
+    class _FakeSp:
+        def encode(self, text, out_type=None):
+            return ["x"] * max(1, len(text.split()))
+
+    def make(table):
+        pt = PackTranslator.__new__(PackTranslator)   # 不加载真模型
+        pt.sp = _FakeSp()
+        pt.translator = _FakeCT2(table)
+        return pt
+
+    pt = make({"junk": "и\u3043\ue01d笵", "clean": "我不知道如何"})
+    assert pt._translate_chunk("I don't know how", beam_size=5) == "我不知道如何"
+    assert pt.translator.calls == [5, 2], pt.translator.calls
+    # 正常输出不许白跑第二遍
+    pt2 = make({"junk": "我不知道", "clean": "不对"})
+    assert pt2._translate_chunk("I don't know", beam_size=5) == "我不知道"
+    assert pt2.translator.calls == [5]
+    # 已是安全档：无可退，原样返回（不误杀、不死循环）
+    pt3 = make({"junk": "\ufffd\ufffd", "clean": "\ufffd\ufffd"})
+    assert pt3._translate_chunk("a b", beam_size=2) == "\ufffd\ufffd"
+    assert pt3.translator.calls == [2]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

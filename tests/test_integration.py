@@ -1761,6 +1761,81 @@ check("panel: dual 收口后同句草稿只整体刷新不复读（幕墙兜底�
       t_overlay_dual_no_repeat_after_final)
 
 
+def t_overlay_dual_preview_echo_no_dup_row():
+    """v2.20.1：预览缓冲重启把已收口那句**重播**一遍时，不得并排出第二行。
+
+    真机 91s 英语新闻实测（离线 Argos + GPU turbo + 攒句开）：原文栏里
+    "Economists say … across the board. on the sports desk" 之后紧跟一行
+    "inflation readings … on the sports desk"——同一句的两份文本并排，后一行
+    还是半句。链路：末句收口 → 主窗预览缓冲重启 → 下一拍草稿从句子中段重新播，
+    而 `_dual_same_sentence` 只认前缀与前 3 词，于是判成新句另起一行。
+    契约两条：回声拍不开新行；也不许把收口行打回更短的半句。"""
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 100)
+    ov.set_show_source(True)
+    ov.set_layout_mode("dual")
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    S1 = ("Economists say lower inflation readings this month helped lift "
+          "sentiment across the board. On the sports desk")
+    ov.update_partial(S1[:30])
+    ov.update_partial(S1)
+    ov.show_pending_result(S1, "经济学家说本月通胀数据回落提振了市场情绪。")
+    for _ in range(4):
+        app.processEvents()
+    rows = [i["text"] for i in ov._dual_src_items]
+    assert len(rows) == 1, f"前置：应只有一行，实得 {rows}"
+    echo = ("inflation readings this month helped lift sentiment across the "
+            "board on the sport on the sports desk")
+    ov.update_partial(echo)
+    app.processEvents()
+    rows = [i["text"] for i in ov._dual_src_items]
+    assert len(rows) == 1, f"回声拍另起了一行：{rows}"
+    assert rows[0] == S1, f"收口行被更短的回声打回半句：{rows[0]!r}"
+    # 真正的新句照旧开新行（判据收紧不得把新内容也吞掉）
+    ov.update_partial("The national team secured qualification with a late goal")
+    app.processEvents()
+    assert len(ov._dual_src_items) == 2, [i["text"] for i in ov._dual_src_items]
+    ov.deleteLater()
+
+
+check("panel: dual 预览重启的回声拍不再并排出重复行（v2.20.1 实测）",
+      t_overlay_dual_preview_echo_no_dup_row)
+
+
+def t_panel_run_toggle_button():
+    """v2.20.1（用户点名）：面板工具条上要有「开始 / 停止翻译」的开关把手。
+
+    与全局热键 Ctrl+Alt+S、托盘「开始 / 停止翻译」是同一个动作（主窗
+    `toggle_running`），面板只转发不自主翻转——态一律由
+    `update_overlay_status` 按 `self.running` 回灌，否则热键停了面板还显运行中。"""
+    w = MainWindow()
+    try:
+        ov = w.overlay
+        assert ov._run_btn.text() in ("⏸ 暂停", "▶ 开始"), ov._run_btn.text()
+        assert ov._on_toggle_running == w.toggle_running, "把手必须接到主窗开关"
+        calls = []
+        orig = ov._on_toggle_running
+        ov._on_toggle_running = lambda: calls.append(1)
+        ov._run_btn.click()
+        app.processEvents()
+        assert calls == [1], f"点把手应转发主窗一次：{calls}"
+        ov._on_toggle_running = orig
+        # 态由主窗回灌：running=False → 文案转"开始"，True → "暂停"
+        for flag, want in ((False, "▶ 开始"), (True, "⏸ 暂停")):
+            w.running = flag
+            w.update_overlay_status()
+            assert ov._run_btn.text() == want, (flag, ov._run_btn.text())
+        assert ov._run_btn.toolTip().find("全局热键") >= 0
+    finally:
+        w.deleteLater()
+
+
+check("panel: 工具条「开始/停止翻译」把手接线与回灌（v2.20.1）",
+      t_panel_run_toggle_button)
+
+
 def t_overlay_list_draft_longer_than_final():
     """v2.19.3 立、v2.20.0 收归列表：草稿比终版**更长**时，终版必须就地收口那一行。
 

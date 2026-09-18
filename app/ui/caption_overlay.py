@@ -113,7 +113,7 @@ class CaptionOverlay(QWidget):
                  on_font_size=None, on_pin_changed=None, on_collapsed=None,
                  on_first_show=None, on_opacity=None, on_height_changed=None,
                  on_layout_changed=None, on_dual_split=None,
-                 on_grouping_toggled=None):
+                 on_grouping_toggled=None, on_toggle_running=None):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
@@ -160,6 +160,10 @@ class CaptionOverlay(QWidget):
         self._on_layout_changed = on_layout_changed
         self._on_dual_split = on_dual_split
         self._on_grouping_toggled = on_grouping_toggled   # v2.20.0：⋯ 菜单攒句开关落盘
+        # v2.20.1：面板上的「开始 / 停止翻译」把手（与全局热键 Ctrl+Alt+S、
+        # 托盘「开始 / 停止翻译」同一个动作，回调由主窗注入 = toggle_running）
+        self._on_toggle_running = on_toggle_running
+        self._running = True
         # v2.20.0：翻译侧「攒句合并」在面板的镜像状态（主窗按 translate_grouping
         # 下发；菜单勾选与设置页勾选同源，set_grouping_enabled 是唯一写入口）
         self._grouping = True
@@ -193,6 +197,12 @@ class CaptionOverlay(QWidget):
         bl = QHBoxLayout(self._bar)
         bl.setContentsMargins(4, 0, 2, 0)
         bl.setSpacing(2)
+
+        self._run_btn = QToolButton()
+        self._run_btn.setObjectName("PanelRun")
+        self._run_btn.clicked.connect(self._toggle_running)
+        bl.addWidget(self._run_btn)
+        self.set_running(True)
 
         self._lang_btn = QToolButton()
         self._lang_btn.setPopupMode(QToolButton.InstantPopup)
@@ -647,7 +657,10 @@ class CaptionOverlay(QWidget):
             # 同一句（还在生长，或终版之后 whisper 又转了一遍的尾重复）：
             # 只刷新**最新一行**的原文，该行译文状态一律不动
             # （v2.19.1 的"不闪白""不重置终版"两条契约）
-            self._dual_set_src(t)
+            # v2.20.1：收口行不许被更短的回声拍打回半句（与 _dual_show_pending
+            # 同一条判据）——累积形态下这一行会永久停在残缺文本上
+            if len(t) > len(cur) or self._dual_cur_open:
+                self._dual_set_src(t)
         else:
             # 不是同一句 → 新句：另起一行（上一句留在栏里，v2.20.1 累积契约）。
             # 旧行为是整块覆盖唯一那一对标签，于是"新句一到、上一句就消失"
@@ -1015,7 +1028,15 @@ class CaptionOverlay(QWidget):
         tb = b.lower().split()
         if len(ta) < 3 or len(tb) < 3:
             return False
-        return all(x == y for x, y in zip(ta[:3], tb[:3]))
+        if all(x == y for x, y in zip(ta[:3], tb[:3])):
+            return True
+        # v2.20.1：回声判据——b 的词 ≥85% 已在 a 里出现过，算同一句。真机 91s
+        # 英语新闻实测：末句收口后预览缓冲重启，下一拍把已上屏那一段又播了一遍
+        # （"…across the board. on the sports desk" 之后跟来 "inflation readings
+        # … on the sports desk"）。单行时代它只是覆盖同一块文本无人看见，累积
+        # 形态下会变成并排的两句重复。
+        sa = set(ta)
+        return sum(1 for w in tb if w in sa) / len(tb) >= 0.85
 
     def _dual_set_src(self, text):
         """写当前句原文，并同步累积条目里的簿记文本（高度/有无内容判据都读它）。"""
@@ -1319,6 +1340,25 @@ class CaptionOverlay(QWidget):
             self._on_toggle_translation_only(self._show_source)
         else:
             self.set_show_source(not self._show_source)
+
+    def _toggle_running(self):
+        """v2.20.1：面板「开始 / 停止翻译」把手——只转发，不改文案。
+
+        文案/悬停提示一律由主窗回灌（`set_running` 在 `update_overlay_status`
+        里被调），因为"点了到底停没停"只有主窗知道：热键、托盘、主窗按钮三条
+        路径都能改态，面板自己翻转必然谎报。"""
+        if self._on_toggle_running:
+            self._on_toggle_running()
+
+    def set_running(self, on):
+        """同步运行态显示（主窗 update_overlay_status 是唯一调用方）。"""
+        self._running = bool(on)
+        self._run_btn.setText("⏸ 暂停" if self._running else "▶ 开始")
+        self._run_btn.setStyleSheet(
+            "color: #8fd18a;" if self._running else "color: #ffc46b;")
+        self._run_btn.setToolTip(
+            ("停止翻译（运行中）" if self._running else "开始翻译（已停止）")
+            + " · 与全局热键、托盘菜单同一个开关")
 
     def set_show_source(self, on):
         """外部（设置页/回调）同步原文开关的显示态。"""

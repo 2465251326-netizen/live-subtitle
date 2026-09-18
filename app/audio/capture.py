@@ -10,6 +10,11 @@ SILENCE_END_S = 0.45
 MIN_SPEECH_S = 0.7
 MAX_SEGMENT_S = 14.0
 HANGOVER_S = 0.12
+# v2.20.1：未达 MIN_SPEECH_S 的碎片**并入下一段**而不是整段扔掉。两道闸防失控：
+# 累计不超过 2.0s（超出丢最老的组）、等下一段语音不超过 8.0s（超时作废），
+# 免得把几十秒前的音频粘进新段、或让缓冲无限长大。
+PENDING_MAX_S = 2.0
+PENDING_MAX_IDLE_S = 8.0
 
 
 def list_input_devices():
@@ -148,6 +153,11 @@ class Segmenter:
         self.in_speech = False
         self.silence_run = 0.0
         self.speech_run = 0.0
+        # v2.20.1：未达门限的碎片队列 [(chunks, speech_s, buffered_s), ...]
+        self.pending = []
+        self.pending_len = 0.0
+        self.pending_speech = 0.0
+        self.pending_idle = 0.0
         # v2.3.3（P1，模拟用户痛点"字幕滞后半分钟"）：低延迟模式——
         # 分段上限 14s→6s、静音判停 0.45s→0.30s、自适应区间收紧 0.20~0.40s。
         # 代价：句子可能切短、译文上下文变少，故为设置开关、默认关。
@@ -222,6 +232,7 @@ class Segmenter:
 
         if voiced:
             self.silence_run = 0.0
+            self.pending_idle = 0.0        # 语音续上了，碎片的等待计时归零
             self.speech_run += duration
             self.speech_len += duration
             self.buffer.append(chunk)
@@ -239,7 +250,16 @@ class Segmenter:
                 if self.silence_run >= self.silence_end:
                     return self._flush()
             elif self.buffer and self.silence_run > self.silence_end:
-                self._reset()
+                # 还没起步（in_speech=False）：缓冲里是"疑似起音/瞬态噪声"。
+                # v2.20.1 不再扔掉——留作下一段开头。弱读起音（"Analysts"、
+                # "In other news," 这类）正是用户能看见的段首掉词来源。
+                self._stash_pending(self.buffer, self.speech_len, self.buffer_len)
+                self._reset_state()
+            elif not self.buffer:
+                # 纯静默期：给已攒碎片计时，超时作废（免得把几十秒前的音频粘进新段）
+                self.pending_idle += duration
+                if self.pending and self.pending_idle > PENDING_MAX_IDLE_S:
+                    self._drop_pending()
         return None
 
     def flush(self):
@@ -247,25 +267,74 @@ class Segmenter:
         return self._flush()
 
     def _flush(self):
-        audio = np.concatenate(self.buffer) if self.buffer else np.zeros(0, dtype=np.float32)
-        spoken = self.speech_len
-        buffered = self.buffer_len
-        self._reset()
+        # v2.20.1：段首先接上"未达门限的碎片"，语音不再被静默丢弃
+        chunks = [c for grp in self.pending for c in grp[0]] + self.buffer
+        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+        spoken = self.speech_len + self.pending_speech
+        buffered = self.buffer_len + self.pending_len
+        self._reset_state()
         if spoken < MIN_SPEECH_S:
+            # 旧实现 `return None` 把整片音频扔了：真机 90.5s 合成英语新闻实测
+            # 扔 11 片 / 9.4s 语音（cap=4s；cap=6s 扔 7 片 / 6.6s），表现就是
+            # 段首/段尾掉词（"Analysts"、"three continents"、"more than eight
+            # hours"…）。现在转存为下一段的开头，MIN_SPEECH_S 的原始目的不变——
+            # 碎片永远不会单独成段送进 whisper（那才是幻觉与浪费推理的来源）。
+            self._drop_pending()
+            self._stash_pending([audio], spoken, buffered)
             return None
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         if peak < 0.002:
+            self._drop_pending()
             return None
+        self._drop_pending()
         self._adapt_silence_end(spoken, buffered)
         return audio
 
-    def _reset(self):
+    def _stash_pending(self, chunks, speech_s, buffered_s):
+        """把未达门限的音频留作下一段开头，并守住累计上限（超出丢最老的组）。"""
+        keep = [c for c in chunks if c is not None and c.shape[0]]
+        if not keep or buffered_s <= 0:
+            return
+        self.pending.append((keep, float(speech_s), float(buffered_s)))
+        self.pending_len += float(buffered_s)
+        self.pending_speech += float(speech_s)
+        while self.pending_len > PENDING_MAX_S and len(self.pending) > 1:
+            old = self.pending.pop(0)
+            self.pending_len -= old[2]
+            self.pending_speech -= old[1]
+        if self.pending_len > PENDING_MAX_S:
+            # 单组就超上限：截掉最老的部分（保留尾部，它离下一段最近）
+            grp_chunks, grp_speech, _grp_buf = self.pending[0]
+            drop = self.pending_len - PENDING_MAX_S
+            keep_chunks, bs, acc = [], 0.0, 0.0
+            for c in grp_chunks:
+                d = c.shape[0] / TARGET_SR
+                if acc < drop:
+                    acc += d
+                    continue
+                keep_chunks.append(c)
+                bs += d
+            self.pending[0] = (keep_chunks, max(0.0, grp_speech - acc), bs)
+            self.pending_len = bs
+            self.pending_speech = max(0.0, self.pending_speech - acc)
+
+    def _drop_pending(self):
+        self.pending = []
+        self.pending_len = 0.0
+        self.pending_speech = 0.0
+        self.pending_idle = 0.0
+
+    def _reset_state(self):
         self.buffer = []
         self.buffer_len = 0.0
         self.speech_len = 0.0
         self.in_speech = False
         self.silence_run = 0.0
         self.speech_run = 0.0
+
+    def _reset(self):
+        self._reset_state()
+        self._drop_pending()
 
 
 class CaptureThread(QThread):

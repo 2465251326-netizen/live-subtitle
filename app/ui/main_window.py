@@ -588,7 +588,9 @@ class MainWindow(QMainWindow):
                                         # v2.16.0：分割线拖拽 → 原文区高度落盘
                                         on_dual_split=self._on_panel_dual_split,
                                         # v2.20.0：⋯ 菜单切换攒句 → 落盘
-                                        on_grouping_toggled=self._on_panel_grouping_toggled)
+                                        on_grouping_toggled=self._on_panel_grouping_toggled,
+                                        # v2.20.1：面板上的开始/停止把手
+                                        on_toggle_running=self.toggle_running)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -852,6 +854,9 @@ class MainWindow(QMainWindow):
         """把运行状态/来源/引擎/模型同步到悬浮条状态行。"""
         if not hasattr(self, "overlay"):
             return
+        # v2.20.1：面板「开始 / 停止翻译」把手跟着真态走——热键、托盘、主窗按钮
+        # 三条路径都改得动 running，面板自己翻转就会与真态不一致
+        self.overlay.set_running(bool(self.running))
         if getattr(self, "_muted_warn", False):
             self.overlay.set_status("系统静音中 · 不会有字幕", is_error=True)
             return
