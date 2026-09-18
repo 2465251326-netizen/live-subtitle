@@ -585,10 +585,10 @@ class MainWindow(QMainWindow):
                                         on_height_changed=self._on_panel_height,
                                         # v2.11.0：面板 ⋯ 菜单切换布局 → 回调落盘
                                         on_layout_changed=self._on_panel_layout_changed,
-                                        # v2.15.0：分割线拖拽 → 历史区高度落盘
+                                        # v2.16.0：分割线拖拽 → 原文区高度落盘
                                         on_dual_split=self._on_panel_dual_split,
-                                    # v2.19.0：⋯ 菜单切换历史区 → 落盘
-                                    on_hist_toggled=self._on_panel_hist_toggled)
+                                        # v2.20.0：⋯ 菜单切换攒句 → 落盘
+                                        on_grouping_toggled=self._on_panel_grouping_toggled)
         self.overlay.hide()
         self._build_tray()
         self._install_global_hotkey()
@@ -1084,13 +1084,20 @@ class MainWindow(QMainWindow):
             v = 0
         self.config.set("overlay_dual_src_h", v)
 
-    def _on_panel_hist_toggled(self, on):
-        """v2.19.0：面板 ⋯ 菜单切换历史区 → 落盘 overlay_dual_hist。
-        幂等双保险：overlay 已就地生效，这里只写配置并把状态再同步一次
-        （与 _on_panel_layout_changed 同一套路，防菜单与设置页漂移）。"""
-        self.config.set("overlay_dual_hist", bool(on))
-        self.overlay.set_hist_enabled(bool(on))
-        self._sync_settings_overlay(overlay_dual_hist=bool(on))
+    def _on_panel_grouping_toggled(self, on):
+        """v2.20.0：面板 ⋯ 菜单切「攒句合并」→ 落盘 translate_grouping。
+        幂等双保险：面板已就地生效（勾选态），这里只写配置、把状态再同步一次，
+        并推给**已打开**的设置页勾选（与 _on_panel_layout_changed 同一套路）。
+        攒句判据是 `_grouping_enabled()` 逐片段实时读配置，无需重启管线。"""
+        on = bool(on)
+        self.config.set("translate_grouping", on)
+        self.overlay.set_grouping_enabled(on)
+        self._sync_settings_overlay(translate_grouping=on)
+        # 即时生效的非错误反馈 → 走状态行（`_set_alert` 是常驻橙黄横幅，
+        # 一次随手切换不该在主窗挂一条"警告"）
+        self._set_engine_status("攒句合并已" + ("开启：攒成整句再翻译，译文更连贯"
+                                                if on else
+                                                "关闭：每个识别片段一到就送翻译，观感最实时"))
 
     def apply_overlay_from_config(self):
         c = self.config
@@ -1104,17 +1111,15 @@ class MainWindow(QMainWindow):
         self.overlay.set_show_source(bool(c.get("show_source")))
         self.overlay.set_target_lang(str(c.get("target_lang") or "zh-CN"))
         # v2.11.0：面板布局（list=历史列表 / dual=上下双语）随配置恢复——
-        # **必须最先**（后续历史区开关、分割高度恢复与 _relayout 都依赖布局模式）
+        # **必须最先**（后续分割高度恢复与 _relayout 都依赖布局模式）
         self.overlay.set_layout_mode(str(c.get("overlay_layout") or "list"))
-        # v2.19.0：dual 历史区开关（v2.19.1 三轮裁决：默认**关**＝滚动字幕墙，
-        # 句子在悬浮窗里全部保留不消失；开＝经典上下双语大字区+顶部历史块）；
-        # 必须在 set_dual_src_h_user 之前——两者都会触发 _relayout，
-        # 先定历史份额再定原文区高度，最终几何才与"一次拖出"的结果一致
-        self.overlay.set_hist_enabled(bool(c.get("overlay_dual_hist")))
+        # v2.20.0：dual 只剩一种形态（上原文 / 可拖分割线 / 下译文），
+        # overlay_dual_hist 键随历史区一并删除（旧配置里的该键由 Config.load
+        # 的"只认 DEFAULTS 键"规则自然丢弃）
         # v2.16.0：原文区高度（拖原文/译文分割线）随配置恢复（0=自动）
-        # v2.18.0：历史区分割已移除（overlay_dual_hist_h 键保留兼容旧配置
-        # 文件但不再读取）
         self.overlay.set_dual_src_h_user(int(c.get("overlay_dual_src_h") or 0))
+        # v2.20.0：⋯ 菜单「攒句合并」勾选态跟随配置
+        self.overlay.set_grouping_enabled(bool(c.get("translate_grouping")))
         self._maybe_start_stream_preview()
         # 缺键由 Config.load 按 DEFAULTS 合并补齐，这里不再传默认值
         self.overlay.set_pinned(bool(c.get("overlay_pin")))
@@ -1158,7 +1163,7 @@ class MainWindow(QMainWindow):
 
         直播场景下用户常上滚重读刚说过的一句；旧实现每来一张卡就无条件
         `setValue(maximum)`，2~6 秒后新片段把他拽回底部，回看根本完不成——
-        而悬浮面板早有 `_follow`/`_hist_follow` 守卫 + 「↓ 最新」按钮，主窗
+        而悬浮面板早有 `_follow` 守卫 + 「↓ 最新」按钮，主窗
         却没有（两入口行为不一致）。现在只在已贴底时跟底，否则累计条数挂角标。
         """
         sb = self.scroll.verticalScrollBar()
@@ -1335,7 +1340,7 @@ class MainWindow(QMainWindow):
         self._spec_inflight = {}
         self._lat_spec = []
         # v2.12.0/v2.14.0：dual 流式原文状态随会话清零
-        self._dual_hist_base = ""
+        self._dual_base = ""
         self._dual_current = ""
         self._dual_last_piece = ""
         self._dual_draft = None          # v2.13.0：在飞草稿译文一并作废
@@ -1731,7 +1736,7 @@ class MainWindow(QMainWindow):
         # v2.19.3：**规范化前缀相等快判**。预览草稿最常见的形态就是"基线整句 +
         # 少量新词"（4s 滑窗把同一段音频重转写一遍、再往前多听几个词）。此时 base 的
         # 尾部锚落在 text 的 2/3 限制之外 → 旧实现判"无重叠"→ **整句被当成新话返回**；
-        # 幕墙态据此另起一行 = 同一句原文+译文重复两遍、尾巴碎片单独成行
+        # 旧幕墙态据此另起一行 = 同一句原文+译文重复两遍、尾巴碎片单独成行
         # （真机 60s 合成新闻实测：27 词基线只多 1 个词即触发，多 9 个词才正常）。
         # 逐词去标点+小写后比较，绕开"chunk 两端才去标点"的盲区。
         def _toks(s):
@@ -1789,7 +1794,7 @@ class MainWindow(QMainWindow):
         diff 是预览窗口内相对上一句的新增话音，current 是当前句已显示文本：
         a) diff 以 current 为前缀延伸 → 取更长的 diff（窗口重写更准）
         b) current 包含 diff（窗口滑动后 partial 变短）→ 保留 current
-        c) current 尾部与 diff 头部重叠 → 拼接去重叠
+        c) current 尾部与 diff 头部重叠（≥2 字符）→ 拼接去重叠
         d) 无重叠 → 空格拼接（转写差异过大：宁可重复下一拍自愈）
         e) v2.19.3：**词级回跳去重**。真实网页新闻实测（DW 直播 150s）出现同一
            短语在**同一行内**被拼进三遍——预览转写在句子中段就与已显示文本分叉
@@ -1797,7 +1802,15 @@ class MainWindow(QMainWindow):
            mid-30s…"），(c) 类"后缀==前缀"根本对不齐 → 落到 (d) 整段追加。
            改为：若 diff 开头若干词（≥3，忽略标点/大小写）已在 current 中连续出现，
            就丢掉这段复读、只追加真正的新词。3 词护栏避免误吞 "very very good"
-           这类合法叠词。"""
+           这类合法叠词。
+        f) v2.20.0：**尾部整块重转写**。用户实拍另一形态——复读块在 diff 的**结尾**
+           而不是开头（"…my guest tonight. Oh, my God! and Tom Cruise is my guest
+           tonight."）：滑窗重新听见同一段音频、给出措辞不同的另一版，(e) 的
+           "diff 头部命中"判据完全不认，于是照 (d) 整段追加 = 同一句在屏上两遍。
+           判据改为**两端都对齐**：current 与 diff 的规范化词尾有 ≥3 词公共后缀，
+           说明这一拍没有往前走。取"更完整的那一份"——谁把另一方整块包住就留谁
+           （本例 diff 包住 current → 收 diff，句首新听到的词一个不丢）；两都
+           不包则保持 current（本拍无新增，等终版收口校准；宁可少一拍也不复读）。"""
         if not current:
             return diff
         if not diff:
@@ -1806,8 +1819,13 @@ class MainWindow(QMainWindow):
             return diff
         if current.startswith(diff):
             return current
+        # v2.20.0：(c) 类重叠至少 2 个字符。旧写法 k 一路降到 1，只要"current
+        # 末字符 == diff 首字符"就当成重叠并把它吃掉——真机是逐词生长的增量，
+        # 这种巧合天天有：("Tom Cruise is my guest", "tonight and we talk…")
+        # 被拼成 "guest**onight** and we talk…"、("the market closed at",
+        # "the price rose") 被拼成 "closed**athe** price"，都是看得见的糊字。
         max_k = min(len(current), len(diff))
-        for k in range(max_k, 0, -1):
+        for k in range(max_k, 1, -1):
             if current.endswith(diff[:k]):
                 return current + diff[k:]
         nc = [n for _o, n in MainWindow._word_pairs(current)]
@@ -1819,7 +1837,30 @@ class MainWindow(QMainWindow):
                 if nc[i:i + ln] == head:
                     tail = " ".join(o for o, _n in dp[ln:]).strip()
                     return (current + " " + tail).strip() if tail else current
+        # ---------- (f) 公共词尾 ≥3：这一拍是对旧音频的重转写 ----------
+        tail_common = 0
+        while (tail_common < min(len(nc), len(nd))
+               and nc[-1 - tail_common] == nd[-1 - tail_common]):
+            tail_common += 1
+        if tail_common >= 3:
+            if MainWindow._contains_block(nd, nc):
+                return diff
+            if MainWindow._contains_block(nc, nd):
+                return current
+            return current
         return (current + " " + diff).strip()
+
+    @staticmethod
+    def _contains_block(hay, needle):
+        """规范化词表 `needle` 是否作为**连续块**出现在 `hay` 里（空 needle 算在）。"""
+        if not needle:
+            return True
+        if len(needle) > len(hay):
+            return False
+        for i in range(len(hay) - len(needle) + 1):
+            if hay[i:i + len(needle)] == needle:
+                return True
+        return False
 
     def _on_partial_preview(self, text):
         """预览草稿上屏：确认区 + 增量 → 原文区整体刷新（每 ~0.9s 一拍）。
@@ -1829,10 +1870,10 @@ class MainWindow(QMainWindow):
         t = (text or "").strip()
         if not t:
             return
-        # v2.14.0：流式模型拆分——_dual_hist_base（最后终版句，剥离基线）
-        # 与 _dual_current（当前句显示文本）分离，终版句沉历史后当前句从
+        # v2.14.0：流式模型拆分——_dual_base（最后终版句，剥离基线）
+        # 与 _dual_current（当前句显示文本）分离，终版句收口后当前句从
         # 零开始，不再混句
-        base = getattr(self, "_dual_hist_base", "") or ""
+        base = getattr(self, "_dual_base", "") or ""
         cur_txt = getattr(self, "_dual_current", "") or ""
         # v2.18.1：剥离基线必须是"屏幕上已经显示的全部"（上一终版句 + 当前句），
         # 而不是只有上一终版句。预览窗口每拍都会把上一拍的尾部再转写一遍，
@@ -2382,9 +2423,10 @@ class MainWindow(QMainWindow):
             self._lat_add("_lat_hold", max(0.0, time.monotonic() - hold_at))
         combined = self._combine_pieces(grp)
         # v2.12.0：终版收口 = 流式原文的确认基线更新（预览草稿从整句尾部续接）
-        # v2.14.0：基线更名 _dual_hist_base——整句音频已完，后续 partial 相对
-        # 它剥离出"新句增量"；_dual_current 保留显示（终版翻译回复时沉历史+清）
-        self._dual_hist_base = combined
+        # v2.14.0：整句音频已完，后续 partial 相对它剥离出"新句增量"；
+        # _dual_current 保留显示，终版翻译到达时清空（v2.20.0：历史区已删，
+        # 面板大字区把这句留到下一句开始）
+        self._dual_base = combined
         # v2.13.0：冲刷即作废在飞草稿译文（防迟到草稿盖住新句开头）
         self._dual_draft = None
         self._tgroup_by_src = getattr(self, "_tgroup_by_src", {})
@@ -2784,13 +2826,11 @@ class MainWindow(QMainWindow):
                 combined_src or source_text,
                 translated or ("[" + engine + " 翻译失败]"), show_source,
                 merged_from=merged_srcs)
-            # v2.14.0：dual 布局——整句终版沉入历史区（原文+译文成对，滚轮
-            # 可回看），当前句区保留显示至下一句开始（new_sentence 自然清空）
+            # v2.20.0：dual 历史区已删除——终版句就地留在大字区显示，直到下一句
+            # 的流式拍/片段触发**原子换句**（面板侧 _dual_cur_open 收口）。
+            # 数据侧仍要清空：下一拍草稿从零起点续接，否则整句被再拼一遍
             if self.overlay.is_dual() and not error:
-                self.overlay.dual_push_history(
-                    combined_src or source_text,
-                    translated or "")
-                self._dual_current = ""   # v2.19.1：数据清空：下一拍草稿从新句零起点合并
+                self._dual_current = ""
         if self._follow_bottom():
             sb = self.scroll.verticalScrollBar()
             sb.setValue(sb.maximum())

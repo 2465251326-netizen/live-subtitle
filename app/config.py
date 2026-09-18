@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.19.4"
+APP_VERSION = "2.20.0"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -31,18 +31,13 @@ DEFAULTS = {
     "show_source": True,
     "overlay_layout": "list",          # v2.11.0：字幕面板布局——"list"=历史滚动列表
                                         # （v2.4.0 起的形态）；"dual"=上下双语（豆包风：
-                                        # 上半原文随识别流式生长、下半译文随推测式翻译就地更新）。
+                                        # 上半原文随识别流式生长、下半译文随推测式翻译就地
+                                        # 更新，中间分割线可上下拖自由分配两栏高度）。
                                         # 面板 ⋯ 菜单随时切换，设置页保存即时生效。
-    "overlay_dual_hist": False,        # v2.14.0：dual 布局历史块开关。
-                                        # v2.19.1 三轮实拍裁决后的语义：关（默认）＝
-                                        # **滚动字幕墙**——整个面板是句对列表，每句
-                                        # 说完驻留、当前句末行实时生长、满屏上滚，
-                                        # "句子不能在悬浮窗里消失"；开＝经典上下双语
-                                        # （当前句大字区 + 顶部历史块 + 可拖分割线）。
-                                        # 两态能力互为回退，设置页与 ⋯ 菜单均可切换。
-    "overlay_dual_hist_h": 0,          # v2.15.0：dual 布局历史区用户拖出的高度
-                                        # （px，0=自动分配）。拖历史区与当前句区之间
-                                        # 的分割把手即可自由调整两区比例，重启保持。
+                                        # v2.20.0：删除 overlay_dual_hist /
+                                        # overlay_dual_hist_h——dual 的"顶部历史块"与
+                                        # "滚动字幕墙"两态一并退役，回看历史归 list 布局；
+                                        # 旧配置文件里的这两个键由 Config.load 忽略。
     "overlay_dual_src_h": 0,           # v2.16.0：dual 布局原文区用户拖出的高度
                                         # （px，0=自动贴内容）。拖原文与译文之间
                                         # 的分割把手自由拉大原文显示范围，重启保持。

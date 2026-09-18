@@ -1937,6 +1937,44 @@ def test_merge_stream_drops_mid_sentence_repeat():
         "单词级重叠仍按旧行为并掉"
 
 
+def test_merge_stream_drops_tail_reshuffle_repeat():
+    """v2.20.0：流式拍把已显示整句**重转写**一遍时，行尾不得复读。
+
+    用户实拍（英语新闻 dual 面板）："…my guest tonight. Oh, my God! and Tom
+    Cruise is my guest tonight."——复读块在 diff 的**结尾**而不是开头，v2.19.3
+    那条"diff 头部命中 current"的回跳判据完全不认，于是落到"无重叠→整段追加"。
+    新 (f) 判据看**两端对齐**：current 与 diff 的规范化词尾有 ≥3 词公共后缀，
+    即说明这一拍没往前走，取更完整的那一份。"""
+    from app.ui.main_window import MainWindow
+    ms = MainWindow._merge_stream
+    cur = "and Tom Cruise is my guest tonight"
+    diff = "Oh, my God! and Tom Cruise is my guest tonight"
+    out = ms(cur, diff)
+    assert out.lower().count("my guest tonight") == 1, f"行尾复读未消除：{out!r}"
+    assert out == diff, f"diff 整块包住 current 时应留更完整的一版：{out!r}"
+    # 两句同尾（各 9 词、只有中间两词不同）：本拍判为"没往前走"→ 绝不同时出现两遍
+    a = "the first half of the show was about weather"
+    b = "the second half of the show was about weather"
+    out3 = ms(a, b)
+    assert out3.lower().count("the show was about weather") <= 1, f"仍复读：{out3!r}"
+    assert out3 in (a, b), f"同尾两版必须二选一、不得拼接：{out3!r}"
+    # 护栏：真实续接（尾词不同）必须照常追加
+    assert ms("Tom Cruise is my guest", "tonight and we talk about films") == \
+        "Tom Cruise is my guest tonight and we talk about films"
+    # 护栏（同轮顺带修）：**单字符**重叠不算重叠——旧 (c) 类 k 一路降到 1，
+    # "…is my guest" + "tonight…" 会被当成重叠吃掉首字母，拼成 "guestonight…"
+    assert ms("the market closed at", "the price rose") == \
+        "the market closed at the price rose"
+    assert ms("it really helped a", "a lot of people today") == \
+        "it really helped a a lot of people today"
+    # 两字符及以上的重叠仍按旧行为并掉
+    assert ms("the market closed higher", "higher for the fourth session") == \
+        "the market closed higher for the fourth session"
+    # 护栏：公共后缀只有 2 词不足以判定重转写，不许触发（宁可照旧）
+    assert ms("we say goodbye now", "and then goodbye now") == \
+        "we say goodbye now and then goodbye now"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

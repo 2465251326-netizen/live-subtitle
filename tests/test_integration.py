@@ -949,16 +949,15 @@ def t_overlay_dual_layout():
 check("panel: 上下双语布局（dual）全链路", t_overlay_dual_layout)
 
 def t_overlay_dual_user_height_body():
-    """v2.17.0 立、v2.19.0 改：拉高面板的高度分配契约。
-    旧契约（历史区吃剩余、当前句贴内容）在几何上是错的——它让分割线位置
-    与用户拖的原文高度无关（实测鼠标 -60px → 线 +28px 反向跳）。
-    新契约：**历史按内容定份额（≤45% 屏），当前句区吃剩余**；
-    无历史内容时不预留空间（拉高 = 当前句区变大，用户可拖分割线再分配）。"""
+    """v2.17.0 立、v2.19.0 改、v2.20.0 再改：拉高面板的高度分配契约。
+    v2.19.0 契约（历史按内容定份额 ≤45% 屏、当前句吃剩余）随历史区一并删除，
+    v2.20.0 只剩一块正文：拉高 100% 落到 `_dual_body`，且必须保住
+    「原文 30 + 把手 8 + 译文 30 + 边距」的可拖下限——低于它分割线的钳制区间
+    宽度归零、彻底拖不动（v2.19.0 真实鼠标事件流实测 0 位移的根因）。"""
     from app.ui.caption_overlay import CaptionOverlay
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(True)          # 本锁专测"历史区开启"形态
     ov._dual_show_pending("The quick brown fox jumps over the lazy dog")
     for _ in range(4):
         app.processEvents()
@@ -966,23 +965,19 @@ def t_overlay_dual_user_height_body():
     ov.set_user_height(620)
     for _ in range(6):
         app.processEvents()
-    # 无历史内容：拉高的空间给当前句区（不再凭空留一块空历史）
+    # 没有任何"空历史块"吃空间：拉高全部落到正文区
     assert ov._dual_body.height() > body_before, \
-        f"无历史内容时拉高应落到当前句区：{body_before} -> {ov._dual_body.height()}"
+        f"拉高应落到正文区：{body_before} -> {ov._dual_body.height()}"
     assert ov.height() >= 620 - 14, f"面板总高锁定：{ov.height()} vs 620"
-    # 历史行出现：按内容增长，且当前句区不被挤到不可拖
-    for i in range(6):
-        ov.dual_push_history(f"Historical sentence number {i}",
-                             f"历史句第 {i} 句")
-    for _ in range(6):
-        app.processEvents()
-    assert ov._dual_hist.isVisible()
-    assert ov._dual_hist.height() > 40, f"历史区应按内容占位：{ov._dual_hist.height()}"
     assert ov._dual_body.height() >= 92, \
-        f"当前句区必须保住可拖下限（原文+把手+译文）：{ov._dual_body.height()}"
-    assert ov._dual_hist.height() + ov._dual_body.height() <= ov.height(), "两区不得超出面板总高"
+        f"正文区必须保住可拖下限（原文+把手+译文）：{ov._dual_body.height()}"
+    assert ov._dual_body.height() <= ov.height(), "正文区不得超出面板总高"
+    # v2.20.0：历史区整块删除——面板里不得再挂任何历史滚动控件
+    assert not hasattr(ov, "_dual_hist"), \
+        "dual 历史区控件仍存在（本轮已裁决删除，回看历史归 list 布局）"
+    assert not hasattr(ov, "_dual_hist_rows")
     ov.deleteLater()
-check("panel: dual 拉高分配（历史按内容、当前句吃剩余、保住可拖下限）",
+check("panel: dual 拉高全落正文区（历史区已删 + 保住可拖下限）",
       t_overlay_dual_user_height_body)
 
 def t_overlay_dual_split_drag():
@@ -1073,13 +1068,15 @@ check("panel: 分割线真实事件流拖拽（事件过滤器）", t_overlay_du
 
 
 def t_overlay_split_follows_mouse():
-    """v2.19.0：分割线必须**跟手**——用户实拍"我往上拉的时候他就往下，反之亦然"。
+    """v2.19.0 立、v2.20.0 收敛：分割线必须**跟手**——用户实拍"我往上拉的时候他就往下，反之亦然"。
 
     旧几何（hist=总高−工具条−body、body=贴内容）下，线的位置算出来等于
     `total − sep − 译文内容高`，**与用户拖的原文高度无关**，只随译文跳。
     真实事件流实测（面板 619×515 + 历史区 302px + src_h_user=87）：
       鼠标 −60px → 线 y **+28px（反向）**；关原文时 ±60/120px → **0 位移**。
-    本锁在**同一形态**下断言方向与跟手幅度，两态都测（历史区开 / 关）。"""
+    v2.20.0：历史区已删——dual 只剩一种几何（正文区吃满工具条以外的全部高度），
+    本锁从"两态都测"收敛为单态。用户实拍的另一条指认也在此锁住：**上下双语
+    必须是这块可拖分割线所在的大字分栏**，绝不能再长得和列表历史一样。"""
     from app.ui.caption_overlay import CaptionOverlay
     from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
     from PySide6.QtGui import QMouseEvent
@@ -1102,77 +1099,71 @@ def t_overlay_split_follows_mouse():
         send(sep, QEvent.Type.MouseButtonRelease, QPoint(start.x(), y), Qt.LeftButton)
         return start.y(), y
 
-    for hist_on in (True, False):
-        ov = CaptionOverlay()
-        ov.show()
-        ov.set_layout_mode("dual")
-        ov.set_hist_enabled(hist_on)
-        if not hist_on:
-            # v2.19.1：历史区关=滚动字幕墙——没有大字区也就没有可拖分割线
-            # （幕墙自身的契约由 t_overlay_dual_hist_wall_default 锁住）
-            ov.show_pending("Hello there")
-            for _ in range(4):
-                app.processEvents()
-            assert not ov._dual_body.isVisible(), "幕墙态不得露出经典大字区"
-            assert not ov._dual_sep.isVisible(), "幕墙态不得存在可拖分割线"
-            ov.deleteLater()
-            continue
-        if hist_on:
-            for i in range(8):
-                ov.dual_push_history(f"sentence {i} of the report", f"第{i}句译文内容")
-        ov._dual_show_pending("The only control that AI needs is strong and smart.")
-        ov._dual_spec("The only control that AI needs is strong and smart.",
-                      "AI 需要的控制是坚固而聪明", True)
-        ov.set_user_height(515)
-        for _ in range(6):
-            app.processEvents()
-        base_y = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    ov._dual_show_pending("The only control that AI needs is strong and smart.")
+    ov._dual_spec("The only control that AI needs is strong and smart.",
+                  "AI 需要的控制是坚固而聪明", True)
+    ov.set_user_height(515)
+    for _ in range(6):
+        app.processEvents()
+    # 上下双语的**定义**：正文大字区分栏可见，且没有列表行系统
+    assert ov._dual_body.isVisible(), "上下双语必须显示原文/译文分栏正文区"
+    assert not ov._scroll.isVisible(), "上下双语不得回落到列表行系统"
+    assert ov._dual_sep.isVisible(), "上下双语必须有原文/译文分割线"
+    base_y = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
 
-        # ① 先**往下**拖 90：线必须下移、原文区变大（证明控制件没死）
-        s0 = ov._dual_src_wrap.height()
-        drag(ov, 90)
-        y1 = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
-        s1 = ov._dual_src_wrap.height()
-        assert y1 > base_y, \
-            f"hist_on={hist_on}：往下拖线不动/反向（旧几何实测 0 位移）：{base_y} -> {y1}"
-        assert s1 >= s0 + 60, f"hist_on={hist_on}：原文区未跟手变大：{s0} -> {s1}"
+    # ① 先**往下**拖 90：线必须下移、原文区变大（证明控制件没死）
+    s0 = ov._dual_src_wrap.height()
+    drag(ov, 90)
+    y1 = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
+    s1 = ov._dual_src_wrap.height()
+    assert y1 > base_y, \
+        f"往下拖线不动/反向（旧几何实测 0 位移）：{base_y} -> {y1}"
+    assert s1 >= s0 + 60, f"原文区未跟手变大：{s0} -> {s1}"
 
-        # ② 再**往上**拖 120：线必须上移——绝不允许反向（用户实拍正是这一条）
-        drag(ov, -120)
-        y2 = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
-        s2 = ov._dual_src_wrap.height()
-        assert y2 < y1, f"hist_on={hist_on}：往上拖线却下移（反向）：{y1} -> {y2}"
-        assert s2 < s1, f"hist_on={hist_on}：往上拖原文区未变小：{s1} -> {s2}"
+    # ② 再**往上**拖 120：线必须上移——绝不允许反向（用户实拍正是这一条）
+    drag(ov, -120)
+    y2 = ov._dual_sep.mapToGlobal(QPoint(0, 0)).y()
+    s2 = ov._dual_src_wrap.height()
+    assert y2 < y1, f"往上拖线却下移（反向）：{y1} -> {y2}"
+    assert s2 < s1, f"往上拖原文区未变小：{s1} -> {s2}"
 
-        # ③ 可拖区间不得塌缩（旧几何下 body 塌到 46px 地板 → 钳制区间宽度为 0）
-        body = ov._dual_body.height()
-        assert body >= 92, f"hist_on={hist_on}：当前句区塌到 {body}px，分割线将拖不动"
-        assert ov._dual_src_h_user == ov._dual_src_wrap.height(), \
-            f"hist_on={hist_on}：松手记录值与实际高度不一致 " \
-            f"{ov._dual_src_h_user} vs {ov._dual_src_wrap.height()}"
-        ov.deleteLater()
+    # ③ 可拖区间不得塌缩（旧几何下 body 塌到 46px 地板 → 钳制区间宽度为 0）
+    body = ov._dual_body.height()
+    assert body >= 92, f"正文区塌到 {body}px，分割线将拖不动"
+    assert ov._dual_src_h_user == ov._dual_src_wrap.height(), \
+        f"松手记录值与实际高度不一致 {ov._dual_src_h_user} vs {ov._dual_src_wrap.height()}"
+    ov.deleteLater()
 check("panel: 分割线跟手（上下拖方向正确、可拖区间不塌缩）",
       t_overlay_split_follows_mouse)
 
 
-def t_overlay_dual_hist_wall_default():
-    """v2.19.1 三轮实拍裁决：出厂默认 **关历史块＝滚动字幕墙**——
-    "句子全部保留，不能在字幕悬浮窗里消失"。幕墙复用列表行系统：每句成对
-    驻留、旧行永不抹掉；开回经典态（大字区+历史块）能力完整、两态互清。"""
+def t_overlay_dual_single_sentence():
+    """v2.20.0 用户实拍改判：上下双语 = **只有**上原文 / 可拖分割线 / 下译文。
+
+    上一轮（v2.19.1）为"句子不能消失"给 dual 配了两态（滚动字幕墙 / 顶部历史块），
+    实拍结论是幕墙态"和列表历史样式一模一样，根本不是上下双语"，历史块则被点名
+    删除。改判后的分工：dual 专注当前句大字实时，回看整场由 list 布局承担——
+    所以本锁同时钉住两侧：dual 三句只留最后一句且永不建行，list 三句全驻留。
+    旧 `overlay_dual_hist` 键一并从 DEFAULTS 删除（老配置文件里的残留值由
+    Config.load「只认 DEFAULTS 键」的规则自然丢弃）。"""
     from app.config import DEFAULTS
     from app.ui.caption_overlay import CaptionOverlay
-    assert DEFAULTS["overlay_dual_hist"] is False, \
-        "出厂默认必须是幕墙态（历史块关）——用户三轮裁决：句子不得消失"
+    assert "overlay_dual_hist" not in DEFAULTS, "历史区开关键应已随布局改版删除"
+    assert "overlay_dual_hist_h" not in DEFAULTS, "历史区高度键应已随布局改版删除"
+    assert not hasattr(CaptionOverlay, "set_hist_enabled"), "历史区开关入口应已移除"
+    assert not hasattr(CaptionOverlay, "dual_push_history"), "沉历史入口应已移除"
 
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(False)
     for _ in range(4):
         app.processEvents()
-    assert not ov._dual_body.isVisible(), "幕墙态不得显示经典当前句大字区"
-    assert ov._scroll.isVisible(), "幕墙态必须露出滚动行区"
-    # 三句顺序到达：全部驻留，一行不少、一行不抹
+    assert ov._dual_body.isVisible(), "dual 必须显示原文/译文大字分栏正文区"
+    assert not ov._scroll.isVisible(), "dual 不得露出列表行滚动区（用户指认的病）"
+    # 三句顺序到达：只留当前句，且**永不**建行
     for i in range(3):
         ov.show_pending(f"Sentence number {i} arrives live")
         ov.update_partial(f"Sentence number {i} arrives live on screen")
@@ -1181,26 +1172,34 @@ def t_overlay_dual_hist_wall_default():
                                f"第{i}句完整译文。", True)
     for _ in range(6):
         app.processEvents()
-    assert len(ov._rows) == 3, f"幕墙必须驻留全部三句，实得 {len(ov._rows)}"
-    for i in range(3):
-        assert ov._rows[i]["src_text"] == f"Sentence number {i} arrives live on screen.", \
-            f"第{i}行原文被改写/消失"
-        assert ov._rows[i]["tgt_text"] == f"第{i}句完整译文。", f"第{i}行译文被改写/消失"
-    # 第四句流式草稿：新行生长，前三句不动
-    ov.update_partial("A brand new sentence grows")
-    for _ in range(4):
-        app.processEvents()
-    assert len(ov._rows) == 4 and ov._rows[-1]["pending"], "新句应另起生长行"
-    assert ov._rows[0]["src_text"].endswith("on screen."), "旧行被新句抹掉了"
-    # 切回经典态：幕墙行清空、大字区回来（能力互为回退）
-    ov.set_hist_enabled(True)
-    for _ in range(4):
-        app.processEvents()
-    assert ov._rows == [], "切回经典态应清空幕墙行"
-    assert ov._dual_body.isVisible() and not ov._scroll.isVisible()
+    assert ov._rows == [], f"dual 不得再建列表行（历史区已删）：{len(ov._rows)} 行"
+    assert ov._dual_src.text() == "Sentence number 2 arrives live on screen.", \
+        f"dual 应只显示当前句：{ov._dual_src.text()!r}"
+    assert ov._dual_tgt.text() == "第2句完整译文。"
+    # 「清空」判据换血后仍要正确：dual 看的是当前句原文（已无历史行数可查），
+    # 且 ⋯/右键菜单项与工具条按钮共用同一判据（v2.19.2 修过的两入口打架）
+    assert ov._clear_btn.isEnabled(), "dual 有当前句时「清空」必须可用"
+    m = ov._build_menu()
+    assert ov._menu_acts["clear"].isEnabled(), "菜单「清空面板字幕」应与工具条同态"
+    assert ov._menu_acts["clear"].text() == "清空面板字幕"
+    m.deleteLater()
+    ov.clear_caption()
+    assert not ov._clear_btn.isEnabled(), "dual 清空后按钮应回灰"
     ov.deleteLater()
-check("panel: 双语默认=滚动字幕墙（三句全驻留 + 新句生长 + 经典态回退）",
-      t_overlay_dual_hist_wall_default)
+
+    # 对照组：list 布局三句全驻留——"句子不能消失"由这条路径承担
+    ov2 = CaptionOverlay()
+    ov2.show()
+    for i in range(3):
+        ov2.show_pending(f"Sentence number {i} arrives live on screen")
+        ov2.show_pending_result(f"Sentence number {i} arrives live on screen.",
+                                f"第{i}句完整译文。", True)
+    for _ in range(6):
+        app.processEvents()
+    assert len(ov2._rows) == 3, f"列表布局必须驻留全部三句：{len(ov2._rows)}"
+    ov2.deleteLater()
+check("panel: 上下双语=当前句独占（历史区/幕墙双态已删，回看归列表）",
+      t_overlay_dual_single_sentence)
 
 
 def t_dual_pair_atomic_swap():
@@ -1216,7 +1215,6 @@ def t_dual_pair_atomic_swap():
     ov = CaptionOverlay()
     ov.show()
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(True)   # v2.19.1：本锁测的是经典大字区的原子换句契约
     A_src = "Hello everyone and welcome to the show."
     A_tgt = "大家好，欢迎收看本期节目。"
 
@@ -1280,15 +1278,16 @@ check("panel: dual 原子换句（无错配窗口 + 同句片段不闪白 + 迟�
 
 
 def t_overlay_single_divider():
-    """v2.18.1：面板上「可见横线」必须恰好一条 = 原文/译文那条可拖分割线。
+    """v2.18.1 立、v2.20.0 随布局改版收敛：面板上「可见横线」必须恰好一条
+    = 原文/译文那条可拖分割线。
 
-    用户截图实证的多条线来源（本轮全部处理）：
+    用户截图实证的多条线来源（逐轮处理）：
     ① `QScrollArea#PanelDualHist { border-bottom }` —— 历史区底缘装饰线，
-       不可拖、纯视觉噪声 → 已删除；
+       不可拖、纯视觉噪声 → 先删线，v2.20.0 连历史区本体一并删除；
     ② `_DualSepHandle` 自绘细线 + 中央胶囊 —— 唯一保留（可拖）；
     ③ 拖完 `set_drag` 未复位 → 胶囊永久高亮（看起来像第三条粗线）→ 已修；
     ④ 「原文 关」时 sep 未被重算可见性 → 没有两栏要分却仍挂着线 → 已修；
-    ⑤ dual→list 切换历史区残留 → 已修。
+    ⑤ dual→list 切换残留空白块 → 历史区删除后从根上不存在，改断言正文区收起。
     这里用**像素扫描**客观数线，不靠眼睛，也不断言内部状态。"""
     from app.ui.caption_overlay import CaptionOverlay
     from PySide6.QtCore import QPoint
@@ -1343,7 +1342,7 @@ def t_overlay_single_divider():
             return profile(y)[0]
 
         ys = []
-        for y in range(max(0, ov._dual_hist.mapTo(ov, QPoint(0, 0)).y()), H):
+        for y in range(max(0, ov._dual_body.mapTo(ov, QPoint(0, 0)).y()), H):
             f, spread = profile(y)
             if (f > 0.9 and spread <= 40
                     and frac(y - 2) < 0.5 and frac(y + 2) < 0.5):
@@ -1363,12 +1362,12 @@ def t_overlay_single_divider():
     assert not ov._dual_sep.isVisible(), "关原文后把手应隐藏"
     assert divider_rows() == [], f"关原文后仍检出可见线: {divider_rows()}"
 
-    # 切回列表布局：dual 历史区不得残留（v2.17.0a 恒显示只在 dual 分支成立）
+    # 切回列表布局：dual 正文区必须整体收起（v2.20.0：它已是 dual 唯一的正文）
     ov.set_show_source(True)
     ov.set_layout_mode("list")
     for _ in range(12):
         app.processEvents()
-    assert not ov._dual_hist.isVisible(), "dual→list 后历史区残留（列表布局里多一块空白区）"
+    assert not ov._dual_body.isVisible(), "dual→list 后正文区残留（列表布局里多一块空白区）"
     ov.deleteLater()
 check("panel: 面板恰好一条分割线（v2.18.1 多条线回归）", t_overlay_single_divider)
 
@@ -1378,7 +1377,7 @@ def t_overlay_body_background_pixels():
 
     用户实拍：工具条以下全是壁纸。根因不在面板自己——`paintEvent` 每帧都以
     完整脏矩形画了圆角底色，但 **QScrollArea 的内容控件**（`_body` /
-    `_dual_src` / `_dual_tgt` / `_dual_hist_body`）在 `setWidgetResizable(True)`
+    `_dual_src` / `_dual_tgt`）在 `setWidgetResizable(True)`
     之下被 Qt 于 `setWidget()` 内部（C++ 侧，Python 层追不到这次调用）打开了
     `autoFillBackground`；叠加 `WA_TranslucentBackground` 后它每帧把自己整块
     矩形擦成 alpha 0，连父层刚画好的底色一起抹掉。
@@ -1408,22 +1407,20 @@ def t_overlay_body_background_pixels():
                     zero += 1
         return mn, (zero / max(1, total))
 
-    for mode, hist in (("list", None), ("dual", False), ("dual", True)):
+    for mode in ("list", "dual"):
         ov = CaptionOverlay()
         ov.apply_style(22, "#ffffff", "#1c1f26", 100)
         ov.set_show_source(False)
         ov.set_user_height(515)
         ov.resize(619, 515)
         ov.set_layout_mode(mode)
-        if hist is not None:
-            ov.set_hist_enabled(hist)
         ov.show()
         for _ in range(8):
             app.processEvents()
-        tag = "%s/历史%s" % (mode, hist)
+        tag = mode
         assert ov._bg_alpha == 255, "%s：100%% 不透明应映射为 alpha 255，实得 %d" % (
             tag, ov._bg_alpha)
-        for wname in ("_body", "_dual_src", "_dual_tgt", "_dual_hist_body"):
+        for wname in ("_body", "_dual_src", "_dual_tgt"):
             assert getattr(ov, wname).autoFillBackground() is False, (
                 "%s：%s 的 autoFillBackground 被打开——它会把父层底色擦成 alpha 0" % (
                     tag, wname))
@@ -1440,15 +1437,16 @@ check("panel: 正文区必须带上底色不透出桌面（v2.19.2 autoFill 擦�
       t_overlay_body_background_pixels)
 
 
-def t_overlay_dual_hist_no_flash_window():
-    """v2.19.2：dual 历史区建行同样不得逃逸成顶层窗口（v2.6.6 瞬窗病根回归）。
+def t_overlay_dual_builds_no_widgets():
+    """v2.20.0：dual 逐句**不得再新建任何控件**（旧瞬窗锁的换代）。
 
-    v2.6.6 在 `_add_row` 修过同一件事：`QLabel()` 无父构造 → 先 `setVisible(True)`
-    → 未收编的控件建出原生顶层窗口 → `addWidget` 收编瞬间又销毁，用户看到
-    "每来一句闪一个 40ms 的无题小窗"。v2.14.0 新写的 `dual_push_history` 抄了
-    同样的构造次序，漏网。旧锁 `t_overlay_row_never_flash_window` 只查列表行，
-    查不到这条路径——故本锁在**可见性切换的那一刻**取证（事后 isWindow 已复位，
-    查不出问题）。"""
+    上一代 dual 的历史区每句 `QWidget() + QLabel()×2`——v2.6.6 在 `_add_row`
+    修过的"每来一句闪一个 40ms 无题小窗"病根正是那个构造次序，v2.14.0 的
+    `dual_push_history` 抄了同一份代码漏网，v2.19.2 为此补了
+    `t_overlay_dual_hist_no_flash_window`。历史区删除后被测代码已不存在，
+    本锁换代成更强的两条不变量（旧实现同样必红，因为它每句 +3 控件）：
+    ① 任何 `setVisible(True)` 的接收者都不得是顶层窗口（病根可能在别处复发）；
+    ② 整场跑完子控件总数不变——dual 只复用构造期那两块滚动区。"""
     from PySide6.QtWidgets import QWidget as _QW
     hits = []
     real = _QW.setVisible
@@ -1461,56 +1459,57 @@ def t_overlay_dual_hist_no_flash_window():
 
     ov = CaptionOverlay()
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(True)
     ov.show()
     for _ in range(6):
         app.processEvents()
+    n0 = len(ov.findChildren(_QW))
     _QW.setVisible = spy
     try:
-        ov.dual_push_history("Hello there my friend", "你好啊朋友")
-        ov.dual_push_history("Second sentence arrives", "第二句到了")
-        for _ in range(6):
+        for i in range(4):
+            ov.show_pending(f"Sentence number {i} arrives")
+            ov.update_partial(f"Sentence number {i} arrives on screen")
+            ov.update_dual_draft_tgt(f"第{i}句草稿译文")
+            ov.show_pending_result(f"Sentence number {i} arrives on screen.",
+                                   f"第{i}句完整译文。", True)
             app.processEvents()
     finally:
         _QW.setVisible = real
-    assert not hits, f"历史行标签成了顶层窗口（瞬窗）：{hits}"
-    from PySide6.QtWidgets import QLabel
-    row = ov._dual_hist_lay.itemAt(0).widget()
-    labs = row.findChildren(QLabel)
-    assert all((not l.isWindow()) for l in labs), "收编后仍不得是顶层窗口"
+    assert not hits, f"面板控件成了顶层窗口（瞬窗复发）：{hits}"
+    n1 = len(ov.findChildren(_QW))
+    assert n1 == n0, f"dual 逐句不得新建控件：{n0} -> {n1}"
+    assert ov._dual_src.text().endswith("on screen."), "前置条件：最后一句应已上屏"
     ov.deleteLater()
 
 
-check("panel: 双语历史行标签永不成顶层窗口（v2.19.2 瞬窗回归）",
-      t_overlay_dual_hist_no_flash_window)
+check("panel: dual 逐句零新建控件、永不逃逸成顶层窗口（瞬窗锁换代）",
+      t_overlay_dual_builds_no_widgets)
 
 
-def t_overlay_classic_clear_state():
-    """v2.19.2：经典双语态的「清空」必须把三件事一起归零。
+def t_overlay_dual_clear_state():
+    """v2.19.2 立、v2.20.0 随布局改版收敛：dual 态的「清空」必须三件事一起归零。
 
     ① `_last_result` 不清 → 面板已空白，但「复制最近一句 / 纠正最近识别 /
-       纠正译文」仍指向被清掉的句子（列表/幕墙分支无此问题）；
-    ② 引导小抄 `_hint_guide` 只在 `_add_row`（列表路径）复位，经典态永不复位
+       纠正译文」仍指向被清掉的句子（列表分支无此问题）；
+    ② 引导小抄 `_hint_guide` 只在 `_add_row`（列表路径）复位，dual 永不复位
        → 每次清空后三行小抄重弹，违反 v2.4.4（BUG-7）"每份配置只弹一次"；
-    ③ ⋯ 菜单「清空面板字幕」的可用态只看 `_rows`，经典态正文在历史行+当前句
-       → 恒灰，而工具条「清空」同一动作可用，两入口打架。"""
+    ③ ⋯ 菜单「清空面板字幕」的可用态只看 `_rows`，dual 正文在当前句大字区
+       → 恒灰，而工具条「清空」同一动作可用，两入口打架。
+    旧版本在③还多查一项"历史行数"，历史区删除后判据只剩当前句原文。"""
     ov = CaptionOverlay()
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(True)
     ov.show_first_hint()                       # 置引导小抄
     ov.show()
     for _ in range(6):
         app.processEvents()
     assert ov._hint_guide is True, "前置条件：引导小抄已置位"
-    ov._dual_show_result("Hello classic dual", "经典双语一句", True)
+    ov._dual_show_result("Hello dual layout", "上下双语一句", True)
     for _ in range(4):
         app.processEvents()
     assert ov._hint_guide is False, "真实字幕上屏后引导小抄必须复位（只弹一次）"
-    ov.dual_push_history("Hello classic dual", "经典双语一句")
     ov._build_menu()
     acts = ov._menu_acts
     assert acts["clear"].isEnabled(), \
-        "经典态有历史行时菜单「清空」必须可用（与工具条同一判据）"
+        "dual 有当前句时菜单「清空」必须可用（与工具条同一判据）"
     assert acts["copy"].isEnabled(), "有最近一句时「复制」应可用"
     ov.clear_caption()
     for _ in range(4):
@@ -1524,18 +1523,20 @@ def t_overlay_classic_clear_state():
     ov.deleteLater()
 
 
-check("panel: 经典双语清空后状态归零（v2.19.2 最近一句/小抄/菜单态）",
-      t_overlay_classic_clear_state)
+check("panel: dual 清空后状态归零（v2.19.2 最近一句/小抄/菜单态）",
+      t_overlay_dual_clear_state)
 
 
 def t_settings_syncs_panel_side_changes():
-    """v2.19.2：面板侧改外观键 → **已打开**的设置页控件必须跟随。
+    """v2.19.2 立、v2.20.0 换项：面板侧改配置键 → **已打开**的设置页控件必须跟随。
 
     旧状只有 `overlay_enabled`（sync_overlay_check）与 `target_lang`
     （sync_target_lang，v2.18.1 补）有窄同步，字号/透明度/布局/历史区四项漏网：
     面板 ⋯ 菜单切完，设置页控件仍显旧值；用户把控件拨到"屏幕上的实际值"时被
     `_stage` 判成"改回原值"而静默吞掉——显示改了，底部仍提示"所有改动已保存"。
-    同时锁住暂存优先规则：用户已暂存该键时不得被面板值覆盖。"""
+    同时锁住暂存优先规则：用户已暂存该键时不得被面板值覆盖。
+    v2.20.0：历史区勾选随功能退役换成本轮新增的「攒句合并」（面板 ⋯ 菜单 ↔
+    设置页 `grouping_check` ↔ 配置 `translate_grouping` 三处必须一致）。"""
     from app.ui.settings_dialog import SettingsDialog
     w = MainWindow()
     w._open_settings()                       # 真实入口：对话框登记到 _settings_dlg
@@ -1548,8 +1549,13 @@ def t_settings_syncs_panel_side_changes():
         assert dlg.overlay_font_spin.value() == 30, "面板改字号后设置页数字框未跟随"
         w._on_panel_layout_changed("dual")
         assert dlg.layout_combo.currentData() == "dual", "面板切布局后设置页下拉未跟随"
-        w._on_panel_hist_toggled(True)
-        assert dlg.dual_hist_check.isChecked() is True, "面板切历史区后设置页勾选未跟随"
+        assert w.config.get("overlay_layout") == "dual", "面板切布局必须落盘"
+        w._on_panel_grouping_toggled(False)
+        assert dlg.grouping_check.isChecked() is False, "面板切攒句后设置页勾选未跟随"
+        assert w.config.get("translate_grouping") is False, "面板切攒句必须落盘"
+        assert w.overlay.is_grouping_enabled() is False, "面板自身勾选态必须同步"
+        w._on_panel_grouping_toggled(True)
+        assert dlg.grouping_check.isChecked() is True, "反向切换同样要跟回设置页"
         # 暂存优先：按真实用户流——拨滑条即产生暂存值，面板侧改动不得覆盖它
         dlg.bg_opacity_slider.setValue(80)
         assert dlg._staged.get("overlay_bg_opacity") == 80, "前置：拨滑条应已暂存"
@@ -1562,24 +1568,84 @@ def t_settings_syncs_panel_side_changes():
         w.deleteLater()
 
 
-check("settings: 面板侧改外观键同步已打开的设置页（v2.19.2 四项窄同步）",
+check("settings: 面板侧改配置键同步已打开的设置页（v2.19.2 窄同步 + v2.20.0 攒句）",
       t_settings_syncs_panel_side_changes)
 
 
-def t_overlay_wall_no_dup_from_preview_beat():
-    """v2.19.3：幕墙态流式拍不得把"已收口的同一句"再开成一行。
+def t_panel_menu_grouping_roundtrip():
+    """v2.20.0：面板 ⋯ 菜单的「攒句合并」点击后必须 落盘 + 回写勾选 + 通知主窗。
 
-    真机 60s 英语新闻实测（离线 Argos + GPU turbo + 攒句开）：面板里同一句
+    菜单是每次 `_build_menu()` 现建的，勾选初值只能来自 `self._grouping`，
+    所以"设置页改了面板菜单还显旧值"这条回路必须由主窗下发（`apply_overlay_from_config`
+    里的 `set_grouping_enabled`）——本锁把两向都钉住：菜单点一下 ≡ 设置页勾一下。"""
+    w = MainWindow()
+    old_g = w.config.get("translate_grouping")
+    try:
+        w.config.set("translate_grouping", True)
+        w.apply_overlay_from_config()
+        assert w.overlay.is_grouping_enabled() is True, "配置必须下发到面板勾选态"
+        ov = w.overlay
+        orig = ov._on_grouping_toggled
+        calls = []
+        ov._on_grouping_toggled = lambda on: (calls.append(on),
+                                              orig(on) if orig else None)
+        menu = ov._build_menu()
+        grouping_act = ov._menu_acts["grouping"]
+        assert grouping_act.isChecked() is True, "菜单勾选初值须来自配置"
+        assert grouping_act.isCheckable()
+        # 真实路径：菜单 exec 返回被点的 action，由 _menu_dispatch 分派
+        ov._menu_dispatch(grouping_act)
+        app.processEvents()
+        assert calls == [False], f"点菜单应回调主窗一次、值为取反后的 False：{calls}"
+        assert w.config.get("translate_grouping") is False, "必须落盘"
+        assert ov.is_grouping_enabled() is False
+        menu2 = ov._build_menu()
+        assert ov._menu_acts["grouping"].isChecked() is False, "重开菜单须显新状态"
+        ov._menu_dispatch(ov._menu_acts["grouping"])   # 再点回去
+        assert w.config.get("translate_grouping") is True
+        menu.deleteLater()
+        menu2.deleteLater()
+        ov._on_grouping_toggled = orig
+        # 反方向：设置页勾选 → 保存 → 面板菜单镜像必须跟随（两入口不得漂移）。
+        # 保存路径只重放 overlay_* 与 show_source，v2.20.0 起 translate_grouping
+        # 也在其列——漏掉它时这里必红。
+        w._open_settings()
+        dlg = w._settings_dlg
+        try:
+            dlg.grouping_check.setChecked(False)
+            dlg._stage("translate_grouping", False)
+            dlg._apply_staged()
+            assert w.config.get("translate_grouping") is False, "设置页保存必须落盘"
+            assert ov.is_grouping_enabled() is False, \
+                "设置页保存后面板 ⋯ 菜单镜像仍停在旧值（两入口漂移）"
+        finally:
+            dlg.deleteLater()
+    finally:
+        # 共享配置 home：本锁改了 translate_grouping，必须还原，
+        # 否则后面所有依赖"攒句开"的锁全部误报（实测一次带走 6 条）
+        w.config.set("translate_grouping", old_g)
+        w.deleteLater()
+
+
+check("panel: ⋯ 菜单攒句开关双向同步（点一下＝配置+菜单+主窗一致）",
+      t_panel_menu_grouping_roundtrip)
+
+
+def t_overlay_dual_no_repeat_after_final():
+    """v2.20.0（换代 v2.19.3 的幕墙锁）：dual 收口后同句流式拍不得复读。
+
+    真机 60s 英语新闻实测（离线 Argos + GPU turbo + 攒句开）：幕墙里同一句
     原文+译文**逐字重复驻留两行**，其后还跟一个只剩 "inflation." 的碎片行。
     链路：末行被终版收口（pending=False）→ 下一拍流式草稿仍是"基线整句 + 少量
     新词"（主窗剥离失手）→ `update_partial` 见末行非待决就整句 `_add_row`。
-    主窗侧已修（规范化前缀相等快判），本锁在面板侧兜底：同句 ≤3 个新词直接忽略、
-    更多新词只把新词部分开成行。"""
+    主窗侧的修法（规范化前缀相等快判）保留在单元锁
+    `test_strip_overlap_prefix_equal_small_tail`；面板侧那条兜底随幕墙一起删了，
+    因为新形态天然免疫——原文区是**整块替换**，不存在"再开一行"这条路。
+    本锁按新形态重钉契约。"""
     ov = CaptionOverlay()
     ov.apply_style(22, "#ffffff", "#1c1f26", 100)
     ov.set_show_source(True)
     ov.set_layout_mode("dual")
-    ov.set_hist_enabled(False)              # 幕墙态
     ov.show()
     for _ in range(6):
         app.processEvents()
@@ -1587,48 +1653,53 @@ def t_overlay_wall_no_dup_from_preview_beat():
     for d in (S1[:20], S1[:38], S1):
         ov.update_partial(d)
     ov.show_pending(S1)
-    ov.show_pending_result(S1, "科技股上涨。")
+    ov.show_pending_result(S1, "科技股上涨，芯片大厂需求走强。")
     for _ in range(4):
         app.processEvents()
-    assert len(ov._rows) == 1, f"前置：第 1 句收口应只有一行，实得 {len(ov._rows)}"
-    assert not ov._rows[-1]["pending"], "前置：末行必须已终版收口"
-    # 下一拍草稿仍带着上一句（剥离失手的形态）
+    assert ov._rows == [], "dual 不得建行"
+    final_tgt = ov._dual_tgt.text()
+    assert not bool(ov._dual_tgt.property("spec")), "前置：终版译文已定格"
+    # 下一拍草稿仍带着上一句（主窗剥离失手的形态）
     ov.update_partial(S1 + " and inflation eased")
     ov.update_partial(S1 + " and inflation eased this month")
     for _ in range(4):
         app.processEvents()
-    texts = [r["src"].text() for r in ov._rows]
-    dup = [t for t in texts if texts.count(t) > 1]
-    assert not dup, f"同一句在幕墙里重复驻留：{dup}"
-    assert all(not t.startswith(S1) or t == S1 for t in texts), \
-        f"新行不得整句复读已收口的句子：{[t[:40] for t in texts]}"
+    txt = ov._dual_src.text()
+    assert txt.count("Technology shares") == 1, f"同一句在原文区被复读：{txt!r}"
+    assert txt == S1 + " and inflation eased this month", f"整块刷新丢失新词：{txt!r}"
+    assert ov._dual_tgt.text() == final_tgt, "同句延伸不得把终版译文打回推测态"
+    # 真正的新句才换句（原文+译文同刻切）
+    ov.update_partial("Wall Street closed higher on Friday")
+    app.processEvents()
+    assert ov._dual_src.text() == "Wall Street closed higher on Friday"
+    assert ov._dual_tgt.text() != final_tgt, "换句后仍挂着上一句终版译文＝错配帧"
     ov.deleteLater()
 
 
-check("panel: 幕墙流式拍不重复已收口句（v2.19.3 同句两行回归）",
-      t_overlay_wall_no_dup_from_preview_beat)
+check("panel: dual 收口后同句草稿只整体刷新不复读（幕墙兜底换代）",
+      t_overlay_dual_no_repeat_after_final)
 
 
-def t_overlay_wall_draft_longer_than_final():
-    """v2.19.3：草稿比终版**更长**时，终版必须就地收口那一行。
+def t_overlay_list_draft_longer_than_final():
+    """v2.19.3 立、v2.20.0 收归列表：草稿比终版**更长**时，终版必须就地收口那一行。
 
     真机 DW News 直播实测（离线 Argos）：面板上同一句并存两行——一行是流式草稿
     的膨胀版（短语被复读三遍 + 前瞻到下一句开头）挂着推测译，另一行是干净的
     终版。查翻译缓存证实送译原文只出现一次 → 复读纯属显示层。根因：
     `_find_pending` 只认"草稿是终版的前缀"，缺反方向（终版是草稿的前缀），
-    于是终版匹配不到草稿行、另起一行。"""
+    于是终版匹配不到草稿行、另起一行。该判据属列表行系统，v2.20.0 起幕墙不再
+    复用列表行，故本锁改在 **list 布局**下钉住（dual 侧的对应契约见上一条锁）。"""
     ov = CaptionOverlay()
     ov.apply_style(22, "#ffffff", "#1c1f26", 100)
     ov.set_show_source(True)
-    ov.set_layout_mode("dual")
-    ov.set_hist_enabled(False)
+    ov.set_layout_mode("list")
     ov.show()
     for _ in range(6):
         app.processEvents()
     draft = ("I somehow got back up. and knocked a knife out of one of the guy's "
              "hands. the knife out of one of the guy's hands. that he was holding "
              "inside. that he was holding in self-defense")
-    ov.update_partial(draft)
+    ov.show_pending(draft)
     for _ in range(4):
         app.processEvents()
     assert len(ov._rows) == 1 and ov._rows[0]["pending"], "前置：草稿应占一行待决"
@@ -1645,8 +1716,8 @@ def t_overlay_wall_draft_longer_than_final():
     ov.deleteLater()
 
 
-check("panel: 幕墙草稿长于终版时终版就地收口（v2.19.3 反方向配对）",
-      t_overlay_wall_draft_longer_than_final)
+check("panel: 列表草稿长于终版时终版就地收口（v2.19.3 反方向配对）",
+      t_overlay_list_draft_longer_than_final)
 
 
 def t_overlay_qss_no_hash_comments():
@@ -1774,29 +1845,6 @@ def t_overlay_dual_follow_bottom():
 check("panel: dual 原文/译文区溢出自动跟底（真机新闻回归）", t_overlay_dual_follow_bottom)
 
 
-def t_overlay_dual_history_no_placeholder():
-    """v2.18.1：译文为空的终版不得用占位 "…" 顶进历史区。
-    真机英语新闻实测：历史区出现过只含省略号的行——一次性占位被当成正文永久留存，
-    还白占一行高度。关了「同时显示原文」时这种行整条跳过。"""
-    from PySide6.QtWidgets import QLabel
-    ov = CaptionOverlay()
-    ov.set_show_source(False)
-    ov.set_layout_mode("dual")
-    ov.show()
-    for _ in range(6):
-        app.processEvents()
-    n0 = ov._dual_hist_rows
-    ov.dual_push_history("Some english source line", "")
-    assert ov._dual_hist_rows == n0, "空译文 + 关原文：整行不应入历史"
-    ov.set_show_source(True)
-    ov.dual_push_history("Another english source line", "")
-    assert ov._dual_hist_rows == n0 + 1, "有原文可显示时该行仍应入历史"
-    labs = [l.text() for l in ov._dual_hist_body.findChildren(QLabel)]
-    assert "…" not in labs, f"历史行出现占位省略号: {labs}"
-    ov.deleteLater()
-check("panel: dual 历史行不写占位省略号", t_overlay_dual_history_no_placeholder)
-
-
 def t_overlay_dual_srcoff_tgt_room():
     """v2.18.1：关「同时显示原文」时，当前句**译文区必须拿到自己的完整高度**。
 
@@ -1851,7 +1899,7 @@ def t_stream_draft_no_duplicate():
     body = ("By the way there are several other proposals from our closest partners our "
             "international partners work on this track so that through joint efforts we can "
             "achieve this energy")
-    w._dual_hist_base = prev_final
+    w._dual_base = prev_final
     w._dual_current = ""
     # 第 1 拍：whisper 在窗口尾部吐出省略号（真机就是这样的文本形态）
     w._on_partial_preview(prev_final + " " + body + "...")
@@ -1929,8 +1977,6 @@ def t_main_partial_preview_alignment():
     w.show()
     w.running = True
     w.config.set("overlay_layout", "dual")
-    # v2.19.0：本锁断言"终版句沉入历史区"，须显式打开历史区（出厂默认已关）
-    w.config.set("overlay_dual_hist", True)
     w.apply_overlay_from_config()
 
     class _Tr(object):                     # _StubTr 定义在文件后段，此处内联
@@ -1955,11 +2001,15 @@ def t_main_partial_preview_alignment():
         assert w.overlay._dual_src.text() == "The market opened higher today and stocks rallied"
         # 冲刷：剥离基线更新为整句
         w._flush_tgroup()
-        assert w._dual_hist_base == "The market opened higher today"
-        # 终版翻译到达：沉入历史区（原文+译文成对）+ 当前句数据清空
+        assert w._dual_base == "The market opened higher today"
+        # 终版翻译到达：v2.20.0 起 dual 不再"沉历史"——这句就地定格在大字区，
+        # 驻留到下一句首拍触发原子换句；当前句数据清空（下一拍草稿零起点续接）
         w._on_translated("The market opened higher today", "今天高开", "argos", "en", "")
-        assert w.overlay._dual_hist_rows == 1, "终版句应沉入历史区"
-        assert w._dual_current == "", "终版沉历史后当前句数据清空"
+        assert w.overlay._dual_src.text() == "The market opened higher today", \
+            "终版原文必须留在大字区"
+        assert w.overlay._dual_tgt.text() == "今天高开", "终版译文必须留在大字区"
+        assert w.overlay._rows == [], "dual 不得再建列表行（历史区已删）"
+        assert w._dual_current == "", "终版收口后当前句数据清空"
         # 非运行态：预览草稿不得改写面板
         w.running = False
         w._on_partial_preview("stale garbage after stop")
@@ -1999,7 +2049,7 @@ def t_main_draft_translation_flow():
         # v2.18.2（D-3）升级本锁：旧断言要求草稿以 "auto" 送译（itest_home 的
         # asr_language 恰为 "auto"）——那是把缺陷行为当契约锁住了。新契约：
         # ① 语言未知时**不送**（argos 走不通、spec 不走备援链，送=必错）
-        w._dual_hist_base = ""
+        w._dual_base = ""
         w._dual_current = ""
         w._last_asr_lang = ""
         w._tgroup_lang = ""
@@ -2008,7 +2058,7 @@ def t_main_draft_translation_flow():
         assert w._dual_draft == "Draft before any language is known", "原文照常生长"
         # ② 会话一旦解出语言（此处模拟上一句已识别为 en），草稿照常送译且带真语言
         w._last_asr_lang = "en"
-        w._dual_hist_base = ""
+        w._dual_base = ""
         w._dual_current = ""
         # 草稿到达：原文区刷新 + 草稿送推测翻译（spec=True）
         w._on_partial_preview("The market opened higher")
@@ -2122,7 +2172,7 @@ def t_main_draft_waits_for_real_language():
     try:
         w._last_asr_lang = ""
         w._tgroup_lang = ""
-        w._dual_hist_base = ""
+        w._dual_base = ""
         w._dual_current = ""
         w._on_partial_preview("Hello there my friend")
         assert [x for x in sent if x[1]] == [], f"语言未知时不得送推测翻译：{sent}"

@@ -184,11 +184,9 @@ _FIELD_SPECS = {
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_layout":       ("overlay", "combo"),
-    # v2.19.0 引入；v2.19.1 三轮裁决后语义＝关（默认）滚动字幕墙 / 开 经典双语
-    # 大字区+顶部历史块（DEFAULTS 为 False，见 app/config.py 同键注释）
-    "overlay_dual_hist":    ("overlay", "check"),
+    # v2.20.0：删除 overlay_dual_hist / overlay_dual_hist_h——dual 的历史块与
+    # 滚动字幕墙两态一并退役，上下双语只剩"上原文 / 可拖分割线 / 下译文"一种形态
     "stream_preview":       ("pipeline", "check"),
-    "overlay_dual_hist_h":  ("internal", "hidden"),
     "overlay_dual_src_h":   ("internal", "hidden"),
     "overlay_font_size":    ("overlay", "spin"),
     "overlay_text_color":   ("overlay", "color"),
@@ -243,8 +241,8 @@ _STD_ROW_ITEMS = {
     "close": [("每次询问", "ask"), ("隐藏到托盘（字幕继续）", "tray"),
               ("直接退出程序", "exit")],
     # v2.11.0：面板布局两形态（dual=上下双语豆包风）
-    "overlay_layout": [("列表历史（原文+译文成对滚动）", "list"),
-                       ("上下双语（豆包风：上原文 / 下译文）", "dual")],
+    "overlay_layout": [("列表历史（原文+译文成对滚动、可回看整场）", "list"),
+                       ("上下双语（豆包风：上原文 / 可拖分割线 / 下译文）", "dual")],
     # v2.7.6（C）：分段上限档位——实测 hold_p50 恒等于该值（turbo 关=6.04s、
     # turbo 开=4.03~4.43s）。开了推测式增量翻译后译文随碎片立即上屏，本项
     # 主要影响"刷新粒度与腰斩程度"，不再是译文迟到的决定因素
@@ -395,22 +393,14 @@ _STD_ROWS = [
      "desc": "开启后字幕与字幕面板同时保留原语言文本（面板上也可一键开关）。"},
     {"key": "overlay_layout", "attr": "layout_combo", "page": "display", "section": "字幕显示",
      "kind": "combo", "title": "面板布局",
-     "desc": "「列表历史」= 现在的面板：原文+译文成对的历史滚动区，可回看整场。\n"
-             "「上下双语」= 豆包式实时翻译：上半是随识别「流式生长的原文」（淡色小字），"
-             "下半是「加粗大字译文」——原文一出就上屏，译文随即就地更新（配合推测式增量翻译几乎"
-             "无等待），说完即换下一句，是否保留可回看的历史见下方「双语面板历史区」。\n"
+     "desc": "「列表历史」= 原文+译文成对滚动、自动跟随最新，可回看整场。\n"
+             "「上下双语」= 豆包式实时翻译：上半是随识别「流式生长的原文」（淡色），"
+             "下半是「加粗大字译文」（配合推测式增量翻译几乎无等待），中间那条分割线"
+             "可以上下拖——原文长句想给多大空间就拖多大，两栏各自能滚轮回看。\n"
+             "双语布局只显示正在说的这一句，说完即换下一句；要回看整场历史请用"
+             "「列表历史」（主窗字幕卡片与导出文件始终是全的，与布局无关）。\n"
              "面板 ⋯ 菜单可随时互切，保存后立即生效。",
      "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
-    {"key": "overlay_dual_hist", "attr": "dual_hist_check", "page": "display", "section": "字幕显示",
-     "kind": "check", "title": "双语面板历史区（默认关＝滚动字幕墙）",
-     "desc": "关闭（默认）＝滚动字幕墙：整个面板就是一面滚动的字幕墙——每句说完留在屏上成对驻留，"
-             "当前句在最底部实时生长，满屏自动上滚，滚轮上滑回看不被打断。"
-             "句子不会从悬浮窗里消失（v2.19.1 用户真机三轮裁决后的形态）。\n"
-             "开启＝经典上下双语：当前句大字区（原文+译文，中间可拖分割线）+ 面板顶部历史块"
-             "（每句翻译完成自动沉入，原文小灰+译文小白成对，最多 30 对，滚轮回看）。\n"
-             "两种形态都不影响主窗口与导出文件的完整记录；面板 ⋯ 菜单里的"
-             "「经典双语（顶部历史块）」是同一开关的另一入口，随手可切、重启保持。",
-     "opts": {}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
      "desc": "开启：识别文本立刻上屏（译文位置显示占位），译文就绪后原地补齐——听到哪看到哪。"
@@ -2002,7 +1992,10 @@ class SettingsDialog(QDialog):
                 applied.append(k)
         self._mark_dirty()
         # 分层生效：悬浮字幕外观统一重放；热键重新注册；管线类改动重启管线
-        if any(k.startswith("overlay_") or k == "show_source" for k in applied):
+        # v2.20.0：`translate_grouping` 也要重放——面板 ⋯ 菜单里有同名勾选，
+        # 只改这一项时若不回放，菜单勾选会停在旧值直到重启（两入口漂移）
+        if any(k.startswith("overlay_") or k in ("show_source", "translate_grouping")
+               for k in applied):
             self.main.apply_overlay_from_config()
         if "overlay_enabled" in applied:
             self.main.set_overlay_enabled(bool(self.c.get("overlay_enabled")))
@@ -2254,18 +2247,19 @@ class SettingsDialog(QDialog):
         self.overlay_check.setChecked(bool(checked))
 
     def sync_overlay_keys(self, values):
-        """面板侧（⋯ 菜单 / 工具条 / Ctrl+滚轮）改了外观键 → 同步本页控件。
+        """面板侧（⋯ 菜单 / 工具条 / Ctrl+滚轮）改了配置键 → 同步本页控件。
 
         v2.19.2：此前只有 `overlay_enabled` 与 `target_lang` 有窄同步，
         字号 / 透明度 / 布局 / 历史区四项漏网——面板切完，设置页控件仍显示旧值；
         用户把控件拨到"屏幕上的实际值"时被 `_stage` 判成"改回原值"而静默吞掉
         （显示改了、底部仍提示"所有改动已保存"）。规矩与 `sync_target_lang`
         一致：「不清 `_staged`」，用户已暂存该键时不覆盖其暂存值。
+        v2.20.0：面板 ⋯ 菜单的「攒句合并」（`translate_grouping`）并入同一通道。
         """
         widget_of = {"overlay_font_size": "overlay_font_spin",
                      "overlay_bg_opacity": "bg_opacity_slider",
                      "overlay_layout": "layout_combo",
-                     "overlay_dual_hist": "dual_hist_check"}
+                     "translate_grouping": "grouping_check"}
         staged = getattr(self, "_staged", None) or {}
         for key, val in (values or {}).items():
             if key in staged:
