@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-16 **v2.18.2 已发布**（本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
+> 最后更新：2026-09-18 **v2.19.1 已发布**（第二十五节＝本轮：v2.19.1 发版收尾 + GitHub 令牌轮换 + 实测出「本会话能读图」推翻第三节旧结论 + 用户配置磁盘现值二次勘误）。上一轮记录（2026-09-16 **v2.18.2 已发布**，本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.18.2**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.19.1**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -802,3 +802,20 @@ UIA 点"开始翻译"→日志验证→每秒抓面板帧）**，t=20/t=40 帧�
 - 套件：单元 **81** / 集成 **116** 全绿（前台跑——用户明令**测试一律前台执行，别再开后台任务**）。
 - 复验留给用户：面板启动时历史区是空的（还没有句子），开始翻译说几句后才会逐句堆积——
   试听时别因"刚打开没看到历史区"误判未生效。
+
+## 二十五、会话快照（2026-09-18 v2.19.1 发布收尾 + 令牌轮换 + 视觉能力实测）
+
+- **本轮性质**：无产品代码改动，只做上一会话遗留的发版收尾（24.5 待办 1）。接手时状态：本地 `main` 领先 `origin/main` **3 个提交**（`02f573f`/`e2ab48c`/`07ec365`，全是 v2.19.1 内容），但三处版本号仍 2.19.0、CHANGELOG 无 v2.19.1 节、无 tag——**"已提交未发布"是本项目最容易漏的中间态**，接手第一件事除了比对远程 sha（13.5），还要 `git rev-list --left-right --count origin/main...main` 看有没有攒着没推的提交。
+- **发版**：套件复跑（前台 + offscreen）单元 **81 PASS** / 集成 **116 PASS** → `bump_version.py 2.19.1` → `--check` =「版本一致: 2.19.1」→ CHANGELOG 新增 v2.19.1 一节 → 提交（**含 `app/config.py`**）→ push main → tag → CI 双资产。
+- **GitHub 令牌轮换**（用户 2026-09-18 提供新令牌，"先更新一下 github Tokens"）：`gh auth status` 实测到旧令牌**已失效**（用户已按 13.7 的建议去撤销）。新令牌走 `printf '%s' <token> | gh auth login --with-token` 写入密钥环，scope 含 `repo` + `workflow`。
+  - **机制确认（重要，省下次一轮排查）**：`~/.gitconfig` 里已配 `credential.https://github.com.helper = !'C:\Program Files\GitHub CLI\gh.exe' auth git-credential`（早前某会话跑过 `gh auth setup-git`），**git 的凭据直接取自 gh 密钥环**——换令牌只需这一处，不必动 git config；Windows 凭据管理器里也没有独立的 git 条目。写权限用 `git push --dry-run` 验证（不改远程）。
+  - ⚠ 新令牌同样是 **classic 全权 PAT**（含 `delete_repo`/`admin:org`/`admin:enterprise`/`copilot`），且**又一次在对话中明文出现**。建议换限定 live-subtitle 单仓、只给 `Contents: RW` + `workflows` 的 fine-grained 令牌，用完再轮换。
+- **网络前提已变（13.5 就地纠偏）**：本轮 `git ls-remote` / `git push --dry-run` **直连 github.com 全部成功**，且当前 shell 里没有 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量——"git 直连必失败、必须 `-c http.proxy=http://127.0.0.1:10808`"是当时那个会话的网络状态，**不是恒定事实**。下次先直连试一次，失败再挂代理。
+- **视觉能力实测，推翻第三节旧结论**：第三节"本会话模型不能读图（read_image 只回元数据）"在本会话**不成立**——`QScreen.grabWindow(0)` 截整屏（1920×1080）→ Read 读图，能看清桌面内容与中文文字。含义：UI 改版可走"真机截图 → 我自己看 → 判断对不对"闭环，不再只能靠 UIA 数控件 + 像素统计间接取证。
+  - 仍然避开 `ctypes BitBlt(GetDC(0))`（21.1：DWM 合成下字幕面板截成纯黑）。`user32` 可达（`GetCursorPos`/`GetForegroundWindow` 正常返回），但 `SendInput` 真实点击/键入本轮**未演示**——会直接动用户桌面，按第八节红线先问再做。
+  - ⚠ 历史教训仍有效：v2.19.0 那轮会话因**反复读图触发图片审核 400** 而中断（23.7）。若再遇 400，退回像素/UIA 取证，别硬撑。
+  - 截屏会连带拍到用户屏幕上的一切（本轮就拍到 GitHub 令牌页）——**临时截图用完即删**。
+- **用户配置磁盘现值二次勘误**（读 `~\.live_subtitle\config.json` 实测；第四节 09-16 那份又过期了）：`overlay_layout=list`（**非 dual**——用户已在面板 ⋯ 菜单切回列表）、`overlay_dual_hist=false`、`translate_grouping=false`（攒句关着）、`engine=argos`、`asr_language=en`、`segment_cap_s=4.0`、`perf_turbo=true`；其余（turbo + cuda、argos 离线包在位）不变。
+- **本轮新发现的工具箱噪声**（未修）：`tests/test_units.py` 跑完会打一行 `Exception in thread Thread-11 (_readerthread): UnicodeDecodeError: 'gbk' codec can't decode byte 0x80` ——某个单测用系统默认编码读子进程输出所致，**不影响判定**（`UNIT: 81 PASS` 照常），但容易误读成失败。修法=那处 `subprocess` 显式 `encoding='utf-8'`。属 22.6 工具箱债，与产品无关。
+- **待办**（下一会话接续）：① 22.6 头号债不变——**116 项集成测试仍不在任何 CI 闸门**（`build.yml` 只跑单元 + smoke）；② 上面那条 GBK 噪声；③ 22.8 观察 2「流式草稿尾部近似重复」仍未清零；④ 用户本机 `overlay_layout=list`，v2.19.1 的字幕墙形态要实测需先切回「上下双语」。
+
