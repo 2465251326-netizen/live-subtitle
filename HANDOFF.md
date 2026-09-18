@@ -1003,3 +1003,14 @@ dual 布局的长相在这一周里被裁决了三次：v2.14.0 加顶部历史�
 真机渲染：`%TEMP%\ls_v220_look.py`（面板开在桌面上 + `grabWindow` 拍真实像素，6 张：生长态 / 终版驻留 /
 分割线拖 230px / ⋯ 菜单 / 关原文 / list 对照）——**下次改版面板直接复用**；跑完已删临时截图与隔离 home
 `ls_v220_home`（464MB）。`scripts/qa/dual_disappear_probe.py` 已随新形态改写（去掉两态对照，保留终版存活拍数 + list 对照）。
+
+- **发布记录**：提交 `98bed81`，CI run `35348525930`（tag push，`build.yml` 是 `on.push.tags: ['v*']`，
+  所以事件显示 `push` 而非 `release`；同一时段 `main` 的并行 run `35348522173` 也 success）
+  completed/success，耗时 **5m44s**（近几版最快，v2.19.4 是 7m14s）；`Version check OK: tag v2.20.0 == 三处`、
+  **UNIT: 89 tests PASS**、`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`、
+  EXE 存活 PID 1932、Inno `Successful compile (36.188 sec)`；双资产
+  `LiveSubtitle-Setup-2.20.0.exe` 91,340,023 B（较上版 **−849 B**）/
+  `LiveSubtitle-2.20.0-portable.zip` 136,300,773 B（−4,888 B）——删掉一整套历史区控件与 QSS 规则，
+  体积只降了几 KB，符合预期（PyInstaller 打包的是解释器与依赖，UI 代码占比极小）。
+  ⚠ 与历轮同样：CI 只跑单元 + smoke，本轮**布局改版的视觉结论全部来自本地真机逐屏**，CI 侧无证据；
+  用户本机 `overlay_layout` 仍是 `list`，要看新双语形态需先在设置页或 ⋯ 菜单切过去。
