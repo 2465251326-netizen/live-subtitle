@@ -473,9 +473,15 @@ def probe_engine(name, timeout=2.5, src="", tgt=""):
     return False, "未知引擎"
 
 
-def select_engine_ex(timeout=2.5):
+def select_engine_ex(timeout=2.5, src="", tgt=""):
     """v2.3.2（G2）：探测并返回 (选用引擎, 失败原因列表)——
-    失败原因供 UI 事前横幅，不再只有事后日志。"""
+    失败原因供 UI 事前横幅，不再只有事后日志。
+
+    v2.20.4：全部在线引擎探测失败时**先落到已安装的离线包**，而不是硬写
+    "mymemory"。旧行为让离线/无网用户（装好了 en→zh 包、把引擎选成"自动"）
+    整场每条字幕都失败——`mymemory` 本身就是探不通的那个；而横幅还写着
+    「改用「自动」引擎」，自动恰恰是他们的默认值。`src`/`tgt` 用于判断该方向
+    有没有本地包（`probe_engine("argos")` 的语义就是"本方向有可用的离线包"）。"""
     from app import log as app_log
     fails = []
     for name in PROBE_ORDER:
@@ -484,7 +490,12 @@ def select_engine_ex(timeout=2.5):
             return name, fails
         app_log.log("translate.probe_failed", engine=name, detail=detail)
         fails.append(f"{name}: {detail}")
-    app_log.log("translate.probe_all_failed", fallback="mymemory")
+    argos_ok, argos_detail = probe_engine("argos", timeout=1.0, src=src, tgt=tgt)
+    if argos_ok:
+        app_log.log("translate.probe_all_failed", fallback="argos")
+        return "argos", fails
+    app_log.log("translate.probe_all_failed", fallback="mymemory",
+                argos=argos_detail)
     return "mymemory", fails
 
 
@@ -687,7 +698,8 @@ class TranslateThread(QThread):
         self._active_engine = self.engine_name
         if self.engine_name == "auto":
             self.status_changed.emit("正在探测可用翻译引擎...")
-            self._active_engine, fails = select_engine_ex()
+            self._active_engine, fails = select_engine_ex(
+                src=str(getattr(self, "expected_src", "") or ""), tgt=str(self.target or ""))
             self.status_changed.emit(f"已选用翻译引擎: {self._active_engine}")
             if fails:  # G2：主引擎不可达，事前横幅（携带具体失败原因）
                 self.engine_fallback.emit(f"Google 未通过，已选 {self._active_engine}",

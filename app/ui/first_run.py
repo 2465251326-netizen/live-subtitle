@@ -115,6 +115,10 @@ class FirstRunWizard(QDialog):
             rec_code, rec_reason = gpu.recommended_model()
         except Exception:
             rec_code, rec_reason = "", ""
+        # v2.20.4 记档未改：这条判据把"用户主动选了出厂值 small"当成"没选过"，
+        # 重跑向导时会被覆盖成 large-v3-turbo（1.5GB 下载）。改法要动 v2.2.12 立下
+        # 的既有契约（重跑向导到底该不该保留用户手选的、与出厂同名的档位），
+        # 属产品判断，留待用户裁决后再改。
         user_chosen = bool(current) and current != str(DEFAULTS.get("asr_model"))
         target = current if user_chosen else (rec_code or current or "small")
         if rec_code and not user_chosen:

@@ -2248,6 +2248,71 @@ def test_log_redacts_subtitle_text():
     assert "translate.failed" == _redact("translate.failed")
 
 
+def test_merge_stream_blocks_cjk_and_interior_repeat():
+    """v2.20.4：`_merge_stream` 的两类"同一句在屏上两遍"必须在 (d) 追加前拦住。
+
+    ① CJK/假名没有空格 → 词表恒 1 个 token，(c)(e)(f) 全部词级判据退化失效，
+       实测 merge("他说今天天气不错", "他说今天的天气不错还有雨") 拼成两句。
+    ② 词级内嵌重复：diff 开头多听到一个词就把 current 整块包住
+       （"the market closed at four" vs "and the market closed at four o'clock …"），
+       旧写法只在公共词尾 >=3 时才查 `_contains_block`，这类形态词尾只有 2 个。
+    同时钉住反例：真的换了一句时必须照常追加，判据不许把新内容吃掉。
+    """
+    from app.ui.main_window import MainWindow
+
+    m = MainWindow._merge_stream
+    cjk = m("他说今天天气不错", "他说今天的天气不错还有雨")
+    assert cjk == "他说今天的天气不错还有雨", cjk
+    lat = m("the market closed at four",
+            "and the market closed at four o clock today")
+    assert lat.count("market") == 1, lat
+    # 换句必须继续追加（宁可少并不可丢句）
+    assert m("这个方案今天开会讨论", "这个方案明天开始实施").count("方案") == 2
+    assert m("Hello there", "how are you") == "Hello there how are you"
+
+
+def test_config_dict_coercion_keeps_valid_entries():
+    """v2.20.4：词典类配置**逐条**过滤，一个坏值不得毁掉整本词典。
+
+    旧写法是"任一条目不是 str→str 就整本回退默认原型"。实测 121 条误听词典里
+    混进一个数值（手编 JSON / 旧版本写坏）→ load 出来 0 条，不留 .json.bad、
+    不记日志，随后空词典被持久化回磁盘，用户攒的词典**不可恢复**。"""
+    from app.config import Config, DEFAULTS
+    import tempfile as tf
+    from pathlib import Path
+
+    good = {"%d" % i: "第%d个" % i for i in range(120)}
+    hostile = dict(good)
+    hostile["坏条目"] = 7                      # value 不是字符串
+    hostile[3] = "键不是字符串"                 # key 不是字符串
+    out = Config._coerce("mishear_map", hostile)
+    assert isinstance(out, dict) and len(out) == 120, \
+        f"一个坏值把整本词典带走了：{out if not isinstance(out, dict) else len(out)}"
+    assert out["0"] == "第0个"
+    # 全坏（或顶层不是 dict）仍回默认原型
+    assert Config._coerce("mishear_map", [1, 2]) == {}
+    assert Config._coerce("mishear_map", {"a": 1}) == {}
+
+
+def test_log_redacts_proxy_credentials():
+    """v2.20.4：脱敏要覆盖"代理账号口令"，且崩溃兜底日志同一条路。
+
+    `app.log` 的 docstring 承诺不记正文，README 又让用户把它贴到公开 Issues；
+    urllib3/requests 的异常文本里会带完整代理 URL（`http://user:pass@host`）。"""
+    from app.log import _redact
+
+    s = ("Cannot connect to proxy http://alice:S3cr3tPw@127.0.0.1:10808 "
+         "while requesting https://translate.googleapis.com/x?q=%E4%BD%A0")
+    out = _redact(s)
+    assert "S3cr3tPw" not in out and "alice:" not in out, out
+    assert "%E4%BD%A0" not in out, out
+    # 崩溃兜底日志（main.write_log）必须走同一个脱敏口
+    import main as _m
+    import inspect
+    src = inspect.getsource(_m.write_log)
+    assert "_redact" in src, "write_log 绕过脱敏，异常原文直接落盘"
+
+
 def test_segmenter_pending_cap_and_expiry():
     """v2.20.2：碎片队列的两道闸各自被实测打穿过，这里一起钉住。
 

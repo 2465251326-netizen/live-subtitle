@@ -266,11 +266,12 @@ def build_export_text(cards, fmt="txt"):
     if fmt == "srt":
         cues = []
         for meta, source, target, t_start, dur_s in rows:
-            if target in ("...", "⟳ …", "", "[翻译失败]"):
-                target = ""
-            text = target or source
-            if not text:
+            # v2.20.4：不再"译文缺失就回退原文"。失败卡、被并入的前片卡、仍在
+            # 等待的占位卡都因此混进 SRT——实测一次导出 3 条 cue 里两条是英文
+            # 原文，而提示写着"已导出 3 条"，用户拿到的是半英半中的字幕。
+            if not target or target in ("...", "⟳ …", "[翻译失败]"):
                 continue
+            text = target
             cues.append([t_start, dur_s, _srt_wrap(text)])
         for i, c in enumerate(cues):
             if c[0] is None:
@@ -286,12 +287,15 @@ def build_export_text(cards, fmt="txt"):
     lines = []
     n = 0
     for meta, source, target, _t0, _dur in rows:
+        # v2.7.4（B-12）说"占位/失败卡不得混进导出"，旧实现只丢了译文行，
+        # `[时间] + 原文` 照样写、条数照样加——失败一整场的会话仍导出 N 条。
+        # 现在与 SRT 用同一过滤集，计数即真实可看的条数。
+        if not target or target in ("...", "⟳ …", "[翻译失败]"):
+            continue
         lines.append(f"[{meta}]")
         if source:
             lines.append(source)
-        if target and target not in ("...", "⟳ …", "[翻译失败]"):
-            # v2.7.4（B-12）：与 SRT 侧同一过滤集——占位/失败卡不得混进导出
-            lines.append(target)
+        lines.append(target)
         lines.append("")
         n += 1
     return "\n".join(lines), n
@@ -306,6 +310,26 @@ def _card_row(card):
                 card.target_label.text(),
                 getattr(card, "t_start", None), getattr(card, "dur_s", None))
 
+def _lcs_ratio(a, b):
+    """两条文本按**字符**的有序公共占比：LCS 长度 ÷ 较短一条的长度（0~1）。
+
+    为什么不用词：中日韩文本 `split()` 出来只有一个 token，任何词级判据都退化成
+    "全等或全不等"。为什么不用集合：集合会把近义改写的两句误判成同一句
+    （面板 v2.20.1 就栽过，见 `CaptionOverlay._dual_same_sentence` 的注释）。"""
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if not a or not b:
+        return 0.0
+    if len(a) * len(b) > 400000:          # 超长文本不抖 O(n·m)，按"不像同一句"处理
+        return 0.0
+    prev = [0] * (len(b) + 1)
+    for ca in a:
+        cur = [0]
+        for k, cb in enumerate(b):
+            cur.append(prev[k] + 1 if ca == cb else max(prev[k + 1], cur[k]))
+        prev = cur
+    return prev[-1] / min(len(a), len(b))
+
 
 class MainWindow(QMainWindow):
     start_requested = Signal()
@@ -317,7 +341,12 @@ class MainWindow(QMainWindow):
             dur = max(0.6, float(str(duration)))
         except (TypeError, ValueError):
             dur = None
-        return ((time.time() - t0) if t0 else None), dur
+        # v2.20.4：`_session_t0` 每次开始翻译都归零，而卡片与导出台账**不会**被
+        # 清掉——停止→开始后导出的 SRT 时间轴会倒回去（实测第 151 条 cue 落在
+        # 0.0s，前一条在 596.0s），播放器直接丢帧/乱序。这里给每条盖上一场累计
+        # 的偏移，让整份文件的时间轴始终单调。
+        off = getattr(self, "_t_axis_offset", 0.0)
+        return ((time.time() - t0 + off) if t0 else None), dur
 
     def __init__(self):
         super().__init__()
@@ -1333,7 +1362,19 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "导出字幕", "没有已完成的字幕可导出为 SRT。")
             return
         try:
-            Path(path).write_text(content, encoding="utf-8")
+            # v2.20.4（P0，实测）：`Path.write_text` 是文本模式 open("w")——
+            # **打开即截断**，编码或写盘一失败（卡片里混进孤立代理对、磁盘满、
+            # 目标在已被弹出的移动盘上），用户选的那个已有文件就变成 0 字节空壳，
+            # 界面上只留一句"写入文件失败"。改成：先内存编码 → 写 .tmp → fsync →
+            # os.replace，任何一步失败都不碰原文件（与 config.save 同一套）。
+            data = content.encode("utf-8", "replace")
+            import os as _os
+            tmp = str(path) + ".tmp"
+            with open(tmp, "wb") as fp:
+                fp.write(data)
+                fp.flush()
+                _os.fsync(fp.fileno())
+            _os.replace(tmp, path)
         except Exception as e:
             QMessageBox.warning(self, "导出字幕", f"写入文件失败：{e}")
             return
@@ -1435,6 +1476,10 @@ class MainWindow(QMainWindow):
         self._sid_tr = self.translate_thread   # v2.6.2（P1-6）：会话身份引用
 
         self._asr_ready = False  # v2.0.4：模型加载期停止时缩短等待（见 stop_pipeline）
+        # v2.20.4：新会话开始，把上一场已经走过的秒数垫进时间轴偏移（见 _asr_timing）
+        _prev_t0 = getattr(self, "_session_t0", None)
+        if _prev_t0:
+            self._t_axis_offset = getattr(self, "_t_axis_offset", 0.0) +                 max(0.0, time.time() - _prev_t0)
         self._session_t0 = time.time()  # v2.2.11：SRT 时间轴零点（本次会话起算）
         # v2.3.1：重模型+CPU 组合预警（常驻横幅，见 _set_engine_status）
         self._heavy_cpu_warn = (str(c.get("asr_model")) in ("medium", "large-v3-turbo")
@@ -1909,6 +1954,24 @@ class MainWindow(QMainWindow):
             if MainWindow._contains_block(nc, nd):
                 return current
             return current
+        # v2.20.4：走到这里就要整段追加了，而实测有两类形态会被追加成"同一句在
+        # 屏上两遍"，必须在 (d) 之前拦住：
+        # ① 词级内嵌重复——diff 只是开头多听到一个词，把 current 整块包住
+        #    （"the market closed at four" vs "and the market closed at four
+        #    o'clock today"）。旧写法只在 `tail_common>=3` 那个分支里查
+        #    `_contains_block`，而这类形态的公共词尾只有 2 个，根本进不去。
+        if MainWindow._contains_block(nd, nc):
+            return diff
+        if MainWindow._contains_block(nc, nd):
+            return current
+        # ② CJK/假名整句重转写：这类文本没有空格，词表恒为 1 个 token，上面所有
+        #    词级判据（(c) 的 6 字锚点、(e)、(f)）全部失效，实测
+        #    merge("他说今天天气不错", "他说今天的天气不错还有雨") 直接拼成两遍。
+        #    改按**字符级有序 LCS 占比**判（阈值与面板同句判据同源：短的一侧
+        #    几乎原序被长的一侧包住＝同一句）。真·新句（"这个方案今天开会讨论"
+        #    vs "这个方案明天开始实施"）实测只有 0.6，不会被误并。
+        if _lcs_ratio(current, diff) >= 0.85:
+            return diff if len(diff) >= len(current) else current
         return (current + " " + diff).strip()
 
     @staticmethod
@@ -2358,6 +2421,12 @@ class MainWindow(QMainWindow):
             tr = self._active_translate()
             if tr is None:
                 return
+            if not tr.isRunning():
+                # v2.20.4：与攒句路径 `_flush_tgroup` 的 B-1 守卫同一件事，此前
+                # 只有那条路有守卫——关掉攒句时翻译线程若已自然退出，文本投进死
+                # 队列永不回来，占位卡永久停在 "⟳ …"，且没有任何日志。
+                self._drop_translation(text, "翻译已停止，本句未翻译")
+                return
             self._submit_ts = getattr(self, "_submit_ts", {})
             self._submit_ts[text] = time.monotonic()  # v2.3.20（P26）
             # v2.6.2（P1-7）：被队列挤掉的句子占位卡立即终态化，不再悬挂
@@ -2483,7 +2552,7 @@ class MainWindow(QMainWindow):
             # v2.7.4（B-1）：翻译线程已自然退出（asr 排水超过 15s 宽限等场景）——
             # 投进死队列的尾组会让占位卡永久悬挂"⟳ …"，直接整组终态化
             for piece in grp:
-                self._drop_translation(piece)
+                self._drop_translation(piece, "翻译已停止，本句未翻译")
             return
         # v2.7.0（T2）："末片到达→整句冲送"的攒住时长入遥测——提前冲是否
         # 起效，看日志 hold_p50 一行即证（此前"慢"的大头恰好不在任何遥测里）
@@ -2624,10 +2693,14 @@ class MainWindow(QMainWindow):
         if self.overlay.isVisible():
             self.overlay.update_spec_result(source_text, translated, show_source)
 
-    def _drop_translation(self, src_text):
+    def _drop_translation(self, src_text, reason="翻译队列繁忙，本句已跳过"):
         """v2.6.2（P1-7）：翻译队列满被挤掉的句子——占位卡/攒句簿记立即
         终态化，不再永久悬挂 "⟳ …"、不再累积悬挂引用。攒句合并句整组处理：
-        末片卡显示终态文案、前片卡保持并入态。"""
+        末片卡显示终态文案、前片卡保持并入态。
+
+        v2.20.4：`reason` 可传——"线程已死"与"队列挤爆"是两件事，写同一句
+        「翻译队列繁忙」会把用户支到错误的下一步（去调队列/换引擎，而真相是
+        翻译线程已经退出了）。"""
         if not src_text:
             return
         gmap = getattr(self, "_tgroup_by_src", None)
@@ -2641,7 +2714,7 @@ class MainWindow(QMainWindow):
                 ts.pop(c, None)   # 片级延迟簿记一并清
             card = self._take_pending(pieces[-1])
             if card is not None:
-                card.set_failed("翻译队列繁忙，本句已跳过")
+                card.set_failed(reason)
             for c in pieces[:-1]:
                 pc = self._take_pending(c)
                 if pc is not None:
@@ -2649,7 +2722,7 @@ class MainWindow(QMainWindow):
         else:
             card = self._take_pending(src_text)
             if card is not None:
-                card.set_failed("翻译队列繁忙，本句已跳过")
+                card.set_failed(reason)
 
     # ---------- v2.3.20（P26）：内置延迟自测 ----------
 

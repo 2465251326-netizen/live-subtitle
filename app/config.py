@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.20.3"
+APP_VERSION = "2.20.4"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -311,9 +311,21 @@ class Config:
                     return float(val.strip())   # "2.5" 挽救；"2.5s" 抛→原型
                 return proto
             if isinstance(proto, dict):
-                if isinstance(val, dict) and all(
-                        isinstance(k, str) and isinstance(v, str) for k, v in val.items()):
-                    return val
+                # v2.20.4（P1，实测）：旧写法"任一条目不是 str→str 就整本回退默认"
+                # ——用户手工攒的 121 条误听词典里混进一个数值（手编 JSON、或旧版本
+                # 写坏的条目）就全量清零，且不留 .json.bad、不记日志，随后空词典
+                # 还会被持久化回磁盘，**不可恢复**。改为逐条过滤，好的留下。
+                if isinstance(val, dict):
+                    good = {k: v for k, v in val.items()
+                            if isinstance(k, str) and isinstance(v, str)}
+                    if len(good) != len(val):
+                        try:
+                            from app import log as _log
+                            _log.log("config.dict_partial_repaired",
+                                     dropped=len(val) - len(good), kept=len(good))
+                        except Exception:
+                            pass
+                    return good
                 return proto
             if isinstance(proto, list):
                 return val if isinstance(val, list) else proto

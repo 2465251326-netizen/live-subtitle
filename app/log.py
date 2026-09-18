@@ -23,6 +23,9 @@ _handler = None
 # 异常消息，而日志是被要求"贴到公开 Issues"的。
 _RE_Q = re.compile(r"([?&]q=)[^&\s]+")
 _RE_URL = re.compile(r"(with url:\s*)\S+")
+# v2.20.4：代理 URL 里的账号口令（`http://user:pass@host`）——异常文本偶尔整条带出，
+# 而 app.log 是被要求"贴到公开 Issues"的。
+_RE_CRED = re.compile(r"([a-zA-Z][\w+.\-]*://)[^\s/@]+:[^\s@]+@")
 
 
 class _Utf8RotatingHandler(logging.Handler):
@@ -141,6 +144,7 @@ def log(event, **fields):
 _REDACT = (
     (_RE_Q, r"\1***"),          # 查询串里的待译文本
     (_RE_URL, r"\1***"),        # urllib3 "with url: …" 整条
+    (_RE_CRED, r"\1***@"),     # 代理账号口令
 )
 
 

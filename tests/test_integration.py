@@ -529,13 +529,19 @@ def t_export_srt():
     c2 = CaptionCard("second line")
     c2.set_result("第二行", "google", "en", False)
     c2.t_start, c2.dur_s = 2.5, 1.8
-    pending = CaptionCard("only source")  # 译文未落地：回退原文并入轴
-    srt, m = build_export_text([c1, c2, pending], "srt")
-    assert m == 3, (m, srt)
+    # v2.20.4 换代：译文未落地的卡**不再回退成原文入轴**。旧注释写"回退原文并入轴"，
+    # 与同文件 v2.7.4（B-12）"占位/失败卡不得混进导出"直接矛盾；实测一次导出
+    # 3 条 cue 里两条是英文原文，而提示写着"已导出 3 条"。
+    pending = CaptionCard("only source")
+    failed = CaptionCard("bad line")
+    failed.set_failed("翻译失败")
+    srt, m = build_export_text([c1, c2, pending, failed], "srt")
+    assert m == 2, (m, srt)
     # 时长来自 Whisper：cue1 结束被 cue2 起点前移 0.1s 夹紧（2.5→2.4）
     assert "1\n00:00:00,000 --> 00:00:02,400\n你好世界" in srt, srt
-    assert "2\n00:00:02,500 --> 00:00:04,200\n第二行" in srt, srt  # 同样被夹紧
-    assert "3\n00:00:04,300 --> 00:00:08,300\nonly source" in srt, srt
+    # cue2 现在是最后一条（未落地的第 3 条已不入轴），不再被后一条夹紧 → 2.5+1.8
+    assert "2\n00:00:02,500 --> 00:00:04,300\n第二行" in srt, srt
+    assert "only source" not in srt and "bad line" not in srt, srt
     txt, n = build_export_text([c1, c2], "txt")
     assert n == 2 and txt.startswith("[") and "你好世界" in txt
     # v2.2.12：长句折两行（CJK 在标点处断）
@@ -545,8 +551,9 @@ def t_export_srt():
     srt2, _ = build_export_text([longc], "srt")
     assert "，\n" in srt2, srt2
     assert all(len(line) <= 44 for line in srt2.splitlines() if " --> " not in line)
-    # 空目标：无内容时 srt 返回空且不崩
-    assert build_export_text([pending], "srt")[1] == 1
+    # 只有未落地卡时：SRT 一条都不出（v2.20.4 换代，旧断言是"仍占 1 条"）
+    assert build_export_text([pending], "srt")[1] == 0
+    assert build_export_text([pending], "txt")[1] == 0
 check("export: SRT 时间轴格式与夹紧逻辑", t_export_srt)
 
 def t_srt_wrap():
@@ -672,6 +679,86 @@ def t_select_engine_ex():
     finally:
         tr.probe_engine = orig
 check("translate: select_engine_ex 失败原因收集", t_select_engine_ex)
+
+
+def t_select_engine_ex_offline_last_resort():
+    """v2.20.4：在线全挂时**先落到已安装的离线包**，而不是硬写 mymemory。
+
+    旧行为把"无网 + 装好了 en→zh 包 + 引擎选自动"（正是离线使用的主流配置）
+    的用户推进死胡同：`mymemory` 本身就是探不通的那个，于是每条字幕都失败，
+    而横幅还写着「改用「自动」引擎」——自动恰恰是他们的默认值。"""
+    import app.translate.translator as tr
+    orig = tr.probe_engine
+    try:
+        tr.probe_engine = lambda name, timeout=2.5, src="", tgt="": (
+            name == "argos", "离线包 en→zh 可用" if name == "argos" else "ConnectTimeout")
+        eng, fails = tr.select_engine_ex(src="en", tgt="zh-CN")
+        assert eng == "argos", eng
+        assert len(fails) == 2, fails          # 两条在线失败原因仍要交给横幅
+        # 没有离线包时照旧落 mymemory（行为不回退）
+        tr.probe_engine = lambda name, timeout=2.5, src="", tgt="": (False, "不可用")
+        eng2, _f2 = tr.select_engine_ex(src="en", tgt="zh-CN")
+        assert eng2 == "mymemory", eng2
+    finally:
+        tr.probe_engine = orig
+
+
+check("translate: 在线全挂时落已装离线包（v2.20.4 离线死胡同）",
+      t_select_engine_ex_offline_last_resort)
+
+
+def t_dead_translate_thread_finalizes_card():
+    """v2.20.4：关攒句路径缺的这道守卫，此前让卡片永久停在 "⟳ …"。
+
+    攒句路径（`_flush_tgroup`）自 v2.7.4（B-1）起就有"翻译线程已退出→整组终态化"
+    的守卫，逐片直送那条路只判了 `tr is None`。线程自然退出后文本投进死队列，
+    永不回来：占位卡停在 "⟳ …"、日志零线索，用户只会以为"翻译很慢"。
+    文案也要分开：写「翻译队列繁忙」会把人支到错误的下一步。"""
+    w = MainWindow()
+    # 集成套件共用一个配置 home：本锁改的两个全局键必须存原值、finally 还原，
+    # 否则后面所有依赖"攒句开"的锁全部误报（v2.20.0 实测一次带走 6 条）
+    old_g = w.config.get("translate_grouping")
+    old_ll = w.config.get("low_latency_mode")
+    try:
+        w.config.set("translate_grouping", False)
+        w.config.set("low_latency_mode", False)
+
+        class DeadT:
+            def submit(self, text, detected):
+                raise AssertionError("线程已死还往队列里投")
+
+            def isRunning(self):
+                return False
+
+        real = w.translate_thread
+        # 主窗按会话身份解析线程（`_active_translate`），直接换 `translate_thread`
+        # 属性不会被读到——这里替换解析结果本身
+        w._active_translate = lambda: DeadT()
+        w._on_asr_text("A line that will never be translated.", "en", "2.0")
+        # 守卫生效时这张占位卡会被就地终态化并从 _pending 摘除——所以先确认
+        # 待决队列空了，再从在场卡片里核对文案（`_take_pending` 已经取不到了）
+        assert not w._pending, "占位卡没被终态化，仍挂在待决队列里（永久 ⟳）"
+        card = [w.scroll_layout.itemAt(i).widget() for i in range(w.scroll_layout.count())]
+        card = [c for c in card if isinstance(c, CaptionCard)
+                and c.source_label.text().startswith("A line that will never")]
+        assert len(card) == 1, "卡片不见了"
+        card = card[0]
+        assert card is not None and not card.is_pending(), \
+            "翻译线程已退出时占位卡仍悬挂 ⟳"
+        # set_failed 的契约：译文行写 "[翻译失败]"，原因进 meta 行
+        assert card.target_label.text() == "[翻译失败]", card.target_label.text()
+        assert "翻译已停止" in card.meta_label.text(), card.meta_label.text()
+        w._active_translate = MainWindow._active_translate.__get__(w, MainWindow)
+        w.translate_thread = real
+    finally:
+        w.config.set("translate_grouping", old_g)
+        w.config.set("low_latency_mode", old_ll)
+        w._teardown()
+        w.deleteLater()
+
+
+check("translate: 线程已退出时逐片路径也终态化卡片（v2.20.4 缺守卫）",
+      t_dead_translate_thread_finalizes_card)
 
 def t_panel_drag_contract():
     # v2.4.0：面板是"诚实的板"——整板可拖、右缘调宽；穿透/紧凑带/三形态旧 API
@@ -3444,6 +3531,9 @@ def t_placeholder_shows_source_dim():
     class FakeT:
         def submit(self, text, detected):
             pass
+
+        def isRunning(self):
+            return True   # v2.20.4：主窗新增的"翻译线程已死"守卫要读它
     real_tt = w.translate_thread
     w.translate_thread = FakeT()
     w._on_asr_text("A pending line awaits its translation.", "en", "2.0")
@@ -3676,6 +3766,9 @@ def t_latency_telemetry():
 
         def submit(self, text, detected):
             self.submitted.append(text)
+
+        def isRunning(self):
+            return True   # v2.20.4：主窗新增的"翻译线程已死"守卫要读它
 
     real_tt = w.translate_thread
     w.translate_thread = FakeTT()

@@ -18,8 +18,18 @@ def write_log(title, text):
         from app.config import CONFIG_DIR as _cfg_dir
         log_dir = _cfg_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
+        # v2.20.4：崩溃/Qt 兜底日志与结构化日志写的是**同一个文件**，README 又让
+        # 用户把 app.log 贴到公开 Issues —— 脱敏必须同样生效。旧实现只有
+        # app/log.py 那条路脱敏，未捕获异常里带的 `q=<整句字幕>` 与
+        # `http://user:pass@proxy` 会原样落盘。
+        try:
+            from app.log import _redact as _rd
+        except Exception:
+            def _rd(x):
+                return x
         with open(log_dir / "app.log", "a", encoding="utf-8") as f:
-            f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {title}\n{text}\n")
+            f.write("\n[%s] %s\n%s\n"
+                    % (time.strftime("%Y-%m-%d %H:%M:%S"), title, _rd(str(text))))
     except Exception:
         pass
 
