@@ -662,6 +662,21 @@ class MainWindow(QMainWindow):
     def _on_panel_font_size(self, px):
         self.config.set("overlay_font_size", int(px))
         self.apply_overlay_from_config()
+        self._sync_settings_overlay(overlay_font_size=int(px))
+
+    def _sync_settings_overlay(self, **values):
+        """v2.19.2：面板侧改了外观键 → 同步**已打开**的设置页控件。
+
+        旧状只有 overlay_enabled / target_lang 有窄同步，字号/透明度/布局/
+        历史区四项漏网：面板切完设置页仍显旧值，用户把控件拨到实际值时被
+        `_stage` 判成"改回原值"静默吞掉。设置页未打开时什么都不做。"""
+        dlg = getattr(self, "_settings_dlg", None)
+        if dlg is None:
+            return
+        try:
+            dlg.sync_overlay_keys(values)
+        except Exception:
+            pass
 
     def _on_panel_height(self, h):
         """v2.5.3：面板手动高度落盘（拖底缘/恢复自动均经此）。"""
@@ -670,8 +685,8 @@ class MainWindow(QMainWindow):
     def _on_panel_opacity(self, val):
         """v2.5.0：面板滚轮/菜单档调透明度——落盘并本地重放（细调仍走设置页）。"""
         self.config.set("overlay_bg_opacity", int(val))
-        self.overlay._bg_alpha = int(max(30, min(100, int(val))) * 2.55)
-        self.overlay.update()
+        self.overlay.set_bg_opacity(int(val))   # v2.19.2：换算收口在面板侧
+        self._sync_settings_overlay(overlay_bg_opacity=int(val))
 
     def _on_panel_pin(self, on):
         self.config.set("overlay_pin", bool(on))
@@ -1022,6 +1037,7 @@ class MainWindow(QMainWindow):
         m = "dual" if str(mode) == "dual" else "list"
         self.overlay.set_layout_mode(m)      # 幂等：面板内部切换后此为 no-op
         self.config.set("overlay_layout", m)
+        self._sync_settings_overlay(overlay_layout=m)
         self._maybe_start_stream_preview()
 
     def _on_panel_dual_split(self, mode, value):
@@ -1040,6 +1056,7 @@ class MainWindow(QMainWindow):
         （与 _on_panel_layout_changed 同一套路，防菜单与设置页漂移）。"""
         self.config.set("overlay_dual_hist", bool(on))
         self.overlay.set_hist_enabled(bool(on))
+        self._sync_settings_overlay(overlay_dual_hist=bool(on))
 
     def apply_overlay_from_config(self):
         c = self.config

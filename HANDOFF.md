@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-18 **v2.19.1 已发布**（第二十五节＝本轮：v2.19.1 发版收尾 + GitHub 令牌轮换 + 实测出「本会话能读图」推翻第三节旧结论 + 用户配置磁盘现值二次勘误）。上一轮记录（2026-09-16 **v2.18.2 已发布**，本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
+> 最后更新：2026-09-18 **v2.19.2 已发布**（第二十六节＝本轮：面板透明真根因 + 四路巡检修掉 13 项；⚠ 该节更正第二十四节 24.7 的"resize 不重绘"误诊）。上一轮（同日 v2.19.1 发布收尾 + 令牌轮换 + 视觉能力实测）见第二十五节。再上一轮记录（2026-09-16 **v2.18.2 已发布**，本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.19.1**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.19.2**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -765,6 +765,11 @@ UIA 点"开始翻译"→日志验证→每秒抓面板帧）**，t=20/t=40 帧�
      每句长高、启动宽度 309→619，右半永远停在旧 paint（铁证：右缘把手三点画在旧宽度 295 处；
      后备存储 grab 完整、屏幕合成面陈旧）。修：`resizeEvent → self.update()`。
      修复后像素验证：右中/下中/左中三点全为底色 #1c1f26。
+     **⚠ v2.19.2 更正：根因②是误诊。** 真机复测证明 `resizeEvent → update()` 单独使用
+     完全无效（`update()`/`repaint()` 都救不回来），真根因是 `QScrollArea` 内容控件被
+     Qt 在 `setWidget()` 内部打开 `autoFillBackground`，叠加 `WA_TranslucentBackground`
+     后每帧把父层底色擦成 alpha 0——见第二十六节。当时"三点变回底色"是因为属性改动
+     顺带触发了一次真正的重绘（改任何属性都能"治好"，包括无关属性，这正是误诊的陷阱）。
 - 锁的升级：`t_overlay_dual_hist_default_on`→**`t_overlay_dual_hist_wall_default`**
   （断言 DEFAULTS False + 三句全驻留 + 新句生长行 + 旧行不动 + 经典态回退互清）；
   `t_overlay_split_follows_mouse` 幕墙分支改断言"无大字区/无分割线"；
@@ -818,4 +823,48 @@ UIA 点"开始翻译"→日志验证→每秒抓面板帧）**，t=20/t=40 帧�
 - **用户配置磁盘现值二次勘误**（读 `~\.live_subtitle\config.json` 实测；第四节 09-16 那份又过期了）：`overlay_layout=list`（**非 dual**——用户已在面板 ⋯ 菜单切回列表）、`overlay_dual_hist=false`、`translate_grouping=false`（攒句关着）、`engine=argos`、`asr_language=en`、`segment_cap_s=4.0`、`perf_turbo=true`；其余（turbo + cuda、argos 离线包在位）不变。
 - **本轮新发现的工具箱噪声**（未修）：`tests/test_units.py` 跑完会打一行 `Exception in thread Thread-11 (_readerthread): UnicodeDecodeError: 'gbk' codec can't decode byte 0x80` ——某个单测用系统默认编码读子进程输出所致，**不影响判定**（`UNIT: 81 PASS` 照常），但容易误读成失败。修法=那处 `subprocess` 显式 `encoding='utf-8'`。属 22.6 工具箱债，与产品无关。
 - **待办**（下一会话接续）：① 22.6 头号债不变——**116 项集成测试仍不在任何 CI 闸门**（`build.yml` 只跑单元 + smoke）；② 上面那条 GBK 噪声；③ 22.8 观察 2「流式草稿尾部近似重复」仍未清零；④ 用户本机 `overlay_layout=list`，v2.19.1 的字幕墙形态要实测需先切回「上下双语」。
+
+## 二十六、会话快照（2026-09-18 面板透明真根因 + 四路巡检 · v2.19.2）
+
+### 26.1 起点与那条误诊的更正
+
+用户实拍：面板工具条以下整片透出桌面壁纸。第一反应是"v2.19.1 不是修过了吗"——**没有**，那条修法（`resizeEvent → update()`）从一开始就打在错误的病灶上（详见 24.7 就地更正）。
+
+定根因用的三板斧（下次遇到"画了但看不见"直接抄）：
+1. **paintEvent 打日志**：确认它确实以完整脏矩形跑过（跑了 3 次，alpha 254）→ 排除"没画"。
+2. **逐像素合成校验**：拍一张"面板隐藏时同区域"做背景基线，按 `fg == α·底色 + (1-α)·背景` 比对残差。这把尺子能同时区分"设计上的半透明"（87%/30% 档残差≈0）与"漏画"（残差 117、100% 像素偏离）。**不要用"均值亮度阈值"判透明**——有文字的区间均值必然偏离，会把正常状态误报成异常（本轮自己踩过一次）。
+3. **单变量 + 反向实验**：fresh 进程里只改一处属性再量一次；然后把改好的属性**手动改回旧值**，缺陷立刻 100% 复现才算闭环。关键陷阱：**改任何控件属性都会顺带触发一次真重绘**（`setAutoFillBackground`/`setAttribute`/`setStyleSheet` 甚至无关属性能"治好"它），所以"改了就对"绝不等于"改的就是根因"——v2.19.1 正是被这个陷阱带偏的。
+
+真根因：`QScrollArea` 内容控件在 `setWidgetResizable(True)` 下被 Qt 于 **`setWidget()` 内部（C++ 侧，Python 层 `setAutoFillBackground` 只被调用过一次且是设 False，栈回溯可证）** 打开 `autoFillBackground`；叠加 `WA_TranslucentBackground` 后它每帧把自己矩形擦成 alpha 0，把父层刚画的底色抹掉。四处 `setWidget()`（`_body`/`_dual_src`/`_dual_tgt`/`_dual_hist_body`）统一在之后调 `_keep_content_clear()` 收口。offscreen 的 `grab()` **alpha 通道**能确定性复现（修复后全 255，旧行为 100% 为 0）→ 锁不依赖真机。
+
+### 26.2 四路并行只读巡检（子代理报 → 我逐条自验）
+
+做法同 22.1：四路后台子代理只读（采集+识别 / 翻译+基础设施 / UI 层 / 测试+CI+打包），父代理逐条复核后才动手。**命中率明显高于上轮**（上轮约 3/10），但仍有需要纠正的：
+
+- ✅ 全部经实跑或日志核实的：缓存读失败覆写持久缓存、`probe_engine` 不认 argos、`_coerce` 毁负坐标、卸载语言包用已删 item（**用户日志 09-11/09-15 两次实锤**）、双语历史行瞬窗（探针实测每句 2 次）、经典双语清空态三处、设置页四项窄同步缺失、`bump_version --check` 元组短路、`recommended_model` 只看驱动、幻觉过滤文案在 auto 下自打脸、`int(v*2.55)` 让 100% 常年是 254。
+- ⚠ **`recommended_model` 那条要修正它的判据**：子代理建议看 `torch_cuda`，但本机 `torch_cuda='missing'` 而 GPU 实际能跑（走 nvidia-cublas/cudnn 独立 wheel）——照它说的改会把正常机器误降级。真正同源判据在 `asr.engine._torch_cuda_ready()`，最终用无副作用版本（torch CUDA **或** nvidia 两个 wheel）。
+- ❌ 未采信的：`PROBE_ORDER` 不含 argos → "auto 模式永远选不到离线包"这条推论不成立（实测 `PROBE_ORDER=("google","mymemory")`，是 v2.7.4 C-9 的既定设计）；`TMonitor` 存活线程＝tqdm 的 daemon（faster-whisper 进度条），非产品泄漏。
+- ⚠ 我自己第一版探针误报：把 `raw_chunk` 的载荷写成元组（真实契约是 `Signal(object, float)` 第一参裸数组），导致 `preview.degraded` 被当成产品缺陷——**恰好证明 v2.18.2 那道哑火告警有效**。
+
+### 26.3 本轮产物与套件
+
+- 代码：`caption_overlay.py`（`_keep_content_clear` + `opacity_to_alpha/alpha_to_opacity` + `set_bg_opacity` + 历史行构造次序 + 经典态 `_hint_guide`/`_last_result`/菜单可用态）、`main_window.py`（换算收口 + `_sync_settings_overlay` 四处）、`translator.py`（缓存读失败守卫 + argos 探针）、`config.py`（`NEGATIVE_OK_KEYS`）、`gpu.py`（`cuda_runtime_ready`）、`asr/engine.py`（过滤提示文案）、`settings_dialog.py`（卸载取文本时机 + `sync_overlay_keys` + 两处过期文案）、`main.py`（`threading.excepthook`）、`scripts/bump_version.py`（并集校验）、`tests/test_units.py`（GBK 编码 + 5 锁）。
+- 套件：单元 **81→86**、集成 **116→120** 全绿。**可证伪性验证**：把 `_keep_content_clear` 短路成旧行为后跑全套 → 只有新锁变红（116/1），证明该缺陷此前无任何测试覆盖、且新锁真能抓。
+- 端到端复跑（隔离 home + 数字直注，不外放不占屏）：5 片段 → 5 终版 + 3 推测译、零 error、零重复、日志零可疑行、停止后无孤儿线程。⚠ 该驱动的快进式注入与流式预览的节拍计时天然不合（"草稿拍=0"不能当产品结论），预览路径仍靠 22.8 的真机复测与单元锁背书。
+
+### 26.4 已核实但**本轮未修**（下轮候选，按价值排序）
+
+1. **120 项集成测试仍不在任何 CI 闸门**（`build.yml` 只跑单元 + smoke；`deep-test.yml` 只跑 `deep_windows.py`，连手动触发都测不到集成）。子代理给的可落地改法：`build.yml` smoke 步后加一步跑 `test_integration.py`、判定读 `test_report.txt` 的 `TOTAL==PASS`（退出码不可信，见 13.5）；风险＝offscreen 下 `show+processEvents` 偶发原生死锁（文件内已有 120s 看门狗，表现为失败而非挂死），建议先 `workflow_dispatch` 连跑 3 次观察再加进 push 闸门。**动 CI 前问用户。**
+2. 流式预览三件（子代理报、我未修）：① `_maybe_start_stream_preview` 的闸门读**配置** `asr_device` 而非实际生效设备（`asr_thread._device_used` 已存在，主窗 976 行已在用它纠图文不符）→ CPU 回落时预览仍按 GPU 档跑，抢核心；② 暂停超时（`wait(600)` 未退）后切回 dual 不再热启动，通道**永久哑火且日志零线索**；③ `_window_audio` 跨线程迭代 `deque`（`feed` 在主线程执行）偶发 `RuntimeError` 被宽 except 吞掉、丢一拍草稿。
+3. 工具箱：`probe_text_clip.py` 仍零自动化消费方且默认 offscreen（忘设 env 就"0 clipped"假绿，且 WARN 印在结果之后）；`scripts/qa/*` 绝对路径写死 + gitignore；`bench_asr.py` 无阈值（`words=0` 也绿）。
+4. 依赖与打包：`requirements.txt` 全下限无上限、`ctranslate2` 未显式声明（靠传递依赖）；`build_exe.bat` 让用户装 `requirements-offline.txt` 而该文件自述"无需安装任何依赖"（文案互斥）。
+5. 死码/双定义（22.6.2 仍在）：`_restyle_dual_tgt` 两处定义、`_starts_new_sentence` 两份拷贝、`capture.py` `frames_per_buffer` 死存储、`styles.py` 的 `OVERLAY_QSS` 产品从不加载（4 个 objectName 只存在于该字符串）、`dual_clear_current` 应用侧零调用。
+6. 小噪声：`_detach_thread` 对无连接信号 `disconnect()` 打 `RuntimeWarning`（功能无害，日志脏）。
+
+### 26.5 磁盘现值与运行态勘误
+
+- 用户配置（本轮实测）：`overlay_layout=list`、`overlay_dual_hist=false`、`translate_grouping=false`、`engine=argos`、`asr_language=en`、`segment_cap_s=4.0`、`perf_turbo=true`、`overlay_bg_opacity=100`、面板 619×515 @(898,172)。
+- 日志按会话分组（子代理核过）：最后一次实质使用 09-16 15:56（零 error）；**09-17 用户自己启动过两次**（其中一次 1 秒即停，留下 `orphan_thread|cls=AsrThread`——v2.0.3 容器已兜住，但坐实 26.4-② 缺同款守卫）；09-18 两次仅预热未启管线。`preview.degraded`/`round_failed` 在全部历史日志**零命中**。
+- 本轮临时产物（均在 `%TEMP%`，不入库）：`ls_panel_repro.py`、`ls_probe_{paint,app,child,diff,one,qss,stack,timeline,reverse,multi,verify,flash,alpha}.py`、`ls_e2e_drive.py`、隔离 home `ls_panel_home`/`ls_e2e_home4`（各含 81MB argos 拷贝）。瞬窗/透明两类问题的探针写法可复用，但**别当产品测试台**（`scripts/qa/` 才是）。
+
 

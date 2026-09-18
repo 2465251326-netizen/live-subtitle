@@ -37,6 +37,7 @@ class TranslationCache:
         # v2.0.1：懒加载——模块导入时 Config 尚未 relocate 到自定义存储根，
         # 提前 _load 会读错位置，且首次 put 会用默认根的残缺数据覆写自定义根缓存
         self._loaded = False
+        self._load_failed = False     # v2.19.2：读失败时禁止写盘（见 _load）
         self._dirty_puts = 0
         self._last_flush = time.monotonic()
 
@@ -51,17 +52,37 @@ class TranslationCache:
         self._loaded = True
 
     def _load(self):
+        f = self._path()
         try:
-            f = self._path()
             if f.exists():
-                with open(f, "r", encoding="utf-8") as fp:
+                # v2.19.2：utf-8-sig——记事本"另存为 UTF-8"会在文件头加 BOM，
+                # 旧实现按 utf-8 读直接抛错，与下面"读失败"同一条毁灭路径
+                with open(f, "r", encoding="utf-8-sig") as fp:
                     data = json.load(fp)
                 # v2.6.3（P1-3）：合法 JSON 但顶层非 dict（如 [] / "x" / null）
                 # 按 corrupt 处理为空——此前 list 直接赋给 _data，后续每条
                 # get/put 都 AttributeError，翻译全挂且落盘持续写坏文件
                 self._data = data if isinstance(data, dict) else {}
-        except Exception:
+        except Exception as e:
+            # v2.19.2：**读失败 ≠ 空缓存**。旧实现把异常吞成 `_data={}` 且照常
+            # 置 `_loaded=True`，于是 v2.2.1 那道"未加载禁写盘"的守卫被绕过——
+            # 首次攒批落盘（10 条或 5 秒）就用近空 dict `os.replace` 覆写整份
+            # 持久缓存，用户攒了几场的翻译记录无声消失，且不留原件、不打日志。
+            # 触发面比想象大：文件被编辑器改过编码、被杀软/索引器瞬时占用、
+            # 磁盘抖动都算。现在：标记失败→拒绝写盘→原件另存 .json.bad→记日志。
             self._data = {}
+            self._load_failed = True
+            keep = ""
+            try:
+                import shutil
+                dst = f.with_name(f.name + ".bad")
+                shutil.copyfile(f, dst)
+                keep = str(dst)
+            except Exception:
+                pass
+            app_log.log("translate.cache_unreadable", path=str(f),
+                        err=f"{type(e).__name__}: {str(e)[:80]}",
+                        preserved=keep or "未留存（复制失败）")
         # v2.7.4（C 级）：清理上次崩溃可能残留的 .json.tmp——缓存 tmp 没有
         # 读取侧兜底路径，不清就会永久占盘（config 侧同类残留有双路径清理）
         try:
@@ -105,6 +126,10 @@ class TranslationCache:
         # 此前零翻译会话退出时 run() 尾部的 save() 会把空 dict 落盘，
         # 清空整个持久翻译缓存（用户实测数据丢失）
         if not self._loaded:
+            return
+        if self._load_failed:
+            # v2.19.2：磁盘上那份读不开的缓存还在（已另存 .json.bad），
+            # 但绝不能用内存里的空 dict 去覆写它
             return
         try:
             f = self._path()
@@ -352,13 +377,34 @@ def unescape_html(text: str) -> str:
         return text
 
 
-def probe_engine(name, timeout=2.5):
+def probe_engine(name, timeout=2.5, src="", tgt=""):
     """探测引擎连通性，返回 (ok, 详情)。
 
     详情文本用于设置页「测试连通性」的可读诊断：把「连不上代理」、
     「代理通了但被 Google 限流」等不同故障区分开（v1.9.4）。
+
+    v2.19.2：补 argos 分支。旧实现只认 google/mymemory，argos 恒落到末尾
+    `return False, "未知引擎"`——于是 `engine=argos` + 自动备援（默认开）的
+    用户，一次离线异常落到 MyMemory 后，`_maybe_reprobe_primary` 每 60s
+    重探主引擎永远失败，**整场被绑在在线引擎上**（额度/429 风险），且
+    `main_window._spec_enabled()` 要求 `_active_engine == 'argos'`，
+    推测式增量翻译随之静默关闭（用户观感＝"译文又变慢了"，日志零线索）。
+    离线引擎没有"连通性"可言，探针语义改为「本方向有可用的本地包」。
     """
     try:
+        if name == "argos":
+            from .offline_pack import list_installed
+            packs = list_installed()
+            if not packs:
+                return False, "未安装任何离线语言包（设置-翻译-语言包下载）"
+            s = str(src or "").split("-")[0]
+            t = str(tgt or "")
+            t = "zh" if t.startswith("zh") else t.split("-")[0]
+            if s and t and s != "auto":
+                if any(fc == s and tc == t for fc, tc in packs):
+                    return True, f"离线包 {s}→{t} 可用"
+                return False, f"缺少 {s}→{t} 离线包（已装 {len(packs)} 个方向）"
+            return True, f"离线包可用（{len(packs)} 个方向）"
         if name == "google":
             t0 = time.time()
             r = _SESSION.get(
@@ -556,7 +602,9 @@ class TranslateThread(QThread):
         if now - self._last_probe_at < 60.0:
             return
         self._last_probe_at = now
-        ok, _detail = probe_engine(self._primary_engine, timeout=2.5)
+        ok, _detail = probe_engine(self._primary_engine, timeout=2.5,
+                                   src=str(getattr(self, "expected_src", "") or ""),
+                                   tgt=str(self.target or ""))
         if ok:
             app_log.log("translate.primary_recovered", engine=self._primary_engine)
             self.status_changed.emit(f"主引擎 {self._primary_engine} 已恢复，自动切回")

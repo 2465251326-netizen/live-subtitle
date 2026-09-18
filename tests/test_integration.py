@@ -1373,6 +1373,199 @@ def t_overlay_single_divider():
 check("panel: 面板恰好一条分割线（v2.18.1 多条线回归）", t_overlay_single_divider)
 
 
+def t_overlay_body_background_pixels():
+    """v2.19.2：面板正文区必须真的带上底色，不许整片透出桌面。
+
+    用户实拍：工具条以下全是壁纸。根因不在面板自己——`paintEvent` 每帧都以
+    完整脏矩形画了圆角底色，但 **QScrollArea 的内容控件**（`_body` /
+    `_dual_src` / `_dual_tgt` / `_dual_hist_body`）在 `setWidgetResizable(True)`
+    之下被 Qt 于 `setWidget()` 内部（C++ 侧，Python 层追不到这次调用）打开了
+    `autoFillBackground`；叠加 `WA_TranslucentBackground` 后它每帧把自己整块
+    矩形擦成 alpha 0，连父层刚画好的底色一起抹掉。
+
+    真机像素实测（面板压在壁纸上）：修复前 body=壁纸蓝 (15,157,250)、100%
+    像素偏离底色；只关 autoFill 立刻回到 (28,31,38) 且 std=0；单独关
+    translucent 或只 repaint() 均无效——所以 v2.19.1 那句
+    `resizeEvent → update()` 并没有修到这一层。offscreen 的 `grab()` alpha
+    通道可确定性复现同一件事（修复后 alpha 全 255；把 autoFill 改回 True
+    则 100% 为 0），故本锁**在旧实现上必红**。
+    顺带锁量纲：`int(100 * 2.55)` 在浮点下是 254，"100% 不透明"常年漏
+    1/255 的桌面进来，现在 100 档映射到 255。
+    """
+    from PySide6.QtGui import QImage
+
+    def alpha_scan(ov):
+        img = ov.grab().toImage().convertToFormat(QImage.Format_ARGB32)
+        w, h = img.width(), img.height()
+        mn, zero, total = 255, 0, 0
+        for y in range(60, max(61, h - 20), 4):
+            for x in range(30, max(31, w - 30), 4):
+                a = (img.pixel(x, y) >> 24) & 0xFF
+                total += 1
+                if a < mn:
+                    mn = a
+                if a == 0:
+                    zero += 1
+        return mn, (zero / max(1, total))
+
+    for mode, hist in (("list", None), ("dual", False), ("dual", True)):
+        ov = CaptionOverlay()
+        ov.apply_style(22, "#ffffff", "#1c1f26", 100)
+        ov.set_show_source(False)
+        ov.set_user_height(515)
+        ov.resize(619, 515)
+        ov.set_layout_mode(mode)
+        if hist is not None:
+            ov.set_hist_enabled(hist)
+        ov.show()
+        for _ in range(8):
+            app.processEvents()
+        tag = "%s/历史%s" % (mode, hist)
+        assert ov._bg_alpha == 255, "%s：100%% 不透明应映射为 alpha 255，实得 %d" % (
+            tag, ov._bg_alpha)
+        for wname in ("_body", "_dual_src", "_dual_tgt", "_dual_hist_body"):
+            assert getattr(ov, wname).autoFillBackground() is False, (
+                "%s：%s 的 autoFillBackground 被打开——它会把父层底色擦成 alpha 0" % (
+                    tag, wname))
+        mn, frac0 = alpha_scan(ov)
+        assert mn >= 250 and frac0 < 0.01, (
+            "%s：正文区透出桌面（最小 alpha=%d，零 alpha 占比 %.1f%%）" % (
+                tag, mn, frac0 * 100))
+        ov.deleteLater()
+        for _ in range(4):
+            app.processEvents()
+
+
+check("panel: 正文区必须带上底色不透出桌面（v2.19.2 autoFill 擦除回归）",
+      t_overlay_body_background_pixels)
+
+
+def t_overlay_dual_hist_no_flash_window():
+    """v2.19.2：dual 历史区建行同样不得逃逸成顶层窗口（v2.6.6 瞬窗病根回归）。
+
+    v2.6.6 在 `_add_row` 修过同一件事：`QLabel()` 无父构造 → 先 `setVisible(True)`
+    → 未收编的控件建出原生顶层窗口 → `addWidget` 收编瞬间又销毁，用户看到
+    "每来一句闪一个 40ms 的无题小窗"。v2.14.0 新写的 `dual_push_history` 抄了
+    同样的构造次序，漏网。旧锁 `t_overlay_row_never_flash_window` 只查列表行，
+    查不到这条路径——故本锁在**可见性切换的那一刻**取证（事后 isWindow 已复位，
+    查不出问题）。"""
+    from PySide6.QtWidgets import QWidget as _QW
+    hits = []
+    real = _QW.setVisible
+
+    def spy(self, on):
+        r = real(self, on)
+        if on and self.isWindow():
+            hits.append(self.objectName() or self.metaObject().className())
+        return r
+
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual")
+    ov.set_hist_enabled(True)
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    _QW.setVisible = spy
+    try:
+        ov.dual_push_history("Hello there my friend", "你好啊朋友")
+        ov.dual_push_history("Second sentence arrives", "第二句到了")
+        for _ in range(6):
+            app.processEvents()
+    finally:
+        _QW.setVisible = real
+    assert not hits, f"历史行标签成了顶层窗口（瞬窗）：{hits}"
+    from PySide6.QtWidgets import QLabel
+    row = ov._dual_hist_lay.itemAt(0).widget()
+    labs = row.findChildren(QLabel)
+    assert all((not l.isWindow()) for l in labs), "收编后仍不得是顶层窗口"
+    ov.deleteLater()
+
+
+check("panel: 双语历史行标签永不成顶层窗口（v2.19.2 瞬窗回归）",
+      t_overlay_dual_hist_no_flash_window)
+
+
+def t_overlay_classic_clear_state():
+    """v2.19.2：经典双语态的「清空」必须把三件事一起归零。
+
+    ① `_last_result` 不清 → 面板已空白，但「复制最近一句 / 纠正最近识别 /
+       纠正译文」仍指向被清掉的句子（列表/幕墙分支无此问题）；
+    ② 引导小抄 `_hint_guide` 只在 `_add_row`（列表路径）复位，经典态永不复位
+       → 每次清空后三行小抄重弹，违反 v2.4.4（BUG-7）"每份配置只弹一次"；
+    ③ ⋯ 菜单「清空面板字幕」的可用态只看 `_rows`，经典态正文在历史行+当前句
+       → 恒灰，而工具条「清空」同一动作可用，两入口打架。"""
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual")
+    ov.set_hist_enabled(True)
+    ov.show_first_hint()                       # 置引导小抄
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    assert ov._hint_guide is True, "前置条件：引导小抄已置位"
+    ov._dual_show_result("Hello classic dual", "经典双语一句", True)
+    for _ in range(4):
+        app.processEvents()
+    assert ov._hint_guide is False, "真实字幕上屏后引导小抄必须复位（只弹一次）"
+    ov.dual_push_history("Hello classic dual", "经典双语一句")
+    ov._build_menu()
+    acts = ov._menu_acts
+    assert acts["clear"].isEnabled(), \
+        "经典态有历史行时菜单「清空」必须可用（与工具条同一判据）"
+    assert acts["copy"].isEnabled(), "有最近一句时「复制」应可用"
+    ov.clear_caption()
+    for _ in range(4):
+        app.processEvents()
+    assert ov._last_result == ("", ""), \
+        f"清空后仍留着最近一句＝复制/纠正菜单会指向已删内容：{ov._last_result}"
+    ov._build_menu()
+    acts2 = ov._menu_acts
+    assert not acts2["copy"].isEnabled(), "清空后「复制最近一句」必须置灰"
+    assert not acts2["clear"].isEnabled(), "清空后「清空面板字幕」必须置灰"
+    ov.deleteLater()
+
+
+check("panel: 经典双语清空后状态归零（v2.19.2 最近一句/小抄/菜单态）",
+      t_overlay_classic_clear_state)
+
+
+def t_settings_syncs_panel_side_changes():
+    """v2.19.2：面板侧改外观键 → **已打开**的设置页控件必须跟随。
+
+    旧状只有 `overlay_enabled`（sync_overlay_check）与 `target_lang`
+    （sync_target_lang，v2.18.1 补）有窄同步，字号/透明度/布局/历史区四项漏网：
+    面板 ⋯ 菜单切完，设置页控件仍显旧值；用户把控件拨到"屏幕上的实际值"时被
+    `_stage` 判成"改回原值"而静默吞掉——显示改了，底部仍提示"所有改动已保存"。
+    同时锁住暂存优先规则：用户已暂存该键时不得被面板值覆盖。"""
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    w._open_settings()                       # 真实入口：对话框登记到 _settings_dlg
+    dlg = w._settings_dlg
+    assert isinstance(dlg, SettingsDialog) and dlg is not None
+    try:
+        w._on_panel_opacity(60)
+        assert dlg.bg_opacity_slider.value() == 60, "面板改透明度后设置页滑条未跟随"
+        w._on_panel_font_size(30)
+        assert dlg.overlay_font_spin.value() == 30, "面板改字号后设置页数字框未跟随"
+        w._on_panel_layout_changed("dual")
+        assert dlg.layout_combo.currentData() == "dual", "面板切布局后设置页下拉未跟随"
+        w._on_panel_hist_toggled(True)
+        assert dlg.dual_hist_check.isChecked() is True, "面板切历史区后设置页勾选未跟随"
+        # 暂存优先：按真实用户流——拨滑条即产生暂存值，面板侧改动不得覆盖它
+        dlg.bg_opacity_slider.setValue(80)
+        assert dlg._staged.get("overlay_bg_opacity") == 80, "前置：拨滑条应已暂存"
+        w._on_panel_opacity(50)
+        assert dlg.bg_opacity_slider.value() == 80, "覆盖了用户尚未保存的暂存值"
+        assert dlg._staged == {"overlay_bg_opacity": 80}, (
+            f"面板侧改动不得写进暂存区，也不得留下别的待保存项：{dlg._staged}")
+    finally:
+        dlg.deleteLater()
+        w.deleteLater()
+
+
+check("settings: 面板侧改外观键同步已打开的设置页（v2.19.2 四项窄同步）",
+      t_settings_syncs_panel_side_changes)
+
+
 def t_overlay_dual_follow_bottom():
     """v2.18.1：dual 原文/译文区内容超出可视高度必须**自动跟底**。
 

@@ -39,6 +39,22 @@ def install_crash_logger():
         sys.__excepthook__(exc_type, exc_value, exc_tb)
 
     sys.excepthook = excepthook
+    # v2.19.2：`sys.excepthook` 只管主线程——采集/识别/翻译/预览线程里未捕获的
+    # 异常默认只打到 stderr（打包版无人看），线程整条退出后 app.log 零证据，
+    # 用户观感＝"字幕突然不再出现"，排查只能靠猜。子线程异常走
+    # threading.excepthook（3.8+），这里补同一份落盘。
+    def _thread_excepthook(args):
+        write_log(
+            "工作线程未捕获异常",
+            "".join(traceback.format_exception(args.exc_type, args.exc_value,
+                                               args.traceback))
+            + " | thread=%s" % (args.thread.name if args.thread else "?"))
+
+    try:
+        import threading
+        threading.excepthook = _thread_excepthook
+    except Exception:
+        pass
     try:
         from PySide6.QtCore import qInstallMessageHandler, QtMsgType
 

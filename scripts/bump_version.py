@@ -38,8 +38,12 @@ def current_versions():
     vi = read("version_info.txt")
     ms = re.findall(r"\((\d+), (\d+), (\d+), 0\)", vi)
     strs = re.findall(r"'(FileVersion|ProductVersion)', '([\d.]+)'", vi)
-    out["version_info.txt"] = tuple(sorted({t[: -len(".0")] for _, t in strs} or
-                                           {".".join(x) for x in ms}))
+    # v2.19.2：两种写法**取并集**参与校验。旧实现是 `{字符串} or {元组}`——
+    # FileVersion/ProductVersion 字符串恒存在，`or` 短路后 `filevers/prodvers`
+    # 元组永不参与比较：只改元组（或只改字符串）也能报"版本一致"，
+    # 产出的 EXE 文件属性却是错版本。
+    found = {t[: -len(".0")] for _, t in strs} | {".".join(x) for x in ms}
+    out["version_info.txt"] = tuple(sorted(found)) if found else ("<缺失>",)
     return out
 
 

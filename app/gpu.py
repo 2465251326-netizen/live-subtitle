@@ -78,11 +78,41 @@ def _cuda_count(info):
     return info
 
 
+def cuda_runtime_ready() -> bool:
+    """GPU 推理运行时是否就绪（v2.19.2）。判据与 `asr.engine._torch_cuda_ready()`
+    同源，但**无副作用**（不改 PATH、不 LoadLibrary），供推荐与文案使用：
+
+    - CUDA 版 PyTorch（`torch.version.cuda` 非空），或
+    - nvidia-cublas-cu12 + nvidia-cudnn-cu12 独立 wheel（Python 3.14 走这条）。
+
+    只看"驱动能看见卡"（`ctranslate2.get_cuda_device_count()`）不足以判定——
+    v2.0.11 血泪：那样会给没装运行时的机器推荐 large-v3-turbo，1.5GB 下完
+    却在 CPU 上跑顶级档（每段十几秒）。真正启用 GPU 仍由 engine 侧的
+    DLL 加载校验把关，本函数只负责"别许一个兑现不了的推荐"。
+    """
+    import importlib.util
+    try:
+        if importlib.util.find_spec("torch") is not None:
+            import torch
+            if getattr(torch.version, "cuda", None):
+                return True
+    except Exception:
+        pass
+    try:
+        return all(importlib.util.find_spec(m) is not None
+                   for m in ("nvidia.cublas", "nvidia.cudnn"))
+    except (ImportError, ValueError):
+        return False
+
+
 def recommended_model(info=None):
     """v2.2.12：按硬件推荐识别档位 → (model_code, 理由)。永不抛异常。
 
     判据用 ctranslate2 可见的 CUDA 设备数（ASR 实际推理运行时），
-    不依赖 torch——本应用 GPU 路径走 CT2 + cudnn 独立 wheel。"""
+    不依赖 torch——本应用 GPU 路径走 CT2 + cudnn 独立 wheel。
+    v2.19.2：设备可见 ≠ 运行时就绪，补 `cuda_runtime_ready()` 这道闸——
+    旧实现只看 `cuda_devices>0`，于是"驱动看得见卡但没装 CUDA 运行时"的
+    机器在首跑向导里被⭐推荐 large-v3-turbo（1.5GB 下载 + CPU 跑顶级档）。"""
     try:
         info = info if info is not None else detect()
     except Exception:
@@ -92,6 +122,10 @@ def recommended_model(info=None):
         gpu_ok = int(info.get("cuda_devices") or 0) > 0
     except (TypeError, ValueError):
         vram, gpu_ok = 0, False
+    if gpu_ok and not bool(info.get("cuda_runtime", True)):
+        return "small", (f"检测到 NVIDIA 显卡（显存 {vram}MB）但 CUDA 运行时尚未就绪，"
+                         "先用 small（CPU 4 核以上可实时）；在设置里装好 CUDA 运行时"
+                         "后可改选 large-v3-turbo")
     if gpu_ok and vram >= 5000:
         return "large-v3-turbo", f"检测到 GPU（显存 {vram}MB），可直接跑顶级档"
     if gpu_ok and vram >= 2500:

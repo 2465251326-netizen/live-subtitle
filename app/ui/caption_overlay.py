@@ -26,6 +26,22 @@ from PySide6.QtWidgets import (
 )
 
 
+def opacity_to_alpha(val):
+    """透明度档位（30~100）→ alpha（0~255），**唯一换算入口**。
+
+    v2.19.2：旧写法 `int(v * 2.55)` 在浮点下 100 → 254.999… → **254**，
+    "100% 不透明"常年漏 1/255 的桌面进来；且面板菜单/滚轮与重启后
+    `apply_style` 各写一份，同一档位前后两副面孔。统一按 255/100 取整并封顶。
+    """
+    v = max(30, min(100, int(val)))
+    return min(255, int(round(v * 255 / 100.0)))
+
+
+def alpha_to_opacity(alpha):
+    """alpha → 档位（`opacity_to_alpha` 的逆，用于把当前 alpha 显示回菜单/滑条）。"""
+    return int(round(max(0, min(255, int(alpha))) * 100.0 / 255))
+
+
 class _DualSepHandle(QWidget):
     """v2.16.1：原文/译文分割把手的自绘本体。
 
@@ -99,7 +115,7 @@ class CaptionOverlay(QWidget):
         super().__init__(None)
         self.setObjectName("SubtitlePanel")
         self._bg_color = QColor("#1c1f26")
-        self._bg_alpha = int(92 * 2.55)
+        self._bg_alpha = opacity_to_alpha(92)
         self._font_size = 22
         self._text_color = QColor("#ffffff")
         self._show_source = True
@@ -265,6 +281,7 @@ class CaptionOverlay(QWidget):
         self._rows_lay.addStretch(1)
         self._rows_lay.insertWidget(0, self._hint)
         self._scroll.setWidget(self._body)
+        self._keep_content_clear(self._body)
         outer.addWidget(self._scroll, 1)
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
@@ -308,6 +325,7 @@ class CaptionOverlay(QWidget):
         self._dual_hist_lay.setSpacing(7)
         self._dual_hist_lay.addStretch(1)
         self._dual_hist.setWidget(self._dual_hist_body)
+        self._keep_content_clear(self._dual_hist_body)
         outer.addWidget(self._dual_hist, 1)
         self._dual_hist.hide()
         self._dual_hist_rows = 0           # 历史行数（上限 MAX_DUAL_HIST）
@@ -365,6 +383,7 @@ class CaptionOverlay(QWidget):
         self._dual_src.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self._dual_src.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._dual_src_wrap.setWidget(self._dual_src)
+        self._keep_content_clear(self._dual_src)
         self._dual_sep = _DualSepHandle(self._dual_body)
         self._dual_tgt_wrap = QScrollArea(self._dual_body)
         self._dual_tgt_wrap.setObjectName("DualTgtWrap")
@@ -384,6 +403,7 @@ class CaptionOverlay(QWidget):
         # 误判"有译文"，导致空态下分隔线可见（用户截图圈出的那条"神秘线"）
         self._dual_tgt.setProperty("empty", True)
         self._dual_tgt_wrap.setWidget(self._dual_tgt)
+        self._keep_content_clear(self._dual_tgt)
         dl.addWidget(self._dual_src_wrap, 1)
         dl.addWidget(self._dual_sep)
         dl.addWidget(self._dual_tgt_wrap, 2)
@@ -705,6 +725,9 @@ class CaptionOverlay(QWidget):
                 self._dual_hist_rows -= 1
             self._hist_follow = True
             self._dual_cur_open = False    # v2.19.1：无在说句
+            # v2.19.2：经典态漏清"最近一句"——清空后面板空白，但「复制最近一句 /
+            # 纠正最近识别 / 纠正译文」仍指向已被清掉的句子（列表/幕墙分支无此问题）
+            self._last_result = ("", "")
             self._dual_src.setText("")
             self._dual_tgt.setProperty("spec", False)
             self._dual_tgt.setProperty("empty", True)
@@ -885,23 +908,27 @@ class CaptionOverlay(QWidget):
         l = QVBoxLayout(w)
         l.setContentsMargins(0, 0, 0, 0)
         l.setSpacing(1)
-        lab_src = QLabel(src)
+        # v2.19.2（瞬窗回归）：两个标签**构造即传父**，可见性切换一律挪到
+        # addWidget 之后——未收编的 QWidget 被 show 就成原生顶层窗口，收编瞬间
+        # 又销毁，观感是"每句闪一个无题小窗"。同一病根 v2.6.6 在 `_add_row`
+        # 修过，dual 历史区（v2.14.0 引入）漏网：offscreen 探针实测每句命中 2 次。
+        lab_src = QLabel(src, w)
         lab_src.setObjectName("DualHistSrc")
         lab_src.setWordWrap(True)
         f = QFont()
         f.setPixelSize(max(10, int(self._font_size * 0.55)))
         lab_src.setFont(f)
-        lab_src.setVisible(bool(src) and self._show_source)
-        lab_tgt = QLabel(tgt)
+        lab_tgt = QLabel(tgt, w)
         lab_tgt.setObjectName("DualHistTgt")
         lab_tgt.setWordWrap(True)
-        lab_tgt.setVisible(bool(tgt))
         f2 = QFont()
         f2.setPixelSize(max(11, int(self._font_size * 0.66)))
         f2.setWeight(QFont.DemiBold)
         lab_tgt.setFont(f2)
         l.addWidget(lab_src)
         l.addWidget(lab_tgt)
+        lab_src.setVisible(bool(src) and self._show_source)
+        lab_tgt.setVisible(bool(tgt))
         self._dual_hist_lay.insertWidget(self._dual_hist_lay.count() - 1, w)
         self._dual_hist_rows += 1
         while self._dual_hist_rows > self.MAX_DUAL_HIST:
@@ -1052,6 +1079,10 @@ class CaptionOverlay(QWidget):
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
         self._dual_cur_open = False
+        # v2.4.4（BUG-7）同一语义在经典态的补漏：引导小抄一经真实字幕上屏就
+        # 完成使命。旧实现只在 `_add_row`（列表/幕墙路径）复位，经典双语走不到
+        # 那里 → 清空后三行小抄反复重弹，违反"每份配置只弹一次"。
+        self._hint_guide = False
         if source_text:
             self._dual_src.setText(source_text)
         self._dual_tgt.setProperty("spec", False)
@@ -1513,12 +1544,27 @@ class CaptionOverlay(QWidget):
         self._text_color = QColor(text_color)
         self._bg_color = QColor(bg_color)
         # v2.19.1：地板 30 与面板快捷档/设置页滑条统一——历史配置里已存在的 0
-        # 不再能在重启后把面板变成全透明空壳（真机实录）
-        self._bg_alpha = int(max(30, min(100, int(bg_opacity))) * 2.55)
+        # 不再能在重启后把面板变成全透明空壳（真机实录）；换算收进
+        # opacity_to_alpha（v2.19.2：旧 int(v*2.55) 让 100% 实际是 254）。
+        self._bg_alpha = opacity_to_alpha(bg_opacity)
         self._apply_qss()
         self._sync_bar_texts()
         self._relayout()
         self._schedule_relayout()
+
+    def _keep_content_clear(self, w):
+        """QScrollArea 的内容控件必须在 setWidget **之后**再关一次 autoFill。
+
+        setWidgetResizable(True) 时 Qt 在 setWidget 内部（C++ 侧，Python 层
+        追不到这次调用）把内容控件的 autoFillBackground 打开；叠加
+        WA_TranslucentBackground 后，该控件每帧把自己整块矩形擦成 alpha 0，
+        连面板 paintEvent 画好的圆角底色一起抹掉——正文区因此整片透出桌面
+        （真机像素实测：body=壁纸蓝 (15,157,250)，关掉 autoFill 立刻回到
+        底色 (28,32,39) 且 std=0；单独关 translucent 或只 repaint() 均无效，
+        所以 v2.19.1 那句 resizeEvent→update() 并没有修到这一层）。
+        """
+        w.setAutoFillBackground(False)
+        w.setAttribute(Qt.WA_TranslucentBackground, True)
 
     def _apply_qss(self):
         # v2.5.0：字号真实生效——v2.4.0 面板化时正文（PanelSrc/PanelTgt）从未
@@ -1808,7 +1854,7 @@ class CaptionOverlay(QWidget):
             mods = event.modifiers()
             up = event.angleDelta().y() > 0
             if mods & Qt.ControlModifier and mods & Qt.ShiftModifier:
-                cur = int(round(self._bg_alpha / 2.55))
+                cur = alpha_to_opacity(self._bg_alpha)
                 self._apply_opacity(int(max(30, min(100, cur + (5 if up else -5)))))
                 event.accept()
                 return
@@ -1834,8 +1880,17 @@ class CaptionOverlay(QWidget):
         if self._on_opacity:
             self._on_opacity(val)
         else:
-            self._bg_alpha = int(val * 2.55)
-            self.update()
+            self.set_bg_opacity(val)
+
+    def set_bg_opacity(self, val):
+        """v2.19.2：透明度**唯一写入口**（面板侧快捷档/滚轮与主窗落盘回放共用）。
+
+        旧实现里主窗 `_on_panel_opacity` 直接改私有属性 `overlay._bg_alpha`
+        并自带一份 `int(v*2.55)`——与 `apply_style` 的公式各写一处，
+        同一档位"当场 254、重启 255"两副面孔。
+        """
+        self._bg_alpha = opacity_to_alpha(val)
+        self.update()
 
     def _cap_status_width(self):
         # v2.5.0（F3）：状态行动态限宽——Ignored 策略下布局可把状态行压没，
@@ -1908,7 +1963,7 @@ class CaptionOverlay(QWidget):
         acts["snap_right"] = menu.addAction("贴到屏幕右侧")
         # v2.5.0：透明度常用档直调（滚轮 Ctrl+Shift 的菜单版；细调仍走设置页）
         op_menu = menu.addMenu("背景透明度")
-        cur_op = int(round(self._bg_alpha / 2.55))
+        cur_op = alpha_to_opacity(self._bg_alpha)
         for val in (60, 75, 85, 92, 100):
             a = op_menu.addAction(f"{val}%")
             a.setCheckable(True)
@@ -1932,7 +1987,12 @@ class CaptionOverlay(QWidget):
         acts["copy"].setEnabled(bool(src.strip() or tgt.strip()))
         acts["fix_asr"].setEnabled(bool(src.strip()))
         acts["fix_tr"].setEnabled(bool(tgt.strip()))
-        acts["clear"].setEnabled(bool(self._rows))
+        # v2.19.2：经典双语的正文不在 `_rows`（历史行 + 当前句），旧判据让这一项
+        # 恒灰，而工具条「清空」同一动作可用——两个入口打架。
+        has_content = bool(self._rows) or (
+            self._classic_dual() and (self._dual_hist_rows > 0
+                                      or bool(self._dual_src.text().strip())))
+        acts["clear"].setEnabled(has_content)
         self._menu_acts = acts
         self._menu_last = (src, tgt)
         return menu

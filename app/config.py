@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.19.1"
+APP_VERSION = "2.19.2"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -199,6 +199,13 @@ def ensure_hf_endpoint_ready(timeout=4.0):
     _hf_probe_done.wait(timeout)
 
 
+# v2.19.2：允许取负值的 int 键——屏幕坐标不是"尺寸"。副屏位于主屏左侧/上方
+# 时，Qt 虚拟桌面坐标天然为负，且 main_window._clamp_overlay_pos 明确支持并
+# 落盘；旧的一刀切"负数无意义"把 overlay_x=-1600 消毒回默认 200，多显示器
+# 用户每次重启面板都被拽回主屏（实测 _coerce("overlay_x", -1600) → 200）。
+NEGATIVE_OK_KEYS = frozenset({"overlay_x", "overlay_y"})
+
+
 class Config:
     def __init__(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -274,21 +281,24 @@ class Config:
         零校验时代的实锤事故（全量测试活体复现）："overlay_font_size":"18px"
         启动即崩；"max_history":"200" 运行中崩；词典值设 list → 每段抛全场零字幕。
         v2.7.5（R-5）：负数无意义（负尺寸/负条数）——int 挽救链对负值回默认原型；
-        超大值属用户意愿不拦（UI 控件仍会 clamp 显示）。"""
+        超大值属用户意愿不拦（UI 控件仍会 clamp 显示）。
+        v2.19.2：坐标键（NEGATIVE_OK_KEYS）例外——副屏坐标合法为负。"""
         proto = DEFAULTS.get(key)
         try:
             if isinstance(proto, bool):
                 return val if isinstance(val, bool) else proto
             if isinstance(proto, int):
+                floor = -(2 ** 31) if key in NEGATIVE_OK_KEYS else 0
                 if isinstance(val, bool):
                     return proto
                 if isinstance(val, int):
-                    return val if val >= 0 else proto
+                    return val if val >= floor else proto
                 if isinstance(val, float):
                     coerced = int(val)
-                    return coerced if coerced >= 0 else proto
+                    return coerced if coerced >= floor else proto
                 if isinstance(val, str):
-                    return int(float(val.strip()))   # "200" 挽救；"18px" 抛→原型
+                    n = int(float(val.strip()))   # "200" 挽救；"18px" 抛→原型
+                    return n if n >= floor else proto
                 return proto
             if isinstance(proto, str):
                 return val if isinstance(val, str) else proto

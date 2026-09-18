@@ -184,7 +184,8 @@ _FIELD_SPECS = {
     "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_layout":       ("overlay", "combo"),
-    # v2.19.0：dual 历史区开关（v2.19.1 起默认开=悬浮窗句子全部保留；关=独占面板）
+    # v2.19.0 引入；v2.19.1 三轮裁决后语义＝关（默认）滚动字幕墙 / 开 经典双语
+    # 大字区+顶部历史块（DEFAULTS 为 False，见 app/config.py 同键注释）
     "overlay_dual_hist":    ("overlay", "check"),
     "stream_preview":       ("pipeline", "check"),
     "overlay_dual_hist_h":  ("internal", "hidden"),
@@ -405,7 +406,8 @@ _STD_ROWS = [
              "句子不会从悬浮窗里消失（v2.19.1 用户真机三轮裁决后的形态）。\n"
              "开启＝经典上下双语：当前句大字区（原文+译文，中间可拖分割线）+ 面板顶部历史块"
              "（每句翻译完成自动沉入，原文小灰+译文小白成对，最多 30 对，滚轮回看）。\n"
-             "两种形态都不影响主窗口与导出文件的完整记录；面板 ⋯ 菜单里也有同名开关，随手可切、重启保持。",
+             "两种形态都不影响主窗口与导出文件的完整记录；面板 ⋯ 菜单里的"
+             "「经典双语（顶部历史块）」是同一开关的另一入口，随手可切、重启保持。",
      "opts": {}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
      "kind": "check", "title": "字幕流式上屏（原文先出）",
@@ -2249,6 +2251,40 @@ class SettingsDialog(QDialog):
         """悬浮字幕在设置窗口之外被开关时，同步本页复选框（外部改动=直接生效）。"""
         self.overlay_check.setChecked(bool(checked))
 
+    def sync_overlay_keys(self, values):
+        """面板侧（⋯ 菜单 / 工具条 / Ctrl+滚轮）改了外观键 → 同步本页控件。
+
+        v2.19.2：此前只有 `overlay_enabled` 与 `target_lang` 有窄同步，
+        字号 / 透明度 / 布局 / 历史区四项漏网——面板切完，设置页控件仍显示旧值；
+        用户把控件拨到"屏幕上的实际值"时被 `_stage` 判成"改回原值"而静默吞掉
+        （显示改了、底部仍提示"所有改动已保存"）。规矩与 `sync_target_lang`
+        一致：**不清 `_staged`**，用户已暂存该键时不覆盖其暂存值。
+        """
+        widget_of = {"overlay_font_size": "overlay_font_spin",
+                     "overlay_bg_opacity": "bg_opacity_slider",
+                     "overlay_layout": "layout_combo",
+                     "overlay_dual_hist": "dual_hist_check"}
+        staged = getattr(self, "_staged", None) or {}
+        for key, val in (values or {}).items():
+            if key in staged:
+                continue
+            name = widget_of.get(key)
+            w = getattr(self, name, None) if name else None
+            if w is None:
+                continue
+            w.blockSignals(True)
+            try:
+                if hasattr(w, "setChecked"):
+                    w.setChecked(bool(val))
+                elif hasattr(w, "findData") and w.findData(val) >= 0:
+                    w.setCurrentIndex(w.findData(val))
+                else:
+                    w.setValue(int(val))
+            except (TypeError, ValueError):
+                pass
+            finally:
+                w.blockSignals(False)
+
     def _load_devices(self):
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
@@ -2399,9 +2435,15 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "卸载失败", f"删除目录时出错：{e}")
             return
         if removed:
+            # v2.19.2：必须在刷新列表**之前**取体积文本——`_refresh_packs_list()`
+            # 里的 `lst.clear()` 会删掉 QListWidgetItem 的 C++ 对象，之后再碰
+            # `sel.text()` 抛 `RuntimeError: Internal C++ object … already deleted`，
+            # 槽异常被 PySide 吞进 stderr：卸载其实已成功，但"完成"对话框永不弹，
+            # 用户以为没删掉、反复点。用户日志两次实锤（09-11、09-15）。
+            freed = sel.text().split("·")[-1].strip()
             self._refresh_packs_list()
             self._refresh_argos_section()
-            QMessageBox.information(self, "完成", f"已卸载 {name}（释放 {sel.text().split('·')[-1].strip()}）。")
+            QMessageBox.information(self, "完成", f"已卸载 {name}（释放 {freed}）。")
         else:
             self._refresh_packs_list()
 

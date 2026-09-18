@@ -722,9 +722,19 @@ class AsrThread(QThread):
                 # 用户有权知道段被识别了但被质量过滤掉（而不是应用没反应）
                 self._filtered_streak = getattr(self, "_filtered_streak", 0) + 1
                 if self._filtered_streak == 2:
+                    # v2.19.2：文案诚实——旧实现在 `asr_language=auto`（出厂默认）
+                    # 下会念出"当前锁定为「auto」，可在设置中改为自动检测"，
+                    # 而用户本来就是自动检测、界面上也没有「auto」这个标签。
+                    lang = str(self.language or "").strip()
+                    if not lang or lang.lower() == "auto":
+                        hint = ("识别语言＝自动检测；若内容语言固定，"
+                                "在设置里手动锁定该语言可减少误听")
+                    else:
+                        hint = (f"当前锁定为「{lang}」，与内容不符时"
+                                "请在设置中改为自动检测或换语言")
                     self.status_changed.emit(
                         "有语音被识别但质量过滤丢弃（可能为音乐/噪声，或识别语言与内容不符——"
-                        "当前锁定为「" + str(self.language) + "」，可在设置中改为自动检测）")
+                        + hint + "）")
             else:
                 self._filtered_streak = 0
             if self.language == "auto":

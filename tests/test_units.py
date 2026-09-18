@@ -399,7 +399,8 @@ def test_version_files_sync():
     import subprocess
     import sys
     script = Path(__file__).resolve().parents[1] / "scripts" / "bump_version.py"
-    r = subprocess.run([sys.executable, str(script), "--check"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(script), "--check"], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"三处版本号应一致: {r.stdout} {r.stderr}"
 
 
@@ -1757,6 +1758,130 @@ def test_spec_translation_not_cached():
         assert len(tr._cache.puts) == 1, "命中路径不得重复写"
     finally:
         tr._cache, tr.ENGINES = real_cache, real_engines
+
+
+def test_cache_unreadable_never_wipes():
+    """v2.19.2：翻译缓存"读不开" ≠ "空缓存"。
+
+    旧实现 `_load()` 把异常吞成 `_data={}` 且照常 `_loaded=True`，绕过 v2.2.1
+    那道"未加载禁写盘"守卫——首次攒批落盘（10 条或 5 秒）就用近空 dict
+    `os.replace` 覆写整份持久缓存，用户几场攒下的翻译记录无声消失、不留原件。
+    触发面比想象大：记事本改过编码（BOM/ANSI）、杀软或索引器瞬时占用文件。
+    """
+    import json
+    import tempfile
+    d = tempfile.mkdtemp()
+    p = Path(d) / "trans_cache.json"
+    try:
+        # ① BOM 头（记事本"另存为 UTF-8"）：现在必须读得出来
+        p.write_bytes(b"\xef\xbb\xbf" + json.dumps(
+            {"hello": ["你好", "google"]}).encode("utf-8"))
+        c = TranslationCache()
+        c._path = lambda: p
+        assert c.get("hello") == ("你好", "google"), "带 BOM 的缓存应正常读出"
+
+        # ② 真·读不开（GBK 落盘）：按空处理，但**绝不允许覆写磁盘原件**
+        junk = json.dumps({"old": ["旧记录", "google"]},
+                          ensure_ascii=False).encode("gbk")
+        p.write_bytes(junk)
+        c2 = TranslationCache()
+        c2._path = lambda: p
+        assert c2.get("old") is None, "读失败按空处理（功能继续）"
+        c2.put("new", ["新记录", "google"])
+        c2._dirty_puts = 99
+        c2._save_locked()
+        assert p.read_bytes() == junk, "读失败的缓存不得被空 dict 覆写"
+        assert p.with_name(p.name + ".bad").exists(), "原件必须另存供人工抢救"
+    finally:
+        pass
+
+
+def test_probe_engine_recognises_argos():
+    """v2.19.2：`probe_engine` 必须认 argos。
+
+    旧实现只有 google/mymemory 两个分支，argos 恒落到末尾
+    `return False, "未知引擎"`。后果：`engine=argos` + 自动备援（默认开）的用户
+    一次离线异常落到 MyMemory 后，`_maybe_reprobe_primary` 每 60s 重探主引擎
+    **永远失败**，整场被绑在在线引擎上（额度/429），而 `main_window._spec_enabled()`
+    要求 `_active_engine == 'argos'` → 推测式增量翻译随之静默关闭。
+    """
+    from app.translate import offline_pack as op
+    from app.translate import translator as tr
+    real = op.list_installed
+    try:
+        op.list_installed = lambda: [("en", "zh")]
+        ok, detail = tr.probe_engine("argos", src="en", tgt="zh-CN")
+        assert ok and "en→zh" in detail, (ok, detail)
+        ok2, d2 = tr.probe_engine("argos", src="ja", tgt="zh-CN")
+        assert (not ok2) and "缺少" in d2, (ok2, d2)
+        ok3, d3 = tr.probe_engine("argos")          # 方向未知：有包即可恢复
+        assert ok3 and "1 个方向" in d3, (ok3, d3)
+        op.list_installed = lambda: []
+        ok4, d4 = tr.probe_engine("argos")
+        assert (not ok4) and "未安装" in d4, (ok4, d4)
+    finally:
+        op.list_installed = real
+
+
+def test_coerce_allows_negative_screen_coords():
+    """v2.19.2：坐标键允许负值——副屏在主屏左侧/上方时 Qt 虚拟桌面坐标天然为负。
+
+    v2.7.5（R-5）"负数无意义"的一刀切把 `overlay_x=-1600` 消毒回默认 200，
+    多显示器用户每次重启面板都被拽回主屏左上角（而 `_clamp_overlay_pos`
+    明确支持负坐标并落盘）。尺寸/条数类键必须仍然拦负。"""
+    from app.config import Config, DEFAULTS
+    assert Config._coerce("overlay_x", -1600) == -1600
+    assert Config._coerce("overlay_y", "-240") == -240      # 字符串挽救同享
+    assert Config._coerce("overlay_y", -1e9) == -1000000000
+    assert Config._coerce("overlay_w", -300) == DEFAULTS["overlay_w"]
+    assert Config._coerce("max_history", -5) == DEFAULTS["max_history"]
+
+
+def test_opacity_alpha_mapping_single_source():
+    """v2.19.2：透明度换算收口 + 100% 必须真的是 255。
+
+    旧写法 `int(v * 2.55)` 在浮点下 100 → 254.999… → **254**，"100% 不透明"
+    常年漏 1/255 的桌面进来；且主窗 `_on_panel_opacity` 自带一份同样公式直接
+    改私有属性，与 `apply_style` 两副面孔（当场 254、重启 255）。"""
+    from app.ui.caption_overlay import alpha_to_opacity, opacity_to_alpha
+    assert opacity_to_alpha(100) == 255, opacity_to_alpha(100)
+    assert opacity_to_alpha(92) == 235, "旧 int(92*2.55)=234"
+    assert opacity_to_alpha(0) == opacity_to_alpha(30), "地板 30 仍在"
+    assert opacity_to_alpha(500) == 255, "上限仍夹到 100 档"
+    for v in (30, 60, 75, 85, 92, 100):
+        assert alpha_to_opacity(opacity_to_alpha(v)) == v, (
+            "档位→alpha→档位必须回到原值（菜单勾选态靠它）")
+
+
+def test_bump_check_covers_version_tuples():
+    """v2.19.2：`bump_version --check` 必须把 filevers/prodvers 元组也拉进比较。
+
+    旧实现是 `{FileVersion 字符串} or {filevers 元组}`——字符串恒存在，`or`
+    短路后元组**永不参与**比较：只改元组也报"版本一致"，产出的 EXE 文件属性
+    却是错版本。"""
+    import importlib.util
+    here = Path(__file__).resolve().parents[1] / "scripts" / "bump_version.py"
+    spec = importlib.util.spec_from_file_location("bv_mod", str(here))
+    bv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bv)
+    files = {
+        "app/config.py": 'APP_VERSION = "2.19.2"',
+        "setup.iss": '#define MyAppVersion "2.19.2"',
+        "version_info.txt": "filevers=(2, 19, 1, 0),\n prodvers=(2, 19, 1, 0),\n"
+                            "StringStruct('FileVersion', '2.19.2.0'),\n"
+                            "StringStruct('ProductVersion', '2.19.2.0'),\n",
+    }
+    real_read = bv.read
+    try:
+        bv.read = lambda p: files[p]
+        vs = bv.current_versions()
+        assert "2.19.1" in vs["version_info.txt"], f"元组形态必须被读到: {vs}"
+        vals = set()
+        for f, v in vs.items():
+            vals |= set(v) if f == "version_info.txt" else {v}
+        assert len(vals) == 2, f"字符串/元组不一致必须判为不一致: {vals}"
+    finally:
+        bv.read = real_read
 
 
 if __name__ == "__main__":
