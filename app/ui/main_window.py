@@ -180,6 +180,18 @@ class CaptionCard(QFrame):
         if not self.source_label.isVisible():
             self.setVisible(False)
 
+    def export_row(self):
+        """导出用的一行快照 (meta, source, target, t_start, dur_s)。
+
+        v2.20.3：卡片会被 `max_history` 淘汰并 `deleteLater`，而卡片是这场字幕
+        **唯一的副本**（历史区早在 v2.20.0 删除，面板与主窗都不再另存）——淘汰即
+        永久丢失。淘汰前先把这一行抄进导出台账。
+        原文一律取标签文本、**不看可见性**：用户为清爽关掉「同时显示原文」，不该
+        让 30 分钟后拿到的文件里原文永久消失（显示设置决定存档内容）。"""
+        return (self.meta_label.text(), self.source_label.text(),
+                self.target_label.text(),
+                getattr(self, "t_start", None), getattr(self, "dur_s", None))
+
     def set_active(self, active):
         """聚焦态切换（v2.2.5）：active=True 换强调边框样式，False 渐隐。
 
@@ -245,19 +257,21 @@ def build_export_text(cards, fmt="txt"):
     fmt="srt"：标准 SRT 编号+时间轴，cue 文本用译文（缺失时回退原文）；
     时间优先用卡片记录的会话相对秒 t_start + Whisper 时长 dur_s，
     缺失时按累计时长/5 秒槽位近似；占位与翻译失败卡跳过。
-    返回 (文本, 有效条数)。"""
+    返回 (文本, 有效条数)。
+
+    v2.20.3：入参元素可以是 `CaptionCard`，也可以是 `CaptionCard.export_row()`
+    的五元组——被 `max_history` 淘汰的卡片以快照形式留在导出台账里，导出不再
+    只剩"最近 N 条"。"""
+    rows = [c if isinstance(c, tuple) else _card_row(c) for c in cards]
     if fmt == "srt":
         cues = []
-        for card in cards:
-            target = card.target_label.text()
-            source = card.source_label.text()
+        for meta, source, target, t_start, dur_s in rows:
             if target in ("...", "⟳ …", "", "[翻译失败]"):
                 target = ""
             text = target or source
             if not text:
                 continue
-            cues.append([getattr(card, "t_start", None),
-                         getattr(card, "dur_s", None), _srt_wrap(text)])
+            cues.append([t_start, dur_s, _srt_wrap(text)])
         for i, c in enumerate(cues):
             if c[0] is None:
                 prev = cues[i - 1]
@@ -271,10 +285,7 @@ def build_export_text(cards, fmt="txt"):
         return "\n".join(out), len(cues)
     lines = []
     n = 0
-    for card in cards:
-        meta = card.meta_label.text()
-        source = card.source_label.text() if card.source_label.isVisibleTo(card) else ""
-        target = card.target_label.text()
+    for meta, source, target, _t0, _dur in rows:
         lines.append(f"[{meta}]")
         if source:
             lines.append(source)
@@ -284,6 +295,16 @@ def build_export_text(cards, fmt="txt"):
         lines.append("")
         n += 1
     return "\n".join(lines), n
+
+
+def _card_row(card):
+    """`CaptionCard.export_row()` 的兜底版：鸭子类型的假卡片（测试桩）也能导出。"""
+    try:
+        return card.export_row()
+    except AttributeError:
+        return (card.meta_label.text(), card.source_label.text(),
+                card.target_label.text(),
+                getattr(card, "t_start", None), getattr(card, "dur_s", None))
 
 
 class MainWindow(QMainWindow):
@@ -306,6 +327,8 @@ class MainWindow(QMainWindow):
         self.translate_thread = None
         self.running = False
         self.session_count = 0
+        # v2.20.3：被 max_history 淘汰的卡片文本留在台账里供导出（见 export_row）
+        self._export_ledger = []
         self.setWindowTitle("LiveSubtitle · 实时字幕翻译")
         self.resize(1150, 760)
         self.setStyleSheet(DARK_QSS)
@@ -866,7 +889,10 @@ class MainWindow(QMainWindow):
         # 三条路径都改得动 running，面板自己翻转就会与真态不一致
         self.overlay.set_running(bool(self.running))
         if getattr(self, "_muted_warn", False):
-            self.overlay.set_status("系统静音中 · 不会有字幕", is_error=True)
+            # v2.20.3：面板状态行只有 10 字符的额度（`set_status` 截断），长句一律
+            # 被腰斩成"系统静音中 · 不会…"这种半截话。这里只放状态词，完整解释在
+            # 主窗状态栏与横幅里。
+            self.overlay.set_status("系统静音中", is_error=True)
             return
         if getattr(self, "_low_input_warn", False):
             self.overlay.set_status("信号弱", is_error=True)
@@ -877,7 +903,11 @@ class MainWindow(QMainWindow):
         src = "麦克风" if self.config.get("source_type") == "microphone" else "系统声音"
         model = self.config.get("asr_model")
         eng = getattr(self, "_last_engine_name", "") or "自动"
-        self.overlay.set_status(f"运行中 · {src} · {eng} · {model} 模型")
+        # v2.20.3：面板状态行 `set_status` 只留 10 个字符（长提示截成"运行中 · 系统声…"），
+        # 引擎与模型名**从来没能看见过**——那串长文本是给主窗状态栏写的。面板这里
+        # 只报"在不在跑、听的是哪路声音"，详情归主窗与设置页。
+        self.overlay.set_status(f"运行中 · {src}")
+        self._engine_status_detail = f"运行中 · {src} · {eng} · {model} 模型"
 
     def set_overlay_caption_error(self, failed):
         """字幕翻译失败时让状态行变橙红提醒。"""
@@ -1226,6 +1256,14 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
         self.session_count = 0
         self.session_label.setText("本次会话：0 条")
+        # v2.20.3：主窗「清空」以前只清主窗卡片——面板上还留着全部字幕，用户以为
+        # 没清掉；而卡片是这场字幕的唯一副本，清掉就没了。台账一并清空，保持
+        # "清空 = 这场真的作废" 的语义。
+        self._export_ledger = []
+        try:
+            self.overlay.clear_caption()
+        except Exception:
+            pass
         self.stack.setCurrentIndex(0)
         # v2.6.1（P0-1）：在途状态随卡片一起清——此前运行中清空只删卡片，
         # 迟到译文经 _pending 配对打到已删 C++ 对象上 → qFatal 崩溃
@@ -1271,6 +1309,8 @@ class MainWindow(QMainWindow):
             w = self.scroll_layout.itemAt(i).widget()
             if isinstance(w, CaptionCard):
                 cards.append(w)
+        # v2.20.3：台账（已被历史上限淘汰的旧卡快照）排在前面，导出=整场而非最近 N 条
+        cards = list(getattr(self, "_export_ledger", [])) + cards
         if not cards:
             QMessageBox.information(self, "导出字幕", "当前会话还没有可导出的字幕。")
             return
@@ -1536,7 +1576,12 @@ class MainWindow(QMainWindow):
         mb = 0.0
         if d.exists():
             try:
-                mb = sum(f.stat().st_size for f in d.rglob("*") if f.is_file()) / 1048576.0
+                # v2.20.3：HF 快照里的 model.bin 是指向 blobs 的符号链接，`f.stat()` 会穿透
+                # 计一次、blob 本体再计一次 → 字节翻倍（实测磁盘 100MB 显示 200MB/41%，
+                # 真到一半时已经"480/480MB 99%"，ETA 消失且慢速提示被抑制，看着像卡死）。
+                # 与 v2.0.1 修过的 `dir_size_mb` 同一判据：跳过符号链接。
+                from app.translate.offline_pack import dir_size_mb
+                mb = dir_size_mb(d)
             except Exception:
                 pass
         total = self._model_dl_total
@@ -2204,7 +2249,14 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(f"错误：{msg}")
             self._show_info("音频错误", msg)
         else:
+            # v2.20.3（离屏实测）：模型加载失败这类非音频错误此前只写一行状态字——
+            # running 仍是 True、面板仍写"运行中 · 系统声音"、把手仍是"⏸ 暂停"、
+            # 音量条继续跳，而 ASR 线程其实已经死了；下载横幅还会永久冻在 99%
+            # （`_stop_model_download_feedback` 只在 ready/stop 两条路调）。
+            # 改走常驻告警（`_set_alert` 不会被下一条状态覆盖）并收掉下载横幅。
             self.engine_status_label.setText(msg)
+            self._set_alert(msg, error=True)
+            self._stop_model_download_feedback()
 
     def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
         # v2.6.2（P1-4/P1-6）：会话身份守卫替代 running 守卫——停止后旧
@@ -2811,8 +2863,12 @@ class MainWindow(QMainWindow):
                 pass  # 前卡可能已被 max_history 裁剪销毁
         self._active_card = card
         card.set_active(True)
-        self.session_count = getattr(self, "session_count", 0) + 1
-        self.session_label.setText(f"本次会话：{self.session_count} 条")
+        # v2.20.3：翻译失败的卡不计入"本次会话 N 条"——实测 4 条全 [翻译失败]
+        # 时状态栏写"本次会话：4 条"，用户以为有 4 条字幕可导出（导出侧又会跳过
+        # 失败卡，两边对不上更让人困惑）。
+        if not error:
+            self.session_count = getattr(self, "session_count", 0) + 1
+            self.session_label.setText(f"本次会话：{self.session_count} 条")
         if error:
             self._set_engine_status(
                 f"⚠ 翻译失败（连续 {self._fail_streak} 条）：{error}")
@@ -2853,9 +2909,18 @@ class MainWindow(QMainWindow):
         evicted = []
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
             item = self.scroll_layout.takeAt(0)
-            if item.widget():
-                evicted.append(item.widget())
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                # v2.20.3：淘汰前把这一行抄进导出台账。卡片是这场字幕的唯一副本，
+                # 实测灌 200 段 / max_history=30 时状态栏写「本次会话：200 条」而
+                # 导出只有最近 30 条——出厂 200 条上限配默认 4s 分段，十几分钟就
+                # 翻车，前半程没有任何第二份副本。
+                if isinstance(w, CaptionCard):
+                    ledger = getattr(self, "_export_ledger", None)
+                    if ledger is not None:
+                        ledger.append(w.export_row())
+                evicted.append(w)
+                w.deleteLater()
         # v2.2.0：_pending 悬挂引用清理——被裁剪的占位卡随后 deleteLater，
         # 若仍在 _pending 里，迟到译文调用 set_result 会打在已删 C++ 对象上
         # 崩溃。同步移除配对记录

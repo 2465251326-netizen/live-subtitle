@@ -261,10 +261,8 @@ class CaptionOverlay(QWidget):
         self._pin_btn.clicked.connect(self._toggle_pin)
         bl.addWidget(self._pin_btn)
 
-        self._collapse_btn = QToolButton()
-        self._collapse_btn.setText("收起")
-        self._collapse_btn.setToolTip("收起为迷你条（只显示最新一句）")
-        self._collapse_btn.clicked.connect(self._toggle_collapse)
+        # v2.20.3：原「收起」QToolButton 从未 addWidget 进布局（e94cb59 起就是死
+        # 代码），迷你条入口现由 ⋯ 菜单唯一承担，故删掉这件不存在的控件。
 
         self._close_btn = QToolButton()
         self._close_btn.setText("✕")
@@ -584,7 +582,7 @@ class CaptionOverlay(QWidget):
             return
         # v2.7.5（R-4）：_pending_row 死变量移除——T1 多待决并存后匹配走
         # _find_pending（按原文精确/后缀），单槽指针已无读方
-        self._add_row(source_text, "⟳ 识别中…", True)
+        self._add_row(source_text, "⟳ 翻译中…", True)   # v2.20.3：此刻原文已经出来了，在等的是翻译——写"识别中"会让人# 去查麦克风
 
     def show_pending_result(self, source_text, target_text, show_source=True,
                             merged_from=None):
@@ -1380,7 +1378,8 @@ class CaptionOverlay(QWidget):
         self._font_btn.setText(f"Aa {self._font_size} ▾")
         lang = dict(self.LANGS).get(self._target_lang, self._target_lang)
         self._lang_btn.setText(f"🌐 {lang}")
-        self._collapse_btn.setText("展开" if self._collapsed else "收起")
+        # v2.20.3：收起/展开的文案在 `_build_menu()` 里按 `_collapsed` 现算，
+        # 工具条上那件从未存在的按钮（见上方删除注释）不再需要同步。
         self._sync_font_checks()   # v2.5.3：字号菜单勾选随字号互斥同步
 
     def _toggle_src(self):
@@ -1598,6 +1597,16 @@ class CaptionOverlay(QWidget):
         # 持久化的 619，右半/下半永远停在壁纸透明（右缘把手三点画在旧宽度处即
         # 铁证）。尺寸变化即全窗 update。
         self.update()
+        # v2.20.3（实测）：宽度一变，每句的折行数就全变了，而自动高度只在"来新字"
+        # 时重算——拖窄面板后内容需要 601px、面板还停在 467px，最新一行被裁在可视区
+        # 之外，而 dual 两栏按用户要求不显示滚动条，用户根本不知道还能滚。
+        # 宽度变化即重排一次（`_schedule_relayout` 自带 _relayout_pending 守卫与
+        # 12 拍上限，_relayout 内的 resize 回调不会自激）。
+        w = self.width()
+        last = getattr(self, "_last_relayout_w", None)
+        self._last_relayout_w = w
+        if last is not None and last != w:
+            self._schedule_relayout()
 
     def show_first_hint(self):
         """D：空状态文案升级为手势引导（主窗按配置只调一次）。"""
@@ -1654,7 +1663,8 @@ class CaptionOverlay(QWidget):
             QWidget#SubtitlePanel {{ background: transparent; }}
             QWidget#PanelToolbar {{ background: rgba(255,255,255,16); border-radius: 8px; }}
             QToolButton {{ color: #cfd6e4; background: transparent; border: none;
-                           padding: 2px 5px; font-size: 12px; border-radius: 6px; }}
+                           padding: 2px 5px; font-size: 12px; border-radius: 6px;
+                           min-height: 24px; }}
             QToolButton:hover {{ background: rgba(255,255,255,30); }}
             QToolButton:checked {{ background: rgba(255,255,255,45); }}
             QToolButton:disabled {{ color: rgba(255,255,255,60); }}
@@ -2008,6 +2018,13 @@ class CaptionOverlay(QWidget):
         acts["grouping"] = menu.addAction("攒句合并（整句翻译，译文更连贯）")
         acts["grouping"].setCheckable(True)
         acts["grouping"].setChecked(self._grouping)
+        # v2.20.3：迷你条入口回归。`_collapse_btn` 自 e94cb59「R7 体验修复批次」
+        # 起就只剩构造、从没 `addWidget` 进工具条（实测 parent=None、isVisible False），
+        # 于是 v2.5.0 的收起/展开整条功能在生产里不可达、`overlay_collapsed` 恒 False，
+        # 而 README 还在教"工具条 ⌄ 可把面板收成一条精简字幕行"。工具条已 8 颗按钮、
+        # 窄板会裁字，故入口放这里，不塞回工具条。
+        acts["collapse"] = menu.addAction(
+            "展开为完整面板" if self._collapsed else "收起为迷你条（只显示最新一句）")
         menu.addSeparator()
         acts["copy"] = menu.addAction("复制最近一句")
         acts["fix_asr"] = menu.addAction("纠正最近识别…")
@@ -2068,6 +2085,9 @@ class CaptionOverlay(QWidget):
             self.set_layout_mode(new_mode)
             if self._on_layout_changed:
                 self._on_layout_changed(new_mode)
+        elif chosen == acts.get("collapse"):
+            # v2.20.3：迷你条唯一入口（见 _build_menu 注释）
+            self._toggle_collapse()
         elif chosen == acts.get("grouping"):
             on = not self._grouping
             self.set_grouping_enabled(on)

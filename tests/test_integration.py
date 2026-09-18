@@ -377,9 +377,21 @@ def t_overlay_collapse_and_bar():
     h_full = ov._scroll.height()
     ov._toggle_collapse()
     assert got["collapsed"] == [True] and not ov._scroll.isVisible()
-    assert ov._collapse_btn.text() == "展开"
+    # v2.20.3：收起/展开的唯一入口是 ⋯ 菜单（工具条那件按钮自 e94cb59 起从未
+    # 进过布局，功能在生产里不可达而 README 还在教它）。菜单文案随状态翻转。
+    acts_c = ov._build_menu()
+    assert ov._menu_acts["collapse"].text().startswith("展开为完整面板"),         ov._menu_acts["collapse"].text()
+    acts_c.deleteLater()
     ov._toggle_collapse()
     assert got["collapsed"] == [True, False] and ov._scroll.isVisible()
+    acts_c2 = ov._build_menu()
+    assert ov._menu_acts["collapse"].text().startswith("收起为迷你条")
+    # 菜单项真的能驱动收放（旧锁只测按钮文案，测不到"有没有入口"）
+    ov._menu_dispatch(ov._menu_acts["collapse"])
+    assert ov._collapsed is True
+    ov._menu_dispatch(ov._menu_acts["collapse"])
+    assert ov._collapsed is False
+    acts_c2.deleteLater()
     assert ov._scroll.height() >= h_full or ov._scroll.height() >= 46
     # 语言菜单：选英语 → 回调 + 按钮文案更新
     acts = ov._lang_btn.menu().actions()
@@ -3535,8 +3547,12 @@ def t_settings_fields():
                 "show_source", "asr_device", "engine"):
         assert key in _FIELD_SPECS, key
     # 恢复默认不含 internal
-    dlg._reset_defaults()
+    dlg._reset_defaults(confirm=False)     # v2.20.3：恢复默认加了确认弹窗，测试走非交互路径
     assert not any(k.startswith(("overlay_x", "overlay_y", "storage_root")) for k in dlg._staged)
+    # v2.20.3：回车不得触发恢复默认（Qt 会把第一个按钮当默认按钮，实测一次回车
+    # 把 20 个键全暂存成出厂值）
+    assert dlg.reset_button.autoDefault() is False and dlg.reset_button.isDefault() is False
+    assert dlg.apply_button.isDefault() is False and dlg.cancel_button.isDefault() is False
 check("settings: 字段表完整 + 恢复默认不含 internal", t_settings_fields)
 
 def t_std_rows_coverage():

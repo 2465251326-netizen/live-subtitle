@@ -1224,3 +1224,55 @@ argos 且关备援），投 91s 真音频，按时间表中途切布局 / 停止
    之后，滞留队列不转写；`_stop_stream_preview` 丢掉一个无父 QThread 的最后一 refs 且不入孤儿名单。
 6. `prewarm_model` 标着 instant 实际只在启动读；`spec_translate` 还有 `low_latency_mode` 这道
    未写进文案的第二道闸；`early_flush` 的"仅低延迟生效"不成立。
+
+### 31.6 v2.20.2 发布记录（2026-09-19 01:56）
+
+commit `798bb5c` → tag `v2.20.2` → run **35377273038** `success`，17:56:31Z→18:04:08Z（**7m37s**）。
+`Version check OK: tag v2.20.2 == setup.iss / config.py / version_info.txt`；标记行原样：
+`UNIT: 98 tests PASS`、`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`、
+`EXE is running OK (PID 3548)`；本轮**没有**出现 Qt 收尾 AV。双资产：
+`LiveSubtitle-Setup-2.20.2.exe` **91,373,506 B**、`LiveSubtitle-2.20.2-portable.zip` **136,337,953 B**。
+
+## 三十二、会话快照（2026-09-19 凌晨 体验巡检专轮 · v2.20.3）
+
+用户原话："在优化应用使用体验的角度，对项目进行全面巡检，先记录，然后才开始优化和修复，然后发布新版本"。
+
+### 32.1 分工与"先记录"的落法
+
+四条只读体验线派后台（首次启动与默认值 / 面板人体工学 / 反馈与错误 / 设置信息架构与产出），
+我自己做**真机逐屏 + 像素级探针**（`%TEMP%\ls_v223_look.py`、`ls_v223_probe.py`、`ls_v223_enter.py`）。
+记录顺序：先复验每条结论 → 修 → CHANGELOG 里"已修"与"记录未修"分列（未修的那段就是下轮的记录，
+不另开计划文档）。
+
+### 32.2 复验结果（子代理结论必须自己跑一遍）
+
+- **实测坐实并修的**：设置框回车＝恢复默认（`reset_button.isDefault()==True`，一次回车暂存 20 个出厂值）；
+  导出只含最近 `max_history` 条（灌 200 段 / 上限 30，状态栏仍写 200）；导出原文行看 `isVisibleTo`；
+  模型加载失败后 `running=True`＋面板"运行中"＋下载横幅冻在 99%；`_collapse_btn` 从未进布局
+  （`parent=None`）；拖窄面板后内容需要 601px 而面板停在 467px；`recommended_model` 的
+  `info.get("cuda_runtime", True)` 恒真（`detect()` 不返回该键、`cuda_runtime_ready()` 零调用点）；
+  下载进度 `f.stat()` 穿透符号链接翻倍。
+- **子代理报错的一条**：它说"工作区当前根本起不来（`_collapse_btn.setText` 悬空）"——那是抓到我
+  **改到一半**的中间态；复验时 `MainWindow()` 构造正常。教训：审计窗口撞上我编辑的窗口时，
+  结论要按当前树复验，别照单修（照它说的"恢复那 4 行构造"就会把死代码请回来）。
+- **量到的事实**：工具条 8 颗按钮 sizeHint 高 19px、⋯ 只有 27×22；dual 顶到 68% 屏高后
+  `_jump_btn` 被 `hide()`、`_count_unread` 在 dual 路径根本不调。
+
+### 32.3 未修清单（下轮接手起点，按性价比排序）
+
+1. 非攒句路径缺 `isRunning()` 守卫（`main_window.py:2305` 附近；攒句路径有）→ 翻译线程死了卡片永久
+   「⟳ …」。三行就能补，**下轮先做这条**。
+2. 首跑向导：`user_chosen = current != DEFAULTS["asr_model"]` 把"用户主动选了出厂值 small"当成没选过，
+   重跑向导会覆盖成 turbo；推荐档不看 `asr_device`；无「跳过」，✕ 关掉后 `wizard_done` 仍 False → 每次启动重弹。
+3. `select_engine_ex` 全失败时恒落 `mymemory`，从不落已装离线包；不可达横幅教用户"改用「自动」引擎"
+   （自动本就是默认）。离线/无网目前是死胡同。
+4. 25 秒无字幕指引写的是会被逐段覆盖的状态行、且紧接 `update_overlay_status()` 又刷回"运行中"；
+   静音/信号弱两条 `return` 会短路真实故障横幅（`_fail_streak>=3` 判据应挪到前面）。
+5. 语音识别页 21 行 / 17 行在折叠线下、8 个速度旋钮互相覆盖（`segment_cap_s=4.0` 出厂即覆盖了
+   「低延迟 14s→6s」的宣传）、术语对新手不友好；设置搜索搜不到字号/透明度（四控件没进 `_rows_meta`）。
+6. dual 顶到屏高上限后没有"还能往上翻"的线索（↓最新与未读角标只服务列表布局）；正文区选中文字时
+   拖不动面板，与"整板任意处可拖"的模块宣言矛盾（要拖需放行"按下未选中文本即拖板"）。
+7. 跨会话零留存、无「复制整场字幕」；纠错写入词典后无人告诉用户它在哪、且预填整句当键。
+8. `prewarm_model` 标 instant 实际只在启动读；面板 🌐 改目标语言不重启管线而设置页改会（同键两入口分叉）；
+   「背景透明度」实为不透明度；`settings_dialog.py` 三处 `✗ 检查失败：{requests 英文}` 直达 UI。
+

@@ -122,7 +122,9 @@ def recommended_model(info=None):
         gpu_ok = int(info.get("cuda_devices") or 0) > 0
     except (TypeError, ValueError):
         vram, gpu_ok = 0, False
-    if gpu_ok and not bool(info.get("cuda_runtime", True)):
+    # v2.20.3：`detect()` 从不返回 "cuda_runtime" 键，旧写法恒为 True
+    # → v2.19.2 那道闸是死代码（`cuda_runtime_ready()` 全仓零调用点）。
+    if gpu_ok and not cuda_runtime_ready():
         return "small", (f"检测到 NVIDIA 显卡（显存 {vram}MB）但 CUDA 运行时尚未就绪，"
                          "先用 small（CPU 4 核以上可实时）；在设置里装好 CUDA 运行时"
                          "后可改选 large-v3-turbo")

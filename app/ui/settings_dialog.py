@@ -788,18 +788,28 @@ class SettingsDialog(QDialog):
         self.reset_button = QPushButton("恢复默认")
         self.reset_button.setObjectName("GhostButton")
         self.reset_button.setCursor(Qt.PointingHandCursor)
+        # v2.20.3（实测）：Qt 把对话框里第一个 QPushButton 当默认按钮，而三个按钮
+        # 的 autoDefault 都是 True → 在任何输入框（含顶部搜索框）里按回车＝触发
+        # 「恢复默认」。offscreen 实测一次回车把 20 个键全暂存成出厂值、控件集体跳回，
+        # 用户再顺手点「保存并应用」就是整场设置清零。回车在设置框里不该是破坏性动作。
+        self.reset_button.setAutoDefault(False)
+        self.reset_button.setDefault(False)
         self.reset_button.clicked.connect(self._reset_defaults)
         bar_layout.addWidget(self.reset_button)
         self.cancel_button = QPushButton("取消")
         self.cancel_button.setObjectName("GhostButton")
         self.cancel_button.setCursor(Qt.PointingHandCursor)
         self.cancel_button.setEnabled(False)
+        self.cancel_button.setAutoDefault(False)
+        self.cancel_button.setDefault(False)
         self.cancel_button.clicked.connect(self._discard_staged)
         bar_layout.addWidget(self.cancel_button)
         self.apply_button = QPushButton("保存并应用")
         self.apply_button.setObjectName("PrimaryButton")
         self.apply_button.setCursor(Qt.PointingHandCursor)
         self.apply_button.setEnabled(False)
+        self.apply_button.setAutoDefault(False)
+        self.apply_button.setDefault(False)
         self.apply_button.clicked.connect(self._apply_staged)
         bar_layout.addWidget(self.apply_button)
         outer.addWidget(bar)
@@ -2032,14 +2042,24 @@ class SettingsDialog(QDialog):
         # v2.20.1：不再还原"显隐预览"——设置页的启用勾选已删（面板常驻实时显示），
         # 没有任何控件会预览显隐；留着这行反而会按已删除的键把面板藏起来
 
-    def _reset_defaults(self):
+    def _reset_defaults(self, confirm=True):
         """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。
+
+        `confirm=False` 供测试与非交互路径使用（弹窗会阻塞事件循环）。
 
         v2.0.6：暂存清单由 _FIELD_SPECS 全量遍历——"恢复默认漏键"类 bug
         （v2.0.1 曾漏 4 个键）从结构上消除：新设置项进 specs 即自动被
         恢复默认覆盖，无需再记得改多个清单。
         """
         d = dict(DEFAULTS)
+        # v2.20.3：恢复默认会一次性改掉全部 20+ 个键，此前点一下就直接生效（暂存），
+        # 与「卸载语言包/删除模型都有确认」的尺度不一致。加一道确认。
+        if confirm and QMessageBox.question(
+                self, "恢复默认",
+                "把**全部**设置项恢复为出厂默认（识别模型、引擎、热键、面板外观等都会变）。\n"
+                "点「继续」后仍需在右下角点「保存并应用」才会真正写入。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
         self._suspend(lambda: self._set_widgets_from(d))
         # v2.0.1：误听词典防抖未触发的输入也要按默认值暂存
         timer = getattr(self, "_mishear_timer", None)
