@@ -1,7 +1,7 @@
 # 会话交接文档 · LiveSubtitle 实时字幕翻译
 
 > 本文件供**新会话**接手使用。读这一份即可获得全部上下文，无需翻阅历史对话。
-> 最后更新：2026-09-18 **v2.19.2 已发布**（第二十六节＝本轮：面板透明真根因 + 四路巡检修掉 13 项；⚠ 该节更正第二十四节 24.7 的"resize 不重绘"误诊）。上一轮（同日 v2.19.1 发布收尾 + 令牌轮换 + 视觉能力实测）见第二十五节。再上一轮记录（2026-09-16 **v2.18.2 已发布**，本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
+> 最后更新：2026-09-18 **v2.19.3 已发布**（第二十七节＝本轮：全面实测（真实网页新闻 + 合成音频，全程离线）修掉流式字幕"同一句复读"的三个根因）。同日两轮：v2.19.2（面板透明真根因 + 四路巡检修 13 项）见第二十六节，v2.19.1（发版收尾 + 令牌轮换 + 视觉能力实测）见第二十五节。再上一轮记录（2026-09-16 **v2.18.2 已发布**，本行下面首段仍描述 v2.18.1）——面板"只留一条分割线"其实没做到（v2.18.0 漏删历史区装饰线 + 拖完胶囊永久高亮），另修字幕卡聚焦样式自 v2.2.5 起从未生效等 8 项，以及**真实英语新闻端到端实测揪出的 5 项悬浮窗缺陷**，见 CHANGELOG 与第二十/二十一节；**同日本会话另实测出三个真缺陷并全部修复补锁**——D-1 流式原文在 `asr_language=auto`（出厂默认）下整条通道静默哑火、D-2 dual 布局延续片段原文被拼接两遍、D-3 首句草稿译文必错一轮，见第二十二节（含 22.8 发版前真机复测），**v2.18.2 已发布**
 > ⚠️ v2.7.5 由上一会话发布但**当时漏更新本文件**，其变更详情见 CHANGELOG.md（8 项审计修复）
 
 ---
@@ -12,7 +12,7 @@
 - **本地路径**：`C:\deepseek (2)\live-subtitle`
 - **技术栈**：Python 3.14（本机 `C:\Python314\python.exe`）+ PySide6（Qt6）+ faster-whisper（CTranslate2）+ pyaudiowpatch（WASAPI 环回采集）
 - **功能**：抓取系统声音/麦克风 → 本地语音识别 → 实时翻译 → 主窗口字幕列表 + 悬浮字幕条
-- **当前版本**：**v2.19.2**（已发布，含 Setup EXE + portable zip 双资产）
+- **当前版本**：**v2.19.3**（已发布，含 Setup EXE + portable zip 双资产）
 
 ## 二、发版工作流（严格照做，踩过坑）
 
@@ -866,5 +866,44 @@ UIA 点"开始翻译"→日志验证→每秒抓面板帧）**，t=20/t=40 帧�
 - 用户配置（本轮实测）：`overlay_layout=list`、`overlay_dual_hist=false`、`translate_grouping=false`、`engine=argos`、`asr_language=en`、`segment_cap_s=4.0`、`perf_turbo=true`、`overlay_bg_opacity=100`、面板 619×515 @(898,172)。
 - 日志按会话分组（子代理核过）：最后一次实质使用 09-16 15:56（零 error）；**09-17 用户自己启动过两次**（其中一次 1 秒即停，留下 `orphan_thread|cls=AsrThread`——v2.0.3 容器已兜住，但坐实 26.4-② 缺同款守卫）；09-18 两次仅预热未启管线。`preview.degraded`/`round_failed` 在全部历史日志**零命中**。
 - 本轮临时产物（均在 `%TEMP%`，不入库）：`ls_panel_repro.py`、`ls_probe_{paint,app,child,diff,one,qss,stack,timeline,reverse,multi,verify,flash,alpha}.py`、`ls_e2e_drive.py`、隔离 home `ls_panel_home`/`ls_e2e_home4`（各含 81MB argos 拷贝）。瞬窗/透明两类问题的探针写法可复用，但**别当产品测试台**（`scripts/qa/` 才是）。
+
+## 二十七、会话快照（2026-09-18 全面实测 · 流式复读三根因 · v2.19.3）
+
+### 27.1 测法（下次直接抄，两小时省下来）
+
+- **网页音源＝browser-use MCP，不碰用户的便携版 Chrome**。21.1 记的"独立 `--user-data-dir` 实例被单实例策略吃掉"这轮有了干净解法：`mcp__browser-use__navigate_page` 起的是自动化专用浏览器，`https://www.youtube.com/@dwnews/live` 直接可播。配套两个只读工具：`evaluate_script` 读 `video.paused/muted/volume/currentTime`（判断"到底在不在播"），`take_snapshot` 看页面结构。**别去动用户桌面上那个 Chrome**（红线）。
+- **测之前先证明有声**：`get_default_wasapi_loopback()` 打开环回 → 8 秒轮询采样 → `max rms` 必须 >0.01。本轮实测 DW 直播经默认输出（Realtek idx 5）到环回（idx 29）rms 0.03~0.13；**第二次跑时 rms=0.000**（页面被重新导航后自动暂停），那一轮整场作废、`pipeline.no_segments_hint` 触发——正是 21.1 "必须先证明音源在出声"的又一次应验。
+- **合成音源**：SAPI（Zira en-US）SSML 出 44.1k/16bit/mono wav，本文这轮生成 90.5s（`%TEMP%\ls_en60.wav`，语料是四段新闻文体、段间 `<break time="900ms"/>`）。
+- **驱动**：`%TEMP%\ls_speed_test.py`（隔离 home + 拷 argos + `HF_HOME` 注入 + `LS_NO_PLAY=1` 切网页音源 + 周期 `QScreen.grabWindow` 抓面板 + `WM_CLOSE` 收尾保遥测）。两个坑本轮各交了一次学费：① **投喂必须限速**——不限速把 60s 音频全压进 PortAudio 队列，收尾 `stop_stream()` 等排空与写线程互锁，卡死 ~170s；② **环回读取必须轮询 `get_read_available`**——静音期不出包，阻塞 `read` 永久挂死（5.3 早写过，我又踩一遍）。
+- **判责手法（很值钱）**：面板上出现重复文本时，**读隔离 home 的 `trans_cache.json` 键**——键＝送翻译的原文。本轮实测键里 `"knife"` 只出现 1 次，直接证明"行内复读三遍"是**显示层**问题而非识别问题，省掉一整轮猜测。
+
+### 27.2 修掉的三个根因（同一条用户可见缺陷：同一句复读）
+
+1. `_strip_overlapped_prefix`（主窗）漏掉最常见形态"草稿＝基线整句 + 少量新词"：锚须在 text 前 2/3 内，27 词基线 +1 词时锚在 ~24 位（限 18）→ 判无重叠 → 整句当新话返回（+9 词才正常）。加"逐词去标点+小写的前缀相等"快判。
+2. `_merge_stream`（主窗）只做"current 后缀==diff 前缀"，而预览转写常在**句中**分叉（`now in a` vs `now in her mid-30s`）→ 整段追加 → 一行内复读。加词级回跳去重（≥3 词护栏，合法叠词不误吞）。
+3. `_find_pending`（面板）只认"草稿是终版前缀"，缺**反方向**（草稿比终版更长＝窗口前瞻到下一句开头）→ 终版匹配不到草稿行、另起一行，膨胀版挂着推测译永久留在屏上。补反方向，命中后由终版把行文本校准为权威原文。
+   另加面板侧兜底：幕墙末行已收口时，草稿若只是"同句 + ≤3 新词"直接忽略，更多新词只把新词部分开成行。
+
+### 27.3 实测基线（离线 Argos + turbo + CUDA + 上下双语幕墙，用户点名全程离线）
+
+- 60s 合成新闻：`n_reco=14 reco_p50=0.27 reco_p95=0.48 n_tr=7 tr_p50=0.10 tr_p95=0.22 hold_p50=4.78 spec_p50=0.16`
+- 网页 DW 直播 120s（修复后复测）：`n_reco=23 reco_p50=0.28 reco_p95=0.50 n_tr=16 tr_p50=0.08 tr_p95=0.20 tr_max=0.48 hold_p50=6.54 spec_p50=0.09`
+- 两轮均：`preview.started` ✓、`preview.beat` 节拍 0.9~0.95s 单拍推理 0.26~0.28s、零 error/零 Traceback/零孤儿线程/零 degraded、引擎日志只出现 argos、退出 code=0（1.5~1.8s）。
+- 修复后面板截帧复核：无行内复读、无重复行、底色实心（26 节那个修复在真实负载下同样稳）。
+
+### 27.4 本轮**未修**的观察（下轮候选）
+
+1. **连续语流下 `hold_p50` 4.8~7.0s**（攒句等待）——与 13 节定性一致（hold≈分段周期×组内片数）。用户要"更快"时唯一有效的仍是关攒句（`translate_grouping`）或调 `segment_cap_s`，别再动识别/翻译侧（`tr_p50=0.08` 已无优化空间）。
+2. **相邻两行内容部分重叠**（"That's one of emotions … that's the reason probably I handled it. to be soldier." 与下一行 "The reason probably I handle to be soldier."）——这是 **whisper 相邻段本身重叠**（识别侧分段/时间窗问题），不是显示层：送译原文各成一条。要治得动 `Segmenter`/`submit` 的段间重叠抑制，风险高，未动。
+3. 26.4 那六条全部仍在（CI 闸门、流式预览三件、probe_text_clip、依赖无上限、死码、`_detach_thread` 断连噪声）。
+4. 本轮新增小项：`_merge_stream` 的词级回跳只在 diff **开头**连续匹配，若复读块出现在 diff 中部仍会漏（真机未见，留作观察）。
+
+### 27.5 勘误与产物
+
+- **v2.19.2 的回归锁是 9 把不是 8 把**（单元 +5、集成 +4；我在提交信息与 CHANGELOG 里写成"+8 / 集成 +3"）。本轮 CHANGELOG 已就地订正。
+- 套件终态：单元 **88** / 集成 **122** 全绿（v2.19.3 加 4 把：前缀相等剥离、词级回跳去重、幕墙不重复已收口句、草稿长于终版就地收口）。
+- 发版：`bump 2.19.3` → `--check` 一致 → CHANGELOG/HANDOFF → 提交（含 `app/config.py`）→ push → tag → CI 双资产。
+- 临时产物（`%TEMP%`，不入库）：`ls_speed_test.py`（**值得下轮换用**：网页/合成双音源、限速投喂、轮询环回、优雅退出）、`gen_en60.ps1`、`ls_en60.wav`、`ls_replay_wall.py`（幕墙行生命周期离线回放，定位复读用的）、`ls_speed_shots/`（面板帧）、隔离 home `ls_speed_home`（含 81MB argos 拷贝 + 本轮 trans_cache）。
+
 
 

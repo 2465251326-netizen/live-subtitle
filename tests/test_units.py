@@ -1884,6 +1884,59 @@ def test_bump_check_covers_version_tuples():
         bv.read = real_read
 
 
+def test_strip_overlap_prefix_equal_small_tail():
+    """v2.19.3：预览草稿＝"基线整句 + 少量新词"时必须只返回新词。
+
+    真机 60s 合成英语新闻实测：4s 滑窗每拍把同一段音频重转写一遍再往前多听几个词，
+    旧剥离算法要求"基线尾部锚落在 text 前 2/3 内"，27 词基线只多 1 个词时锚在
+    28 词的 ~24 位（限 18）→ 判"无重叠"→ **整句被当成新话返回** → 幕墙态同句
+    重复两行、尾巴再碎成第三行（多 9 个词才正常，所以是偶发且必然复现的）。"""
+    from app.ui.main_window import MainWindow
+    strip = MainWindow._strip_overlapped_prefix
+    base = ("Technology shares led the gain after a major chipmaker reported strong "
+            "than expected demand for its latest accelerator lower inflation readings "
+            "this month helped lift sentiment of")
+    assert strip(base, base) == "", "草稿与基线同句应无增量"
+    assert strip(base, base + " inflation") == "inflation"
+    assert strip(base, base + " inflation eased this month") == "inflation eased this month"
+    assert strip(base, base[0].upper() + base[1:] + " inflation") == "inflation", \
+        "首字母大小写差异不得破坏前缀相等判定"
+    # 反向护栏：真正的新句必须原样保留，不许被"前缀相等"误吞
+    fresh = "On the sports desk the national team qualified late"
+    assert strip(base, fresh) == fresh
+    assert strip(base, base + " and the bond market rallied for weeks") == \
+        "and the bond market rallied for weeks"
+
+
+def test_merge_stream_drops_mid_sentence_repeat():
+    """v2.19.3：流式合并不得把已显示的短语在同一行里复读。
+
+    真实网页新闻实测（DW News 直播 150s，离线 Argos）：末行出现
+    "…now in a One of those people is Lauren, now in her mid-30s. … people is
+    Lauren, now in her mid-30s…" ——同一短语被拼进**三遍**。根因：预览转写在句中
+    就与已显示文本分叉（"now in a" vs "now in her"），旧实现的 (c) 类重叠只做
+    "current 后缀 == diff 前缀"，对不齐就落到 (d) 整段追加。"""
+    from app.ui.main_window import MainWindow
+    ms = MainWindow._merge_stream
+    out = ms("One of those people is Lauren, now in a",
+             "One of those people is Lauren, now in her mid-30s. She lives near Toronto")
+    assert out.lower().count("one of those people") == 1, f"短语被复读：{out!r}"
+    assert "She lives near Toronto" in out, f"新词必须保留：{out!r}"
+    # 忽略标点与大小写的同一短语也要认出来
+    out2 = ms("Lower inflation readings, this month",
+              "lower inflation readings this month helped lift sentiment")
+    assert out2.lower().count("inflation") == 1, out2
+    assert out2.endswith("helped lift sentiment"), out2
+    # 护栏：正常生长、后缀重叠、**合法叠词**都不许被误吞
+    assert ms("Hello everyone", "welcome to the show") == "Hello everyone welcome to the show"
+    assert ms("the market closed higher", "higher for the fourth session") == \
+        "the market closed higher for the fourth session"
+    assert "really really" in ms("it was really", "really really good news"), \
+        "合法叠词不得被当成复读吞掉（(c) 类重叠只并一个词，'really really' 必须在）"
+    assert ms("it was really", "really good news") == "it was really good news", \
+        "单词级重叠仍按旧行为并掉"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

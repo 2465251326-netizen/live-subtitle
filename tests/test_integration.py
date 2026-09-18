@@ -1566,6 +1566,89 @@ check("settings: 面板侧改外观键同步已打开的设置页（v2.19.2 四�
       t_settings_syncs_panel_side_changes)
 
 
+def t_overlay_wall_no_dup_from_preview_beat():
+    """v2.19.3：幕墙态流式拍不得把"已收口的同一句"再开成一行。
+
+    真机 60s 英语新闻实测（离线 Argos + GPU turbo + 攒句开）：面板里同一句
+    原文+译文**逐字重复驻留两行**，其后还跟一个只剩 "inflation." 的碎片行。
+    链路：末行被终版收口（pending=False）→ 下一拍流式草稿仍是"基线整句 + 少量
+    新词"（主窗剥离失手）→ `update_partial` 见末行非待决就整句 `_add_row`。
+    主窗侧已修（规范化前缀相等快判），本锁在面板侧兜底：同句 ≤3 个新词直接忽略、
+    更多新词只把新词部分开成行。"""
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 100)
+    ov.set_show_source(True)
+    ov.set_layout_mode("dual")
+    ov.set_hist_enabled(False)              # 幕墙态
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    S1 = "Technology shares led the gain after a major chipmaker reported stronger demand"
+    for d in (S1[:20], S1[:38], S1):
+        ov.update_partial(d)
+    ov.show_pending(S1)
+    ov.show_pending_result(S1, "科技股上涨。")
+    for _ in range(4):
+        app.processEvents()
+    assert len(ov._rows) == 1, f"前置：第 1 句收口应只有一行，实得 {len(ov._rows)}"
+    assert not ov._rows[-1]["pending"], "前置：末行必须已终版收口"
+    # 下一拍草稿仍带着上一句（剥离失手的形态）
+    ov.update_partial(S1 + " and inflation eased")
+    ov.update_partial(S1 + " and inflation eased this month")
+    for _ in range(4):
+        app.processEvents()
+    texts = [r["src"].text() for r in ov._rows]
+    dup = [t for t in texts if texts.count(t) > 1]
+    assert not dup, f"同一句在幕墙里重复驻留：{dup}"
+    assert all(not t.startswith(S1) or t == S1 for t in texts), \
+        f"新行不得整句复读已收口的句子：{[t[:40] for t in texts]}"
+    ov.deleteLater()
+
+
+check("panel: 幕墙流式拍不重复已收口句（v2.19.3 同句两行回归）",
+      t_overlay_wall_no_dup_from_preview_beat)
+
+
+def t_overlay_wall_draft_longer_than_final():
+    """v2.19.3：草稿比终版**更长**时，终版必须就地收口那一行。
+
+    真机 DW News 直播实测（离线 Argos）：面板上同一句并存两行——一行是流式草稿
+    的膨胀版（短语被复读三遍 + 前瞻到下一句开头）挂着推测译，另一行是干净的
+    终版。查翻译缓存证实送译原文只出现一次 → 复读纯属显示层。根因：
+    `_find_pending` 只认"草稿是终版的前缀"，缺反方向（终版是草稿的前缀），
+    于是终版匹配不到草稿行、另起一行。"""
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 100)
+    ov.set_show_source(True)
+    ov.set_layout_mode("dual")
+    ov.set_hist_enabled(False)
+    ov.show()
+    for _ in range(6):
+        app.processEvents()
+    draft = ("I somehow got back up. and knocked a knife out of one of the guy's "
+             "hands. the knife out of one of the guy's hands. that he was holding "
+             "inside. that he was holding in self-defense")
+    ov.update_partial(draft)
+    for _ in range(4):
+        app.processEvents()
+    assert len(ov._rows) == 1 and ov._rows[0]["pending"], "前置：草稿应占一行待决"
+    final = "I somehow got back up. and knocked a knife out of one of the guy's hands."
+    ov.show_pending(final)
+    ov.show_pending_result(final, "我不知怎地站起来，从他手中敲出一把刀。")
+    for _ in range(4):
+        app.processEvents()
+    texts = [r["src"].text() for r in ov._rows]
+    assert len(ov._rows) == 1, f"终版另起一行、膨胀草稿行仍挂在屏上：{texts}"
+    assert texts[0] == final, f"行文本应校准为权威终版，实得 {texts[0]!r}"
+    assert ov._rows[0]["tgt"].text().startswith("我不知怎地站起来")
+    assert not ov._rows[0]["pending"], "终版后该行必须已收口"
+    ov.deleteLater()
+
+
+check("panel: 幕墙草稿长于终版时终版就地收口（v2.19.3 反方向配对）",
+      t_overlay_wall_draft_longer_than_final)
+
+
 def t_overlay_dual_follow_bottom():
     """v2.18.1：dual 原文/译文区内容超出可视高度必须**自动跟底**。
 

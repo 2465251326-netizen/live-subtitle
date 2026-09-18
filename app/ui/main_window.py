@@ -1649,6 +1649,23 @@ class MainWindow(QMainWindow):
             if 0 <= pos <= len(text) // 2:          # 锚须落在已确认区（前半）
                 return text[pos + len(anchor):].strip()
             return text
+        # v2.19.3：**规范化前缀相等快判**。预览草稿最常见的形态就是"基线整句 +
+        # 少量新词"（4s 滑窗把同一段音频重转写一遍、再往前多听几个词）。此时 base 的
+        # 尾部锚落在 text 的 2/3 限制之外 → 旧实现判"无重叠"→ **整句被当成新话返回**；
+        # 幕墙态据此另起一行 = 同一句原文+译文重复两遍、尾巴碎片单独成行
+        # （真机 60s 合成新闻实测：27 词基线只多 1 个词即触发，多 9 个词才正常）。
+        # 逐词去标点+小写后比较，绕开"chunk 两端才去标点"的盲区。
+        def _toks(s):
+            out = []
+            for w in s.split():
+                n = w.strip(".,!?;:\"'()[]{}").lower()
+                if n:
+                    out.append((w, n))
+            return out
+
+        bt, tt = _toks(base), _toks(text)
+        if bt and len(tt) >= len(bt) and [n for _w, n in bt] == [n for _w, n in tt[:len(bt)]]:
+            return " ".join(w for w, _n in tt[len(bt):]).strip()
         base_words = base.split()
         text_words = text.split()
         best_end = None
@@ -1676,6 +1693,17 @@ class MainWindow(QMainWindow):
         return text
 
     @staticmethod
+    def _word_pairs(s):
+        """(原词, 规范化词) 列表：去首尾标点 + 小写，空串丢弃。
+        v2.19.3：剥离与合并两处都要"忽略标点/大小写比词"，共用一份实现。"""
+        out = []
+        for w in (s or "").split():
+            n = w.strip(".,!?;:\"'()[]{}").lower()
+            if n:
+                out.append((w, n))
+        return out
+
+    @staticmethod
     def _merge_stream(current, diff):
         """v2.14.0：当前句显示文本与流式增量合并。
 
@@ -1683,7 +1711,14 @@ class MainWindow(QMainWindow):
         a) diff 以 current 为前缀延伸 → 取更长的 diff（窗口重写更准）
         b) current 包含 diff（窗口滑动后 partial 变短）→ 保留 current
         c) current 尾部与 diff 头部重叠 → 拼接去重叠
-        d) 无重叠 → 空格拼接（转写差异过大：宁可重复下一拍自愈）"""
+        d) 无重叠 → 空格拼接（转写差异过大：宁可重复下一拍自愈）
+        e) v2.19.3：**词级回跳去重**。真实网页新闻实测（DW 直播 150s）出现同一
+           短语在**同一行内**被拼进三遍——预览转写在句子中段就与已显示文本分叉
+           （"…Lauren, now in a" vs "One of those people is Lauren, now in her
+           mid-30s…"），(c) 类"后缀==前缀"根本对不齐 → 落到 (d) 整段追加。
+           改为：若 diff 开头若干词（≥3，忽略标点/大小写）已在 current 中连续出现，
+           就丢掉这段复读、只追加真正的新词。3 词护栏避免误吞 "very very good"
+           这类合法叠词。"""
         if not current:
             return diff
         if not diff:
@@ -1696,6 +1731,15 @@ class MainWindow(QMainWindow):
         for k in range(max_k, 0, -1):
             if current.endswith(diff[:k]):
                 return current + diff[k:]
+        nc = [n for _o, n in MainWindow._word_pairs(current)]
+        dp = MainWindow._word_pairs(diff)
+        nd = [n for _o, n in dp]
+        for ln in range(min(len(nd), 12), 2, -1):
+            head = nd[:ln]
+            for i in range(len(nc) - ln, -1, -1):
+                if nc[i:i + ln] == head:
+                    tail = " ".join(o for o, _n in dp[ln:]).strip()
+                    return (current + " " + tail).strip() if tail else current
         return (current + " " + diff).strip()
 
     def _on_partial_preview(self, text):

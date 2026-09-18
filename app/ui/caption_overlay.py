@@ -505,6 +505,7 @@ class CaptionOverlay(QWidget):
             return None
         suffix_hit = None
         prefix_hit = None
+        reverse_hit = None
         for it in reversed(self._rows):
             if not it["pending"]:
                 continue
@@ -520,7 +521,15 @@ class CaptionOverlay(QWidget):
             # ≥8 字符护栏防短句误配；倒序扫描天然偏向最新待决行（即生长行）
             if s and len(s) >= 8 and key.startswith(s) and prefix_hit is None:
                 prefix_hit = it
-        return suffix_hit or prefix_hit
+            # v2.19.3：**反方向**——流式草稿经常比终版**更长**（4s 窗口把下一句
+            # 开头也转写进来，或句中分叉导致短语复读），此时终版是草稿的前缀。
+            # 旧实现只认上面那个方向，于是同一句的两行并存：膨胀的草稿行挂着
+            # 推测译留在屏上，干净的终版另起一行（真机 DW News 直播 150s 实测：
+            # 同一句的复读版与干净版各占一行，翻译缓存里送译原文只出现一次）。
+            # 命中后由 show_pending_result 把行文本**换成权威终版**，复读随之消失。
+            if s and len(key) >= 8 and s.startswith(key) and reverse_hit is None:
+                reverse_hit = it
+        return suffix_hit or prefix_hit or reverse_hit
 
     def _merge_pending(self, texts):
         """收编被并入整句的前片占位行（与主窗卡片 set_merged_away 同语义，
@@ -653,8 +662,24 @@ class CaptionOverlay(QWidget):
                 live["src"].setText(t)
                 live["src"].setVisible(bool(t) and self._show_source)
                 self._schedule_relayout()
-            else:
-                self._add_row(t, "⟳ …", True)
+                return
+            # v2.19.3 兜底：末行刚被终版收口、而这一拍草稿仍是"同一句 + 少量新词"
+            # （主窗剥离失手的形态）时，整句再开一行 = 同句重复驻留两遍，其尾巴
+            # 还会在下一拍碎成第三行（真机 60s 新闻实测）。这里只认"新词部分"：
+            # 新词 ≤3 个 → 本拍无新内容直接忽略；>3 个 → 只把新词开成行。
+            prev = (live["src_text"] or "").strip() if live is not None else ""
+            if prev:
+                pw = [w.strip(".,!?;:\"'()").lower() for w in prev.split()]
+                pw = [w for w in pw if w]
+                tw_all = [w for w in t.split()]
+                tw = [w.strip(".,!?;:\"'()").lower() for w in tw_all]
+                tw = [(o, n) for o, n in zip(tw_all, tw) if n]
+                if len(tw) >= len(pw) and [n for _o, n in tw[:len(pw)]] == pw:
+                    rest = [o for o, _n in tw[len(pw):]]
+                    if len(rest) <= 3:
+                        return
+                    t = " ".join(rest).strip()
+            self._add_row(t, "⟳ …", True)
             return
         cur = self._dual_src.text().strip()
         if not self._dual_cur_open:
