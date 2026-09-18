@@ -181,7 +181,6 @@ _FIELD_SPECS = {
     "hotkey_enabled":       ("instant", "check"),
     "hotkey_sequence":      ("instant", "keyseq"),
     "hotkey_overlay":       ("instant", "keyseq"),
-    "overlay_enabled":      ("overlay", "check"),
     "show_source":          ("overlay", "check"),
     "overlay_layout":       ("overlay", "combo"),
     # v2.20.0：删除 overlay_dual_hist / overlay_dual_hist_h——dual 的历史块与
@@ -240,9 +239,9 @@ _STD_ROW_ITEMS = {
                         ("快速（更低延迟，机翻味更重）", "fast")],
     "close": [("每次询问", "ask"), ("隐藏到托盘（字幕继续）", "tray"),
               ("直接退出程序", "exit")],
-    # v2.11.0：面板布局两形态（dual=上下双语豆包风）
+    # v2.11.0：面板布局两形态（dual=上下双语豆包风）；v2.20.1：双语两栏逐句累积
     "overlay_layout": [("列表历史（原文+译文成对滚动、可回看整场）", "list"),
-                       ("上下双语（豆包风：上原文 / 可拖分割线 / 下译文）", "dual")],
+                       ("上下双语（豆包风：上原文 / 下译文卡片、两栏逐句累积）", "dual")],
     # v2.7.6（C）：分段上限档位——实测 hold_p50 恒等于该值（turbo 关=6.04s、
     # turbo 开=4.03~4.43s）。开了推测式增量翻译后译文随碎片立即上屏，本项
     # 主要影响"刷新粒度与腰斩程度"，不再是译文迟到的决定因素
@@ -379,26 +378,19 @@ _STD_ROWS = [
              "中文词条始终按原文替换，不受影响。同时作用于「误听修正词典」与「译文修正词典」，"
              "保存后立即生效（无需重启识别）。",
      "opts": {}},
-    {"key": "overlay_enabled", "attr": "overlay_check", "page": "display", "section": "字幕显示",
-     "kind": "check", "title": "启用字幕面板",
-     "desc": "悬浮在所有窗口之上的字幕面板：顶部工具条（目标语言/原文开关/字号/收起），"
-              "正文是原文+译文成对的历史滚动区，上滚暂停自动跟随。整板可拖、右缘拖宽、"
-              "底缘拉高、双击工具条贴顶/底。托盘「显隐字幕面板」或热键（默认 Ctrl+Alt+O）随时可切。"
-              "面板「启动即常驻」：在此取消勾选、或用热键/X 隐藏，只在本次运行内有效，"
-              "下次打开软件会自动恢复显示（不想看到时就按热键藏一下）。"
-              "注：是否压过其他窗口，用面板工具条的 📌 控制。",
-     "opts": {"on_change": "_on_overlay_toggle"}},
+    # v2.20.1（用户裁决）：删除「启用字幕面板」勾选行与 `overlay_enabled` 键——
+    # 面板改为**常驻实时显示**，开/关只走全局热键（默认 Ctrl+Alt+O）与托盘右键
+    # 菜单「显隐字幕面板」（外加面板自身的 ✕），不再有任何"启用"开关。
     {"key": "show_source", "attr": "show_source_check", "page": "display", "section": "字幕显示",
      "kind": "check", "title": "同时显示原文",
      "desc": "开启后字幕与字幕面板同时保留原语言文本（面板上也可一键开关）。"},
     {"key": "overlay_layout", "attr": "layout_combo", "page": "display", "section": "字幕显示",
      "kind": "combo", "title": "面板布局",
      "desc": "「列表历史」= 原文+译文成对滚动、自动跟随最新，可回看整场。\n"
-             "「上下双语」= 豆包式实时翻译：上半是随识别「流式生长的原文」（淡色），"
-             "下半是「加粗大字译文」（配合推测式增量翻译几乎无等待），中间那条分割线"
-             "可以上下拖——原文长句想给多大空间就拖多大，两栏各自能滚轮回看。\n"
-             "双语布局只显示正在说的这一句，说完即换下一句；要回看整场历史请用"
-             "「列表历史」（主窗字幕卡片与导出文件始终是全的，与布局无关）。\n"
+             "「上下双语」= 豆包式实时翻译：上半是「逐句累积的原文」（淡色略小，"
+             "随识别流式生长），下半是「逐句累积的译文卡片」（加粗大字，最新一句"
+             "左侧带主题色竖条），中间那条分割线可以上下拖——原文栏想留多大"
+             "就拖多大；两栏各自能滚轮回看说过、译过的内容（面板不显示滚动条）。\n"
              "面板 ⋯ 菜单可随时互切，保存后立即生效。",
      "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
     {"key": "instant_caption", "attr": "instant_caption_check", "page": "display", "section": "上屏行为",
@@ -1182,8 +1174,8 @@ class SettingsDialog(QDialog):
     def _page_display(self):
         page = self._page()
         self._section(page, "字幕显示")
-        # v2.3.0：overlay_enabled(on_change=_on_overlay_toggle)/show_source
-        # 改 _STD_ROWS 表驱动
+        # v2.3.0：show_source 等改 _STD_ROWS 表驱动
+        # （v2.20.1：「启用字幕面板」勾选行已删——面板常驻实时显示）
         self._std_rows(page, "display", "字幕显示")
 
         self._section(page, "悬浮字幕样式")
@@ -1997,8 +1989,8 @@ class SettingsDialog(QDialog):
         if any(k.startswith("overlay_") or k in ("show_source", "translate_grouping")
                for k in applied):
             self.main.apply_overlay_from_config()
-        if "overlay_enabled" in applied:
-            self.main.set_overlay_enabled(bool(self.c.get("overlay_enabled")))
+        # v2.20.1：`overlay_enabled` 分支随该键删除——面板常驻实时显示，
+        # 设置页不再有启用开关，显隐只走热键 / 托盘右键菜单 / 面板 ✕
         if "hotkey_enabled" in applied or "hotkey_sequence" in applied \
                 or "hotkey_overlay" in applied:
             self.main.apply_hotkey_config()
@@ -2037,12 +2029,8 @@ class SettingsDialog(QDialog):
             self.main.apply_overlay_from_config()
         except Exception:
             pass
-        # v2.2.1：还原悬浮条显隐预览——此前只还原样式不还原显隐，勾过
-        # 「启用悬浮字幕条」再取消，悬浮条残留显示与配置相反
-        try:
-            self.main.set_overlay_visible(bool(self.c.get("overlay_enabled")))
-        except Exception:
-            pass
+        # v2.20.1：不再还原"显隐预览"——设置页的启用勾选已删（面板常驻实时显示），
+        # 没有任何控件会预览显隐；留着这行反而会按已删除的键把面板藏起来
 
     def _reset_defaults(self):
         """全部设置项恢复为默认值（仅暂存，需点「保存并应用」才落盘）。
@@ -2205,13 +2193,6 @@ class SettingsDialog(QDialog):
                 f"✗ Google 通道不可达（{detail} · 出口：{net.describe()}）。"
                 "不影响 MyMemory / Argos 备援通道。")
 
-    def _on_overlay_toggle(self, checked):
-        self._stage("overlay_enabled", bool(checked))
-        if not getattr(self, "_loading", False):
-            # v2.0.1：预览只切显隐，不落盘——此前 set_overlay_enabled 内
-            # config.set 直接写配置，取消/关闭无法还原，绕过"保存并应用"契约
-            self.main.set_overlay_visible(checked)
-
     def _apply_overlay_style(self, *_):
         self._stage("overlay_font_size", int(self.overlay_font_spin.value()))
         self._stage("overlay_text_color", self._text_color.name())
@@ -2241,10 +2222,6 @@ class SettingsDialog(QDialog):
     def _clear_cache(self):
         _cache.clear()
         QMessageBox.information(self, "完成", "翻译缓存已清空。")
-
-    def sync_overlay_check(self, checked):
-        """悬浮字幕在设置窗口之外被开关时，同步本页复选框（外部改动=直接生效）。"""
-        self.overlay_check.setChecked(bool(checked))
 
     def sync_overlay_keys(self, values):
         """面板侧（⋯ 菜单 / 工具条 / Ctrl+滚轮）改了配置键 → 同步本页控件。
@@ -2518,11 +2495,7 @@ class SettingsDialog(QDialog):
                 self.main.apply_overlay_from_config()
             except Exception:
                 pass
-            # v2.2.1：放弃改动时同步还原悬浮条显隐（与 _discard_staged 同源修复）
-            try:
-                self.main.set_overlay_visible(bool(self.c.get("overlay_enabled")))
-            except Exception:
-                pass
+            # v2.20.1：显隐还原随「启用字幕面板」勾选一并删除（面板常驻）
         return True
 
     def closeEvent(self, event):

@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "LiveSubtitle"
-APP_VERSION = "2.20.0"
+APP_VERSION = "2.20.1"
 
 CONFIG_DIR = Path(os.environ.get("LIVETRANSLATE_HOME", Path.home() / ".live_subtitle"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -47,7 +47,10 @@ DEFAULTS = {
                                         # 仅 dual 布局 + GPU（cuda）时实际启用：CPU 上单次
                                         # 推理要数秒、反而拖垮正式识别（闸门在主窗）。
     "max_history": 200,
-    "overlay_enabled": True,
+    # v2.20.1（用户裁决）：删除 overlay_enabled——字幕面板改**常驻实时显示**，
+    # 开/关只走全局热键（hotkey_overlay，默认 Ctrl+Alt+O）与托盘右键菜单
+    # 「显隐字幕面板」（外加面板 ✕），且显隐不跨会话记忆（下次启动必显示）。
+    # 老配置文件里残留的该键由 Config.load「只认 DEFAULTS 键」规则自然丢弃。
     "overlay_x": 200,
     "overlay_y": 200,
     "overlay_font_size": 18,

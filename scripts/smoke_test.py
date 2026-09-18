@@ -83,7 +83,9 @@ def main():
             break
 
     print(f"SMOKE: captions={done[0]} expected>={expect}")
-    w.set_overlay_enabled(True)
+    # v2.20.1：面板改常驻实时显示、`overlay_enabled` 已删——显隐原语是
+    # set_overlay_visible（热键/托盘菜单都走它），这里显式点亮再断言可见
+    w.set_overlay_visible(True)
     overlay_ok = w.overlay.isVisible()
 
     # 设置窗口实例化 + 暂存/应用状态机冒烟（建议8 回归哨兵）

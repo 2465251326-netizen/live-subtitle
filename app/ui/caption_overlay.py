@@ -10,9 +10,11 @@
 - 面板是不透明的板——整板任意处可拖（工具条是显式把手），不再玩"透明区
   哪里能点"的捉迷藏；旧点击穿透/紧凑带/描边体系（P25a/P28/P30 补丁层）随
   旧形态一并退役。
-- 右缘拖宽（高度永远贴内容自动收放）；双击工具条 = 顶/底贴边循环。
-- 右键或 ⋯ = 同一菜单：设置/切源/复制最近一句/纠正识别/纠正译文/导出 SRT/
-  贴边四向/置顶/隐藏。
+- 右缘拖宽、底缘拖高（高度默认贴内容自动收放）。
+  v2.20.1（用户点名）：**贴边能力整族退役**——菜单「贴到屏幕四向」、双击工具条
+  顶/底贴边循环、拖近边缘自动磁吸全部删除，面板停在哪就是哪，位置只由拖动手决定。
+- 右键或 ⋯ = 同一菜单：设置/切源/攒句开关/复制最近一句/纠正识别/纠正译文/
+  导出 SRT/清空/置顶/隐藏。
 
 主窗接口保持兼容：show_pending / show_pending_result / show_caption /
 clear_caption / set_status / apply_style(去描边参数)。
@@ -93,6 +95,7 @@ class CaptionOverlay(QWidget):
     MIN_W = 360
     RESIZE_EDGE = 14   # v2.4.1：右缘调宽命中带（10px 太窄且无光标反馈→普通人找不到）
     MAX_ROWS = 40
+    MAX_DUAL_LINES = 40   # v2.20.1：dual 每栏逐句累积的上限（超出删最老，与列表同规格）
     LANGS = [("zh-CN", "中文"), ("en", "英语"), ("ja", "日语"), ("ko", "韩语"),
              ("fr", "法语"), ("de", "德语"), ("ru", "俄语"), ("es", "西班牙语")]
     FONTS = [("小号", 16), ("中号", 22), ("大号", 30), ("特大", 40)]
@@ -100,7 +103,7 @@ class CaptionOverlay(QWidget):
     # <RGB(120,120,120)，不触碰 v2.4.2"空闲正文无浅灰块"像素回归锁的阈值
     HINT_IDLE = "字幕将在这里逐句显示"
     HINT_GUIDE = ("首次使用小抄：拖工具条移动面板 · 拖右缘改宽度\n"
-                  "双击工具条贴屏幕顶/底 · 右键或 ⋯ 打开更多操作\n"
+                  "拖底缘改高度 · 右键或 ⋯ 打开更多操作\n"
                   "字幕将在这里逐句显示")
 
     def __init__(self, on_closed=None, on_moved=None,
@@ -232,7 +235,7 @@ class CaptionOverlay(QWidget):
 
         self._more_btn = QToolButton()
         self._more_btn.setText("⋯")
-        self._more_btn.setToolTip("更多操作（导出、置顶、贴边、透明度等）")
+        self._more_btn.setToolTip("更多操作（导出、置顶、透明度、攒句等）")
         self._more_btn.clicked.connect(self._show_more_menu)
         bl.addWidget(self._more_btn)
 
@@ -306,20 +309,28 @@ class CaptionOverlay(QWidget):
         self._mini.hide()
 
         # ---------- v2.11.0：上下双语正文（dual 布局模式） ----------
-        # 对标豆包 PC 实时翻译：上半=原文（识别片段流式生长，淡色小字），
-        # 下半=译文（推测式翻译就地更新、终版收口，主字号加粗），中间一条
-        # 可上下拖的分割线自由分配两栏高度。
-        # v2.20.0（用户实拍裁决）：dual **只有这一种形态**。此前 dual 按
-        # overlay_dual_hist 分成两副面孔（关＝复用列表行系统的"滚动字幕墙"、
-        # 开＝"顶部历史块 + 当前句大字区"），用户指认幕墙形态"和列表历史一模
-        # 一样、根本不是上下双语"，并要求把历史块删掉——于是两态一并退役，
-        # 回看历史归「列表历史」布局与主窗记录负责。
+        # 上半=原文栏（淡灰略小），下半=译文栏（用户点名的卡片样式：圆角底 +
+        # 最新一句左侧主题色竖条 + 主字号白色粗体），中间一条可上下拖的分割线
+        # 自由分配两栏高度。
+        # v2.20.0（用户实拍裁决）：dual **只有这一种形态**——此前按
+        # overlay_dual_hist 分成两副面孔（滚动字幕墙 / 顶部历史块），用户指认
+        # 幕墙"和列表历史一模一样"，两态一并退役。
+        # v2.20.1（用户实拍再裁决）：两栏**逐句累积**——说过、译过的每一句都留在
+        # 自己那一栏里可滚轮回看，不再"新句一到就把上一句顶掉"；但**不新增历史区**
+        # （回看就是在这两栏里滚），也**不显示滚动条**（"不要搞滚动条"）。
         # v2.19.1：当前句"在说态"——终版收口后置 False（闭合）。流式拍/新片段
-        # 在闭合态到来即触发**原子换句**（原文+译文同刻切换），杜绝
+        # 在闭合态到来即开**新的一对**条目（原文+译文同刻起行），杜绝
         # "新句原文 配 上一句终版译文"的错配窗口（用户实拍反馈的"攒句感"元凶之一）
-        self._dual_cur_open = False
-        # v2.18.1：原文/译文两个可滚动区各自的"跟底"状态（用户上滚回看不打断）
+        # v2.20.1：累积后"在说哪一行"不再是单值标志——`_dual_rows_closed[i]`
+        # 逐行记账（True=该行已收口），`_dual_cur_open` 读它是最新行的状态
+        self._dual_rows_closed = []
+        # v2.18.1：原文/译文两栏各自的"跟底"状态（用户上滚回看不打断）
         self._dual_follow = {"src": True, "tgt": True}
+        self._dual_src_items = []      # [{"lab": QLabel, "text": str}] 逐句累积
+        self._dual_tgt_items = []      # [{"card": QWidget, "lab": QLabel}]
+        # 当前句的两个标签（无句时 None）——流式生长/推测译/终版收口都只写这一对
+        self._dual_src = None
+        self._dual_tgt = None
         self._dual_src_h_user = None       # v2.16.0：原文区用户拖出的高度（px）
         self._dual_split_drag = False
         self._dual_split_start_y = None
@@ -332,17 +343,16 @@ class CaptionOverlay(QWidget):
         dl = QVBoxLayout(self._dual_body)
         dl.setContentsMargins(10, 6, 14, 8)
         dl.setSpacing(5)
-        # v2.16.0：原文区/译文区改为**各自可滚动的 QScrollArea**（用户需求：
-        # "原文和译文不是都应该保留吗，可以用滚轮进行滚上滚下查看"——长句
-        # 超出区域高度时不再被裁切，滚轮即可看全）；中间 `_dual_sep` 从装饰
-        # 线升级为**可拖分割把手**（"原文的显示范围太小了，改成可以自由上下
-        # 拉长"——拖动分配原文/译文两区高度，原文区想多大拖多大）。
+        # v2.16.0：原文区/译文区各自是**独立可滚动的 QScrollArea**；中间
+        # `_dual_sep` 是可拖分割把手（拖动分配两栏高度，原文栏想多大拖多大）。
+        # v2.20.1：垂直滚动条一律关掉（用户："不要搞滚动条"）——QScrollArea 的
+        # 滚轮滚动走 wheel 事件、与滚动条可见性无关，所以回看能力不丢。
         self._dual_src_wrap = QScrollArea(self._dual_body)
         self._dual_src_wrap.setObjectName("DualSrcWrap")
         self._dual_src_wrap.setWidgetResizable(True)
         self._dual_src_wrap.setFrameShape(QFrame.NoFrame)
         self._dual_src_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._dual_src_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._dual_src_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # v2.16.2：防白底"三保险"——viewport 是独立子控件、**不吃父级 QSS
         # 选择器链**，且真实 Windows 渲染下 QAbstractScrollArea 会用
         # palette.base（白）填充，仅 QSS/属性单层防护真机上仍露白块
@@ -351,37 +361,40 @@ class CaptionOverlay(QWidget):
         self._dual_src_wrap.viewport().setAutoFillBackground(False)
         self._dual_src_wrap.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
         self._dual_src_wrap.viewport().setStyleSheet("background: transparent;")
-        self._dual_src = QLabel("", self._dual_src_wrap)
-        self._dual_src.setObjectName("DualSrc")
-        self._dual_src.setWordWrap(True)
-        self._dual_src.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self._dual_src.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._dual_src_wrap.setWidget(self._dual_src)
-        self._keep_content_clear(self._dual_src)
+        self._dual_src_body = QWidget()
+        self._dual_src_lay = QVBoxLayout(self._dual_src_body)
+        self._dual_src_lay.setContentsMargins(0, 0, 0, 0)
+        self._dual_src_lay.setSpacing(5)
+        self._dual_src_lay.addStretch(1)
+        self._dual_src_wrap.setWidget(self._dual_src_body)
+        self._keep_content_clear(self._dual_src_body)
         self._dual_sep = _DualSepHandle(self._dual_body)
         self._dual_tgt_wrap = QScrollArea(self._dual_body)
         self._dual_tgt_wrap.setObjectName("DualTgtWrap")
         self._dual_tgt_wrap.setWidgetResizable(True)
         self._dual_tgt_wrap.setFrameShape(QFrame.NoFrame)
         self._dual_tgt_wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._dual_tgt_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._dual_tgt_wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._dual_tgt_wrap.viewport().setAutoFillBackground(False)
         self._dual_tgt_wrap.viewport().setAttribute(Qt.WA_TranslucentBackground, True)
         self._dual_tgt_wrap.viewport().setStyleSheet("background: transparent;")
-        self._dual_tgt = QLabel("", self._dual_tgt_wrap)
-        self._dual_tgt.setObjectName("DualTgt")
-        self._dual_tgt.setWordWrap(True)
-        self._dual_tgt.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self._dual_tgt.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # v2.16.0：空态占位标记初始化——此前 property 未设时 _sync_dual_visibility
-        # 误判"有译文"，导致空态下分隔线可见（用户截图圈出的那条"神秘线"）
-        self._dual_tgt.setProperty("empty", True)
-        self._dual_tgt_wrap.setWidget(self._dual_tgt)
-        self._keep_content_clear(self._dual_tgt)
+        self._dual_tgt_body = QWidget()
+        self._dual_tgt_lay = QVBoxLayout(self._dual_tgt_body)
+        self._dual_tgt_lay.setContentsMargins(0, 0, 0, 0)
+        self._dual_tgt_lay.setSpacing(6)
+        self._dual_tgt_lay.addStretch(1)
+        # 空态占位（与列表区同款 PanelHint）——此前写在译文标签里，译文改逐句
+        # 累积后必须有独立标签，否则占位会被当成第一句永久留在栏里
+        self._dual_hint = QLabel("")
+        self._dual_hint.setObjectName("PanelHint")
+        self._dual_hint.setWordWrap(True)
+        self._dual_tgt_lay.insertWidget(0, self._dual_hint)
+        self._dual_tgt_wrap.setWidget(self._dual_tgt_body)
+        self._keep_content_clear(self._dual_tgt_body)
         dl.addWidget(self._dual_src_wrap, 1)
         dl.addWidget(self._dual_sep)
         dl.addWidget(self._dual_tgt_wrap, 2)
-        # v2.18.1：两区各自的"用户上滚回看"检测（与列表区同一语义）
+        # v2.18.1：两栏各自的"用户上滚回看"检测（与列表区同一语义）
         self._dual_src_wrap.verticalScrollBar().valueChanged.connect(
             lambda v: self._on_dual_wrap_scroll("src", v))
         self._dual_tgt_wrap.verticalScrollBar().valueChanged.connect(
@@ -396,8 +409,10 @@ class CaptionOverlay(QWidget):
         #    判定必然错位（v2.15.1 已实证）。
         # 过滤器在子控件层面拦截全部相关事件，坐标全用 globalPosition。
         # 注意：必须放在全部控件创建之后（否则引用未创建属性）。
+        # v2.20.1：逐句新建的条目标签/卡片在 `_dual_new_slot` 里补挂过滤器。
         self._dual_split_watch = [
-            self._dual_body, self._dual_src, self._dual_sep, self._dual_tgt,
+            self._dual_body, self._dual_sep, self._dual_hint,
+            self._dual_src_body, self._dual_tgt_body,
             self._dual_src_wrap, self._dual_src_wrap.viewport(),
             self._dual_tgt_wrap, self._dual_tgt_wrap.viewport(),
         ]
@@ -618,44 +633,43 @@ class CaptionOverlay(QWidget):
 
     def update_partial(self, text_full):
         """v2.12.0：流式草稿上屏（dual 专属）——主窗把「已确认 + 预览增量」
-        拼成整句传入，原文区整体刷新（每 ~0.9s 一拍，实现"主持人讲到哪、
-        原文跟到哪"）。终版收口（show_pending_result）会以正式文本覆盖；
-        列表模式忽略。样式与常态原文一致（草稿的未定稿感由高频刷新自证）。"""
+        拼成整句传入，**当前句那一行**整体刷新（每 ~0.9s 一拍，实现"主持人讲到
+        哪、原文跟到哪"）。终版收口（show_pending_result）会以正式文本覆盖；
+        列表模式忽略。样式与常态原文一致（草稿的未定稿感由高频刷新自证）。
+        v2.20.1：刷新范围只有"当前句"这一条——上一句已收口的行原地不动。"""
         if self._layout_mode != "dual":
             return
         t = (text_full or "").strip()
         if not t:
             return
-        cur = self._dual_src.text().strip()
-        if not self._dual_cur_open:
-            # v2.19.1 原子换句：上一句已终版收口（或屏上无句），而这一拍带来
-            # 的是**新句**文本（不是屏上句的延伸）→ 走新句起点，原文与译文
-            # 同刻切换。旧行为只整体覆盖原文，留下一拍~两拍的
-            # "新句原文 + 上一句终版译文"错配窗口（用户实拍"攒句感/乱跳"元凶）。
-            if not cur or not self._dual_same_sentence(cur, t):
-                self._dual_new_sentence(t)
-                return
-            # 同源尾重复（whisper 对已终版句的多拍转写抖动）：只长文本，
-            # 不动译文终版
-            self._dual_src.setText(t)
-            self._sync_dual_visibility()
-            self._schedule_relayout()
-            return
-        self._dual_src.setText(t)
+        cur = self._dual_cur_src().strip()
+        if cur and self._dual_same_sentence(cur, t):
+            # 同一句（还在生长，或终版之后 whisper 又转了一遍的尾重复）：
+            # 只刷新**最新一行**的原文，该行译文状态一律不动
+            # （v2.19.1 的"不闪白""不重置终版"两条契约）
+            self._dual_set_src(t)
+        else:
+            # 不是同一句 → 新句：另起一行（上一句留在栏里，v2.20.1 累积契约）。
+            # 旧行为是整块覆盖唯一那一对标签，于是"新句一到、上一句就消失"
+            # （用户实拍），并且留下一拍~两拍的"新句原文 + 上一句终版译文"
+            # 错配窗口（v2.19.1 元凶）。
+            self._dual_new_sentence(t)
         self._sync_dual_visibility()
         self._schedule_relayout()
 
     def update_dual_draft_tgt(self, translated, source_text=None):
-        """v2.13.0：草稿推测译文——**只更新译文区**（spec 淡样式），不碰原文/
-        行簿记/_last_result/未读计数；片段级推测版（_dual_spec）与整句终版
+        """v2.13.0：草稿推测译文——**只更新当前句的译文卡片**（spec 淡样式），
+        不碰原文/行簿记/_last_result/未读计数；片段级推测版（_dual_spec）与整句终版
         （_dual_show_result）随后自然覆盖。dual 专属（调用方已按布局闸门过滤，
-        这里再防一道）。效果：译文区与原文区同节奏实时生长（0.9s 级）。
+        这里再防一道）。效果：译文与原文同节奏实时生长（0.9s 级）。
         v2.19.1：可选 `source_text` 配对——该句已终版收口时迟到的草稿回复
         直接丢弃，不得把已定稿译文刷回淡色。"""
         if self._layout_mode != "dual" or not translated:
             return
+        if self._dual_tgt is None:
+            return
         if (source_text and not self._dual_cur_open
-                and self._dual_same_sentence(self._dual_src.text(), source_text)):
+                and self._dual_same_sentence(self._dual_cur_src(), source_text)):
             return
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
@@ -677,17 +691,28 @@ class CaptionOverlay(QWidget):
 
     def clear_caption(self):
         if self.is_dual():
-            self._dual_cur_open = False    # v2.19.1：无在说句
             # v2.19.2：dual 分支漏清"最近一句"——清空后面板空白，但「复制最近一句 /
             # 纠正最近识别 / 纠正译文」仍指向已被清掉的句子（列表分支无此问题）
             self._last_result = ("", "")
-            self._dual_src.setText("")
-            self._dual_tgt.setProperty("spec", False)
-            self._dual_tgt.setProperty("empty", True)
-            self._dual_tgt.setText(
-                self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
-            self._restyle_dual_tgt()
+            # v2.20.1：两栏逐句累积 → 清空要把**所有**条目删掉（旧实现只有一对
+            # 标签，setText("") 就够）。当前句指针一并归 None、逐行收口账目清空，
+            # 下一句重新开槽。
+            gone_s, gone_t = self._dual_src_items, self._dual_tgt_items
+            self._dual_src_items, self._dual_tgt_items = [], []
+            self._dual_rows_closed = []
+            self._dual_src = None
+            self._dual_tgt = None
+            for it in gone_s:
+                it["lab"].setParent(None)
+                it["lab"].deleteLater()
+            for it in gone_t:
+                it["card"].setParent(None)
+                it["card"].deleteLater()
+            self._dual_unwatch(*[it["lab"] for it in gone_s],
+                               *[w for it in gone_t
+                                 for w in (it["card"], it["lab"])])
             self._sync_dual_visibility()
+            self._update_empty_hint()
             self._clear_btn.setEnabled(False)
             self._relayout()
             return
@@ -714,18 +739,168 @@ class CaptionOverlay(QWidget):
         旧的 `overlay_dual_hist` 两态（滚动字幕墙 vs 顶部历史块）已退役。"""
         return self._layout_mode == "dual"
 
-    def _dual_want_height(self):
-        """dual 当前句区的内容需求高度。
+    # ---------- v2.20.1：两栏逐句累积（原文一行、译文一张卡片） ----------
 
-        QLabel 带 wordWrap 时 sizeHint 是**单行**值，直接用会在长句下裁切
-        （真机截图实证）；heightForWidth(可用宽度) 才是换行后的真实高度。
-        v2.16.0：src/tgt 已各自进 QScrollArea（wrap 内含 2px frame 余量），
-        常数 = sep 抓取带 8 + dl 纵向 margins 14 + spacing×2 10。"""
+    def _dual_cur_src(self):
+        """当前句原文文本（无槽时空串，供各入口统一读）。"""
+        return self._dual_src.text() if self._dual_src is not None else ""
+
+    @property
+    def _dual_cur_open(self):
+        """最新一行是否还在说（未收口）。单一真相源是 `_dual_rows_closed`。"""
+        return bool(self._dual_rows_closed) and not self._dual_rows_closed[-1]
+
+    def _dual_col_has_text(self, col):
+        """栏内是否有**真实内容**（译文栏排除 "…" 占位与空态）。"""
+        items = self._dual_src_items if col == "src" else self._dual_tgt_items
+        for it in items:
+            lab = it["lab"]
+            if col == "tgt" and bool(lab.property("empty")):
+                continue
+            if (lab.text() or "").strip():
+                return True
+        return False
+
+    def _dual_new_slot(self, src_text=""):
+        """开一对新条目并把它设为"当前句"。
+
+        译文用卡片壳（`DualTgtRow` / 最新一句 `DualTgtRowNewest` = 圆角底 +
+        左侧主题色竖条，用户点名的样式）；原文只是淡灰一行，不做卡片。
+        瞬窗防线同 `_add_row`（v2.6.6）：**构造即传父**、可见性切换一律在
+        `addWidget` 之后——未收编的 QWidget 被 show 会建成原生顶层窗口。"""
+        lab_s = QLabel(src_text, self._dual_src_body)
+        lab_s.setObjectName("DualSrc")
+        lab_s.setWordWrap(True)
+        lab_s.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        lab_s.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._dual_src_lay.insertWidget(self._dual_src_lay.count() - 1, lab_s)
+        self._dual_src_items.append({"lab": lab_s, "text": src_text})
+
+        card = QWidget(self._dual_tgt_body)
+        card.setObjectName("DualTgtRowNewest")
+        card.setAttribute(Qt.WA_TranslucentBackground, True)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(8, 6, 8, 6)
+        cl.setSpacing(1)
+        lab_t = QLabel("", card)
+        lab_t.setObjectName("DualTgt")
+        lab_t.setWordWrap(True)
+        lab_t.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        lab_t.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 空态占位标记初始化：property 未设时会被当成"有译文"（v2.16.0 的
+        # "神秘分割线"病根），新卡片一律先按空态起
+        lab_t.setProperty("empty", True)
+        lab_t.setProperty("spec", False)
+        cl.addWidget(lab_t)
+        # 上一张卡片退出"最新"强调（列表行同款：只有最后一张带蓝条）
+        if self._dual_tgt_items:
+            prev = self._dual_tgt_items[-1]["card"]
+            prev.setObjectName("DualTgtRow")
+            prev.style().unpolish(prev)
+            prev.style().polish(prev)
+        self._dual_tgt_lay.insertWidget(self._dual_tgt_lay.count() - 1, card)
+        self._dual_tgt_items.append({"card": card, "lab": lab_t})
+        self._dual_rows_closed.append(False)
+
+        self._dual_src = lab_s
+        self._dual_tgt = lab_t
+        for w in (lab_s, card, lab_t):
+            w.installEventFilter(self)
+            self._dual_split_watch.append(w)
+        self._dual_trim()
+        self._apply_dual_fonts()
+        return lab_s
+
+    def _dual_slot_has_content(self):
+        """当前这一对里是否已经有真内容（译文 "…" 占位不算）。"""
+        if self._dual_src is None:
+            return False
+        if self._dual_src.text().strip():
+            return True
+        t = self._dual_tgt.text().strip()
+        return bool(t) and not bool(self._dual_tgt.property("empty"))
+
+    def _dual_row_for(self, src_text=""):
+        """定位 `src_text` 该写进**哪一行**，返回行号。
+
+        为什么必须按原文找而不是永远写最新一行：累积之后，正式片段/终版译文
+        可能**迟到**——新句的流式拍已经把下一行开出来了，这时上一句的终版才到，
+        写进最新行就等于"A 的译文盖在 B 的原文上"（v2.19.1 花大力气消灭的错配
+        窗口，在累积模式下会以更糟的形式复发）。所以：
+        ① 从最新往回找**同源且未收口**的行；
+        ② 找不到 → 当前行还空就用它，否则另起一行。"""
+        key = (src_text or "").strip()
+        if key:
+            for i in range(len(self._dual_src_items) - 1, -1, -1):
+                if self._dual_rows_closed[i]:
+                    continue
+                if self._dual_same_sentence(self._dual_src_items[i]["text"], key):
+                    return i
+        if self._dual_src is None or self._dual_slot_has_content():
+            self._dual_new_slot(key)
+        elif key:
+            self._dual_set_src(key)
+        return len(self._dual_src_items) - 1
+
+    def _dual_set_row(self, idx, src_text=None, tgt_text=None):
+        """把文本写进指定行（同步簿记）。"""
+        if src_text is not None and 0 <= idx < len(self._dual_src_items):
+            self._dual_src_items[idx]["lab"].setText(src_text)
+            self._dual_src_items[idx]["text"] = src_text
+            if idx == len(self._dual_src_items) - 1:
+                self._dual_src = self._dual_src_items[idx]["lab"]
+        if tgt_text is not None and 0 <= idx < len(self._dual_tgt_items):
+            self._dual_tgt_items[idx]["lab"].setText(tgt_text)
+
+    def _dual_unwatch(self, *ws):
+        """条目销毁后必须从分割线事件过滤器的观察名单里摘掉——否则列表无限增长，
+        且 Qt 会对已 delete 的包装对象再发事件。"""
+        for w in ws:
+            if w in self._dual_split_watch:
+                self._dual_split_watch.remove(w)
+
+    def _dual_trim(self):
+        """两栏各自裁到上限，**成对删除**保持行号对齐（超出丢最老）。"""
+        while len(self._dual_src_items) > self.MAX_DUAL_LINES:
+            it = self._dual_src_items.pop(0)
+            t = self._dual_tgt_items.pop(0)
+            self._dual_rows_closed.pop(0)
+            it["lab"].setParent(None)
+            it["lab"].deleteLater()
+            t["card"].setParent(None)
+            t["card"].deleteLater()
+            self._dual_unwatch(it["lab"], t["card"], t["lab"])
+
+    def _dual_col_height(self, col, avail_w):
+        """某一栏**累积内容**的需求高度：逐条 heightForWidth 求和再加间距。
+
+        QLabel 带 wordWrap 时 sizeHint 是**单行**值，长句必被算小（真机截图
+        实证过两次），只有 heightForWidth(可用宽度) 才是换行后的真实高度。
+        译文条目外面套了卡片壳（纵向 margins 6+6=12、左右 8+8），要一并算进
+        可用宽度与高度，否则卡片底部会被裁。"""
+        if col == "src":
+            hs = [it["lab"].heightForWidth(max(40, avail_w))
+                  for it in self._dual_src_items]
+            gap = 5
+        else:
+            hs = [it["lab"].heightForWidth(max(40, avail_w - 16)) + 12
+                  for it in self._dual_tgt_items]
+            gap = 6
+        if not hs:
+            return 0
+        return sum(max(16, h) for h in hs) + gap * (len(hs) - 1)
+
+    def _dual_want_height(self):
+        """dual 正文区的内容需求高度（两栏累积内容 + 把手 + 边距）。"""
         avail = max(80, self._dual_body.width() - 24)
-        src_h = (self._dual_src.heightForWidth(max(40, avail - 2)) + 2
-                 if self._dual_src.isVisible() else 0)
-        tgt_h = self._dual_tgt.heightForWidth(max(40, avail - 2)) + 2
-        return src_h + tgt_h + 8 + 24
+        src_h = (self._dual_col_height("src", avail - 2)
+                 if self._src_col_shown() else 0)
+        tgt_h = self._dual_col_height("tgt", avail - 2)
+        return src_h + tgt_h + (8 if src_h else 0) + 24
+
+    def _src_col_shown(self):
+        """原文栏是否参与布局：「同时显示原文」开着且栏里确实有原文。"""
+        return bool(self._show_source) and bool(self._dual_src_items)
 
     def set_dual_src_h_user(self, h):
         """v2.16.0：原文区用户高度入口（主窗配置恢复/0=回自动贴内容）。
@@ -781,22 +956,16 @@ class CaptionOverlay(QWidget):
     def is_grouping_enabled(self):
         return bool(self._grouping)
 
-    def _restyle_dual_tgt(self):
-        """property 变更（spec/empty）后重刷 QSS——Qt 不会自动感知属性态样式。"""
-        w = self._dual_tgt
-        w.style().unpolish(w)
-        w.style().polish(w)
-
     def _sync_dual_visibility(self):
-        """原文行与分隔线随「同时显示原文」开关与内容有无显隐。
-        关掉原文 = 纯译文大字模式（分隔线一并隐藏）。"""
-        has_tgt = bool(self._dual_tgt.text().strip()) and not self._dual_tgt.property("empty")
-        show = self._show_source and bool(self._dual_src.text().strip())
-        self._dual_src.setVisible(show)
-        # v2.18.1：关原文时**整个原文滚动区**一起收起——此前只隐了里面的标签，
-        # QScrollArea 本体仍占 21px，加上仍按可见算的分隔把手 8px，把当前句区
-        # 挤得只剩 21px（真机实测：用户就是「原文 关」，一句正常译文 ~32px
-        # 显示不全，得靠滚动条才看得完整）。
+        """原文栏与分隔线随「同时显示原文」开关与栏内有无内容显隐。
+
+        关掉原文 = 纯译文模式（分隔线一并隐藏）。v2.20.1：改判**整栏**——
+        原文栏是逐句累积的一列标签，"有没有原文"看栏内任意一句，不看当前句。
+        （v2.18.1 的教训保留：关原文时必须连 QScrollArea 本体一起收起，
+        只隐标签会让它继续占高、把译文栏饿成细条。）"""
+        has_src = self._dual_col_has_text("src")
+        has_tgt = self._dual_col_has_text("tgt")
+        show = self._show_source and has_src
         self._dual_src_wrap.setVisible(show)
         self._dual_sep.setVisible(show and has_tgt)
 
@@ -811,9 +980,12 @@ class CaptionOverlay(QWidget):
         return cur + " " + piece
 
     def _dual_new_sentence(self, src_text):
-        """新句起点：原文区重置为该片段，译文区进入占位态（推测版淡样式）。"""
-        self._dual_src.setText(src_text)
-        self._dual_cur_open = True
+        """新句起点：另起一对条目（上一句留在栏里），译文进占位态（推测淡样式）。
+
+        v2.20.1：从"整块覆盖当前句"改为**逐句累积**——上一句不再被顶掉。
+        调用方已判定"这不是当前句的延伸"，所以 `_dual_row_for` 必然落到
+        "另起一行"分支，当前行/行指针即最新一行。"""
+        self._dual_row_for(src_text)
         # v2.18.1：新句开始重新跟底——用户在上半句里上滚回看，不应把下一句
         # 的最新文字也一起挡住（回看语义属于过去那句）
         self._dual_follow = {"src": True, "tgt": True}
@@ -845,17 +1017,25 @@ class CaptionOverlay(QWidget):
             return False
         return all(x == y for x, y in zip(ta[:3], tb[:3]))
 
+    def _dual_set_src(self, text):
+        """写当前句原文，并同步累积条目里的簿记文本（高度/有无内容判据都读它）。"""
+        if self._dual_src is None:
+            return
+        self._dual_src.setText(text)
+        if self._dual_src_items:
+            self._dual_src_items[-1]["text"] = text
+
     def _dual_show_pending(self, source_text):
         t = (source_text or "").strip()
         if not t:
             return
-        cur = self._dual_src.text().strip()
+        cur = self._dual_cur_src().strip()
         if not cur:
             self._dual_new_sentence(t)
             return
         if not self._starts_new_sentence(t):
             # 延续片段（小写开头）：拼进当前句（D-2：主窗每段只发一次占位）
-            self._dual_src.setText(self._dual_join(cur, t))
+            self._dual_set_src(self._dual_join(cur, t))
             self._sync_dual_visibility()
             self._schedule_relayout()
             return
@@ -865,58 +1045,67 @@ class CaptionOverlay(QWidget):
         # 同句 → 就地校准原文，译文区状态**不动**。
         if self._dual_same_sentence(cur, t):
             if len(t) > len(cur) or self._dual_cur_open and len(t) >= len(cur):
-                self._dual_src.setText(t)
+                self._dual_set_src(t)
             self._sync_dual_visibility()
             self._schedule_relayout()
             return
         self._dual_new_sentence(t)
 
     def _dual_spec(self, source_text, target_text, show_source):
-        """推测中间版：原文校准为整句、译文淡色就地更新（失败静默等终版）。"""
+        """推测中间版：原文校准为整句、译文淡色就地更新（失败静默等终版）。
+
+        v2.20.1：按原文定位行——迟到的推测版要写回**它自己那一句**，不能盖在
+        已经开出来的下一行上。"""
         if not target_text:
             return
         self._show_source = bool(show_source)
-        if source_text:
-            self._dual_src.setText(source_text)
-        self._dual_tgt.setProperty("spec", True)
-        self._dual_tgt.setProperty("empty", False)
-        self._dual_tgt.setText(target_text)
-        self._restyle_dual_tgt()
+        idx = self._dual_row_for(source_text or "")
+        lab_t = self._dual_tgt_items[idx]["lab"]
+        lab_t.setProperty("spec", True)
+        lab_t.setProperty("empty", False)
+        lab_t.setText(target_text)
+        self._tgt_label_font(lab_t)
         self._sync_dual_visibility()
         self._schedule_relayout()
 
     def _dual_show_result(self, source_text, target_text, show_source):
-        """终版收口：译文转正式样式（主字号加粗纯色），原文校准为整句。
-        v2.19.1：收口即闭合当前句——此后的第一个流式拍/新片段将原子换句。"""
+        """终版收口：译文转正式样式（主字号加粗纯色），原文校准为整句，
+        并把**该行**记账为已收口（`_dual_rows_closed`）。
+
+        v2.19.1：收口即闭合该句——此后的第一个流式拍/新片段会另起一对条目；
+        v2.20.1：上一句不再被顶掉，两句都留在各自栏里。终版按原文找自己的行，
+        因此"新句已先行上屏、上一句终版迟到"时不会写错行。"""
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
-        self._dual_cur_open = False
         # v2.4.4（BUG-7）同一语义在 dual 的补漏：引导小抄一经真实字幕上屏就
         # 完成使命。旧实现只在 `_add_row`（列表路径）复位，dual 走不到
         # 那里 → 清空后三行小抄反复重弹，违反"每份配置只弹一次"。
         self._hint_guide = False
-        if source_text:
-            self._dual_src.setText(source_text)
-        self._dual_tgt.setProperty("spec", False)
-        self._dual_tgt.setProperty("empty", not bool(target_text))
-        self._dual_tgt.setText(target_text or "…")
-        self._restyle_dual_tgt()
+        idx = self._dual_row_for(source_text or "")
+        self._dual_set_row(idx, src_text=source_text or None)
+        lab_t = self._dual_tgt_items[idx]["lab"]
+        lab_t.setProperty("spec", False)
+        lab_t.setProperty("empty", not bool(target_text))
+        lab_t.setText(target_text or "…")
+        self._tgt_label_font(lab_t)
+        self._dual_rows_closed[idx] = True
         self._sync_dual_visibility()
         self._update_empty_hint()
         self._schedule_relayout()
 
     def _update_empty_hint(self):
-        """B/D：无行时显示占位（或首次手势引导），来字即隐；顺带门控清空按钮。
+        """B/D：无内容时显示占位（或首次手势引导），来字即隐；顺带门控清空按钮。
         v2.11.0：dual 模式空态时译文区**常驻占位文案**（真机截图实证：不写的话
-        空面板是一片空白，用户不知道这里是干嘛的）；有内容则不动。"""
+        空面板是一片空白，用户不知道这里是干嘛的）；有内容则不动。
+        v2.20.1：dual 的占位从"写进译文标签"改成独立 `_dual_hint`——译文改逐句
+        累积后，写进标签会被当成第一句永久留在栏里（列表区 `_hint` 同款做法）。"""
         if self.is_dual():
-            if not self._dual_src.text().strip():
-                self._dual_tgt.setProperty("empty", True)
-                self._dual_tgt.setProperty("spec", False)
-                self._dual_tgt.setText(
+            has = self._dual_col_has_text("src") or self._dual_col_has_text("tgt")
+            if not has:
+                self._dual_hint.setText(
                     self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
-                self._restyle_dual_tgt()
-            self._clear_btn.setEnabled(bool(self._dual_src.text().strip()))
+            self._dual_hint.setVisible(not has)
+            self._clear_btn.setEnabled(has)
             return
         self._hint.setText(self.HINT_GUIDE if self._hint_guide else self.HINT_IDLE)
         self._hint.setVisible(not self._rows)
@@ -1025,12 +1214,12 @@ class CaptionOverlay(QWidget):
             # v2.18.1：关原文时原文区与分隔把手**都不该占高**——旧算法恒加
             # sep_h 8 与"三控件"的 24px 边距/间距，导致译文区被饿到 21px
             # （真机实测，用户配置正是「原文 关」）。
-            src_on = self._dual_src.isVisible()
+            src_on = self._src_col_shown()
             sep_h = 8 if src_on else 0
             avail_w = max(80, self._dual_body.width() - 24)
-            src_want = ((self._dual_src.heightForWidth(max(40, avail_w - 2)) + 2)
-                        if src_on else 0)
-            tgt_want = self._dual_tgt.heightForWidth(max(40, avail_w - 2)) + 2
+            # v2.20.1：两栏都是**累积内容**的高度（逐条 heightForWidth 求和）
+            src_want = self._dual_col_height("src", avail_w - 2) if src_on else 0
+            tgt_want = self._dual_col_height("tgt", avail_w - 2)
             # v2.18.0：用户拖过的原文区高度优先计入 body 需求——自动高度
             # 模式下拖大原文区 → body 随之撑大（否则用户值被钳回 30 无效）
             if self._dual_src_h_user and src_on:
@@ -1218,7 +1407,7 @@ class CaptionOverlay(QWidget):
         """v2.5.0：精简条内容 = 最新一句（尊重原文开关）；无字幕给引导占位。
         v2.11.0：dual 模式无行区，从双语区的当前句取值。"""
         if self.is_dual():
-            if self._dual_src.text().strip():
+            if self._dual_cur_src().strip():
                 src = self._dual_src.text() if self._show_source else ""
                 self._mini_src.setText(src)
                 self._mini_src.setVisible(bool(src))
@@ -1391,6 +1580,13 @@ class CaptionOverlay(QWidget):
             QLabel#PanelMiniTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
             QWidget#PanelDual {{ background: transparent; }}
             QLabel#DualSrc {{ color: #98a2b3; }}
+            /* v2.20.1：译文栏改逐句累积，每句一张卡片（用户实拍点名的样式）——
+               与列表行同一套观感：素底圆角 + 3px 左侧竖条，只有最新一句竖条上
+               主题色。原文栏按用户裁决**不做卡片**（保持淡灰一行）。 */
+            QWidget#DualTgtRow {{ background: rgba(255,255,255,8); border-radius: 8px;
+                                  border-left: 3px solid transparent; }}
+            QWidget#DualTgtRowNewest {{ background: rgba(79,140,255,26); border-radius: 8px;
+                                        border-left: 3px solid #4f8cff; }}
             QLabel#DualTgt {{ color: {self._text_color.name()}; }}
             QLabel#DualTgt[spec="true"] {{ color: rgba(255,255,255,205); }}
             QLabel#DualTgt[empty="true"] {{ color: rgba(255,255,255,110); }}
@@ -1426,18 +1622,27 @@ class CaptionOverlay(QWidget):
         """dual 区字号/字重必须走 setFont——QSS 的 font-size **不会写回
         widget.font()**，QLabel 的 heightForWidth/sizeForWidth 按默认 12px
         字体度量，长句需求高度被严重算小 → 终版译文底部裁切（真机 grab
-        实证两次）。颜色等外观仍走 QSS（_apply_qss），度量归 setFont。"""
+        实证两次）。颜色等外观仍走 QSS（_apply_qss），度量归 setFont。
+        v2.20.1：两栏都逐句累积 → 字号变化要**重刷全部条目**，只刷当前句会
+        让旧行的度量停在旧字号（面板高度与文本一起错位）。"""
         fs = max(10, int(self._font_size))
         f_src = QFont()
         f_src.setPixelSize(max(11, int(fs * 0.78)))
         f_src.setWeight(QFont.DemiBold)
-        self._dual_src.setFont(f_src)
-        self._restyle_dual_tgt()
+        for it in self._dual_src_items:
+            it["lab"].setFont(f_src)
+        f_fin = QFont()
+        f_fin.setPixelSize(fs)
+        f_fin.setWeight(QFont.Bold)
+        for it in self._dual_tgt_items:
+            if it["lab"] is not self._dual_tgt:
+                it["lab"].setFont(f_fin)
+        if self._dual_tgt is not None:
+            self._restyle_dual_tgt()
 
-    def _restyle_dual_tgt(self):
-        """按 spec/empty 属性态落地译文字号/字重（setFont，原因见
+    def _tgt_label_font(self, w):
+        """按 spec/empty 属性态给**指定**译文标签落地字号/字重（setFont，原因见
         _apply_dual_fonts），并重刷 QSS 颜色（Qt 不自动感知属性态样式）。"""
-        w = self._dual_tgt
         empty = bool(w.property("empty"))
         f = QFont()
         if empty:
@@ -1449,6 +1654,13 @@ class CaptionOverlay(QWidget):
         w.setFont(f)
         w.style().unpolish(w)
         w.style().polish(w)
+
+    def _restyle_dual_tgt(self):
+        """重刷**当前句**译文标签的字体与属性态样式。"""
+        w = self._dual_tgt
+        if w is None:
+            return
+        self._tgt_label_font(w)
 
     def paintEvent(self, event):
         if not hasattr(self, "_bg_color"):
@@ -1472,7 +1684,7 @@ class CaptionOverlay(QWidget):
             # v2.18.0：分割把手三点已移除——面板只保留一条可拖分割线
             # （原文/译文之间的 DualSep 把手）+ 右缘/底缘把手
 
-    # ---------- 鼠标：整板拖移 + 右缘调宽 + 双击贴边 ----------
+    # ---------- 鼠标：整板拖移 + 右缘调宽 + 底缘调高 ----------
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1616,30 +1828,12 @@ class CaptionOverlay(QWidget):
                 if self._on_collapsed:
                     self._on_collapsed(False)
             else:
-                self._magnet_snap()
+                # v2.20.1：松手不再磁吸贴边（用户点名删除贴边能力）——
+                # 面板停在拖到的位置，只把坐标落盘
                 QTimer.singleShot(0, self._save_final_pos)
                 QTimer.singleShot(400, self._save_final_pos)
         self._drag_pos = None
         self._mini_press = False
-
-    def _magnet_snap(self):
-        """v2.5.0：拖动松手磁吸——面板边缘距屏幕可用区边缘 <24px 时自动贴齐
-        （此前只能靠右键菜单/双击贴边，随手一拖永远对不齐）。"""
-        scr = (QGuiApplication.screenAt(QPoint(self.frameGeometry().center()))
-               or QGuiApplication.primaryScreen())
-        g = scr.availableGeometry()
-        x, y, w, h = self.x(), self.y(), self.width(), self.height()
-        nx, ny = x, y
-        if abs(x - g.left()) < 24:
-            nx = g.left()
-        elif abs(x + w - g.right()) < 24:
-            nx = g.right() - w
-        if abs(y - g.top()) < 24:
-            ny = g.top()
-        elif abs(y + h - g.bottom()) < 24:
-            ny = g.bottom() - h
-        if (nx, ny) != (x, y):
-            self.move(nx, ny)
 
     def wheelEvent(self, event):
         # v2.5.0：工具条上快捷调节（豆包式顺手性）——Ctrl+滚轮=字号 ±1、
@@ -1699,36 +1893,13 @@ class CaptionOverlay(QWidget):
             self._on_moved(self.x(), self.y())
 
     def mouseDoubleClickEvent(self, event):
+        # v2.20.1（用户点名）：双击工具条的"顶/底贴边循环"已删除——贴边能力
+        # 整族退役（菜单四向、松手磁吸一并删），面板停在哪就是哪。
+        # 只保留双击底缘 = 恢复自动高度（与 ⋯ 菜单项同源，不是贴边功能）。
         pos = event.position()
         pos = pos.toPoint() if hasattr(pos, "toPoint") else pos
-        # 双击工具条 = 顶/底贴边循环（肌肉记忆：像所有软件的标题栏）
-        if pos.y() <= self._bar.geometry().bottom() + 6:
-            self._snap_cycle()
-        elif pos.y() >= self.height() - self.RESIZE_EDGE:
-            # v2.5.3：双击底缘 = 恢复自动高度（与 ⋯ 菜单项同源）
+        if pos.y() >= self.height() - self.RESIZE_EDGE:
             self._reset_user_height()
-
-    def _snap_cycle(self):
-        self._snap_to_edge("bottom" if self.y() - (
-            QGuiApplication.primaryScreen().availableGeometry().top()
-        ) < QGuiApplication.primaryScreen().availableGeometry().height() / 2 else "top")
-
-    def _snap_to_edge(self, edge):
-        scr = (QGuiApplication.screenAt(QPoint(self.frameGeometry().center()))
-               or QGuiApplication.primaryScreen())
-        g = scr.availableGeometry()
-        if edge in ("top", "bottom"):
-            x = min(max(self.x(), g.left()), max(g.left(), g.right() - self.width() + 1))
-            y = g.top() + 8 if edge == "top" else max(g.top(), g.bottom() - self.height() - 7)
-        elif edge == "left":
-            y = min(max(self.y(), g.top()), max(g.top(), g.bottom() - self.height() + 1))
-            x = g.left() + 8
-        else:  # right
-            y = min(max(self.y(), g.top()), max(g.top(), g.bottom() - self.height() + 1))
-            x = max(g.left(), g.right() - self.width() + 1 - 8)
-        self.move(x, y)
-        if self._on_moved:
-            self._on_moved(x, y)
 
     # ---------- 菜单（⋯ 与右键同源） ----------
 
@@ -1759,10 +1930,8 @@ class CaptionOverlay(QWidget):
         acts["pin"] = menu.addAction("置顶显示")
         acts["pin"].setCheckable(True)
         acts["pin"].setChecked(self._pinned)
-        acts["snap_top"] = menu.addAction("贴到屏幕顶部")
-        acts["snap_bottom"] = menu.addAction("贴到屏幕底部")
-        acts["snap_left"] = menu.addAction("贴到屏幕左侧")
-        acts["snap_right"] = menu.addAction("贴到屏幕右侧")
+        # v2.20.1（用户点名）：「贴到屏幕顶部/底部/左侧/右侧」四项已删除
+        # （连同双击贴边、松手磁吸一起，贴边能力整族退役）
         # v2.5.0：透明度常用档直调（滚轮 Ctrl+Shift 的菜单版；细调仍走设置页）
         op_menu = menu.addMenu("背景透明度")
         cur_op = alpha_to_opacity(self._bg_alpha)
@@ -1783,10 +1952,11 @@ class CaptionOverlay(QWidget):
         acts["fix_tr"].setEnabled(bool(tgt.strip()))
         # v2.19.2：dual 的正文不在 `_rows`（当前句原文/译文），旧判据让这一项
         # 恒灰，而工具条「清空」同一动作可用——两个入口打架。
-        # v2.20.0：历史区删除后不再有"历史行数"这一项，判据只剩当前句原文
-        # （译文区空态常驻占位文案，不能拿它判有无内容）
+        # v2.20.1：dual 两栏逐句累积 → 判据是"任一栏有真内容"，不能只看当前句
+        # （译文栏空态常驻占位文案，也不能拿它的文本判有无内容）
         has_content = bool(self._rows) or (
-            self.is_dual() and bool(self._dual_src.text().strip()))
+            self.is_dual() and (self._dual_col_has_text("src")
+                                 or self._dual_col_has_text("tgt")))
         acts["clear"].setEnabled(has_content)
         self._menu_acts = acts
         self._menu_last = (src, tgt)
@@ -1834,14 +2004,6 @@ class CaptionOverlay(QWidget):
             self.set_pinned(acts["pin"].isChecked())
             if self._on_pin_changed:
                 self._on_pin_changed(acts["pin"].isChecked())
-        elif chosen == acts.get("snap_top"):
-            self._snap_to_edge("top")
-        elif chosen == acts.get("snap_bottom"):
-            self._snap_to_edge("bottom")
-        elif chosen == acts.get("snap_left"):
-            self._snap_to_edge("left")
-        elif chosen == acts.get("snap_right"):
-            self._snap_to_edge("right")
         elif chosen == acts.get("hide"):
             self._request_close()
 

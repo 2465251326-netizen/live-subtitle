@@ -746,23 +746,24 @@ class MainWindow(QMainWindow):
             self.tray.showMessage("LiveSubtitle 全局热键", status[2:], QSystemTrayIcon.Warning, 4000)
 
     def _toggle_overlay_hotkey(self):
-        """显隐悬浮条热键回调（v2.2.6）：可见则隐藏（同步配置），不可见则强制
-        显示并同步配置（热键即开关，不受 overlay_enabled 当前值约束）。
-        v2.2.7：250ms 业务级防抖——与 toggle_running 同款，双保险。"""
+        """显隐字幕面板——全局热键与托盘右键菜单**共用**这一条路径（v2.2.6 起）。
+
+        v2.20.1（用户裁决）：面板改**常驻实时显示**，设置页的「启用字幕面板」
+        勾选与 `overlay_enabled` 配置键一并删除；此后开/关只有两个入口——热键
+        （默认 Ctrl+Alt+O）与托盘右键菜单「显隐字幕面板」，外加面板自身的 ✕。
+        显隐**不落盘**：只在本次运行内有效，下次启动一律恢复显示（v2.10.0 起
+        就是这个语义，本轮把残留的持久键清掉）。250ms 业务级防抖与
+        `toggle_running` 同款（双保险，防热键重复投递）。"""
         import time as _t
         now = _t.monotonic()
         if now - getattr(self, "_overlay_hk_last", 0.0) < 0.25:
             return
         self._overlay_hk_last = now
         if self.overlay.isVisible():
-            self.overlay.hide()  # 与 X 按钮路径一致：先隐藏再同步配置
+            self.overlay.hide()      # 与面板 ✕ 同路径（on_overlay_closed 收尾）
             self.on_overlay_closed()
         else:
             self.overlay.show()
-            self.config.set("overlay_enabled", True)
-            dlg = getattr(self, "_settings_dlg", None)
-            if dlg is not None and hasattr(dlg, "sync_overlay_check"):
-                dlg.sync_overlay_check(True)
             self.update_overlay_status()
             self._refresh_quick_panel()  # v2.3.2（G1）：仪表盘同步悬浮条状态
 
@@ -918,15 +919,12 @@ class MainWindow(QMainWindow):
             self.overlay.resize(ow, self.overlay.height())
             self.overlay._user_resized = True
         self.apply_overlay_from_config()
-        # v2.10.0：悬浮条**启动即常驻**（用户裁决：打开软件字幕悬浮窗一直在，
-        # 按热键显示/隐藏）——显隐不再由 overlay_enabled 的跨会话持久值决定，
-        # "隐藏"只在本次运行内有效（热键/X/设置页），下次启动恢复常驻。
-        # enabled 仍回写 True：设置页勾选、仪表盘"字幕面板"行、托盘语义保持一致。
+        # v2.10.0 立、v2.20.1 收尾：字幕面板**启动即常驻实时显示**（用户裁决）。
+        # 显隐只由热键 / 托盘右键菜单 / 面板 ✕ 决定，且**不跨会话记忆**——
+        # `overlay_enabled` 与设置页勾选已随之删除，这里不再回写任何开关值。
         # 必须先 show 再刷仪表盘——速览卡按 isVisible() 取文案（顺序反了会
         # 显示"已关闭"谎报常驻实况）
         self.overlay.show()
-        if not bool(c.get("overlay_enabled")):
-            c.set("overlay_enabled", True)
         self._refresh_quick_panel()
 
     def _save_settings(self):
@@ -983,7 +981,8 @@ class MainWindow(QMainWindow):
             # 用配置真值 + 注册实况组合文案（文案不许承诺做不到的事）
             o_cfg = str(c.get("hotkey_overlay") or "").strip()
             if not o_cfg:
-                labels["字幕面板"].setText("已关闭 · 设置-显示可重新开启")
+                # v2.20.1：设置页「启用字幕面板」勾选已删——指引改指托盘右键菜单
+                labels["字幕面板"].setText("已关闭 · 托盘右键可重新显示")
             elif hotkey.overlay_text():
                 labels["字幕面板"].setText(f"已关闭 · 按 {o_cfg} 打开")
             else:
@@ -1050,7 +1049,9 @@ class MainWindow(QMainWindow):
         box.show()
 
     def set_overlay_visible(self, checked):
-        """仅切换悬浮条显隐（预览用，不落盘）——落盘统一走 set_overlay_enabled。"""
+        """切换面板显隐。v2.20.1：面板改常驻实时显示后这是唯一的显隐原语，
+        **不落盘**（`overlay_enabled` 已删）——热键/托盘菜单/✕ 都经它或直接经
+        `overlay.show()/hide()`，下次启动一律恢复显示。"""
         if checked:
             x, y = self._clamp_overlay_pos(self.config.get("overlay_x"),
                                            self.config.get("overlay_y"))
@@ -1058,10 +1059,6 @@ class MainWindow(QMainWindow):
             self.overlay.show()
         else:
             self.overlay.hide()
-
-    def set_overlay_enabled(self, checked):
-        self.set_overlay_visible(checked)
-        self.config.set("overlay_enabled", bool(checked))
         self._refresh_quick_panel()  # v2.3.2（G1）
 
     def _on_panel_layout_changed(self, mode):
@@ -1149,13 +1146,14 @@ class MainWindow(QMainWindow):
         self.status_dot.setStyleSheet(f"background-color: {col}; border-radius: 7px;")
 
     def on_overlay_closed(self):
+        """面板 ✕ / 热键隐藏的收尾。
+
+        v2.20.1：不再写 `overlay_enabled`、不再同步设置页勾选（该开关已随
+        "面板常驻实时显示"删除）——隐藏只在本次运行内有效，重新打开走热键或
+        托盘右键菜单，下次启动一律恢复显示。位置照旧落盘。"""
         if getattr(self, "_quitting", False):
             return
         self._save_settings()
-        self.config.set("overlay_enabled", False)
-        dlg = getattr(self, "_settings_dlg", None)
-        if dlg is not None:
-            dlg.sync_overlay_check(False)
         self._refresh_quick_panel()  # v2.3.2（G1）
 
     def _follow_bottom(self):
@@ -1469,8 +1467,9 @@ class MainWindow(QMainWindow):
         self._no_segment_timer.timeout.connect(self._no_segment_hint)
         self._no_segment_timer.start(25000)
 
-        if c.get("overlay_enabled") and not self.overlay.isVisible():
-            self.set_overlay_enabled(True)
+        # v2.20.1：面板常驻实时显示——启动后若被上次运行/异常路径藏了，这里补回
+        if not self.overlay.isVisible():
+            self.set_overlay_visible(True)
         self.update_overlay_status()
 
     def _no_segment_hint(self):
