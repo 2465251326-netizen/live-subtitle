@@ -1649,6 +1649,81 @@ check("panel: 幕墙草稿长于终版时终版就地收口（v2.19.3 反方向�
       t_overlay_wall_draft_longer_than_final)
 
 
+def t_overlay_qss_no_hash_comments():
+    """v2.19.4：面板样式表里不得出现 `#` 行注释（Qt 只认 C 风格块注释）。
+
+    最小实验实测 Qt 的行为：`#` 夹在中间 → **从该行起后续全部规则被丢弃**；
+    放在首行 → 整张表作废。v2.16.1 起 `_apply_qss` 里就有一条 `#` 注释，其后的
+    PanelRow / PanelRowNewest（行卡片底色 + 最新句左侧蓝条）/ PanelScroll 透明 /
+    QScrollBar 宽度等 12 条规则从未生效过——"样式写了但看不见"这一类缺陷里最
+    隐蔽的一种（v2.18.1 的 objectName 事故同族）。修好后滚动条宽度实测 8px。
+    注释正文里也不得出现块注释的闭合符（会提前终止注释，重演同一事故）。"""
+    import re
+    ov = CaptionOverlay()
+    ov.apply_style(22, "#ffffff", "#1c1f26", 92)
+    css = ov.styleSheet()
+    bad = [ln.strip()[:60] for ln in css.splitlines() if ln.strip().startswith("#")]
+    assert not bad, f"QSS 里出现 # 行注释，其后的规则会被 Qt 整段丢弃：{bad}"
+    # 块注释必须成对，且注释体内不得藏闭合符
+    assert css.count("/*") == css.count("*/"), "块注释未配对"
+    for seg in re.split(r"/\*", css)[1:]:
+        body = seg.split("*/")[0]
+        assert "*/" not in body
+    ov.deleteLater()
+
+
+check("panel: 样式表禁用 # 行注释（v2.19.4 QSS 静默丢规则回归）",
+      t_overlay_qss_no_hash_comments)
+
+
+def t_main_list_follow_bottom_guard():
+    """v2.19.4：主窗字幕列表在用户回看时不得被新句拽回底部。
+
+    直播里上滚重读刚说过的一句，旧实现每来一张卡就无条件 `setValue(maximum)`，
+    2~6 秒后新片段把人拽走，回看根本完不成；悬浮面板早有 `_follow` 守卫 +
+    「↓ 最新」按钮，主窗没有（同一产品里两处行为不一致）。现在只在已贴底时
+    跟底，否则挂「↓ N 条新字幕」角标，点它回到底部并清零。"""
+    w = MainWindow()
+    try:
+        w.resize(900, 420)
+        w.show()                            # 必须真 show：不布局则 maximum() 恒 0，断言会空过
+        for _ in range(8):
+            app.processEvents()
+        for i in range(14):
+            w._on_asr_text("Sentence number %d about something long enough" % i,
+                           "en", 1.0, -1.0)
+            for _ in range(3):
+                app.processEvents()
+        sb = w.scroll.verticalScrollBar()
+        assert sb.maximum() > 40, f"前置：内容应可滚动（maximum={sb.maximum()}）"
+        assert sb.value() >= sb.maximum() - 4, "前置：默认应贴底跟随"
+        sb.setValue(0)                       # 用户上轮回看
+        for _ in range(4):
+            app.processEvents()
+        w._on_asr_text("A brand new sentence arrives while I am reading up",
+                       "en", 1.0, -1.0)
+        for _ in range(4):
+            app.processEvents()
+        assert sb.value() <= 4, f"回看时被新句拽到底部（value={sb.value()}）"
+        assert not w.jump_new_button.isHidden(), "未跟底时必须给出「↓ N 条新字幕」提示"
+        assert "1" in w.jump_new_button.text(), w.jump_new_button.text()
+        w._jump_to_latest()
+        for _ in range(4):
+            app.processEvents()
+        assert sb.value() >= sb.maximum() - 4, "点角标后应回到底部"
+        assert w.jump_new_button.isHidden(), "回底后角标必须收起"
+        w._on_asr_text("Next sentence after I returned to bottom", "en", 1.0, -1.0)
+        for _ in range(4):
+            app.processEvents()
+        assert sb.value() >= sb.maximum() - 4, "回底后应恢复自动跟底"
+    finally:
+        w.deleteLater()
+
+
+check("main: 列表回看不被拽底 + 新字幕角标（v2.19.4 跟底守卫）",
+      t_main_list_follow_bottom_guard)
+
+
 def t_overlay_dual_follow_bottom():
     """v2.18.1：dual 原文/译文区内容超出可视高度必须**自动跟底**。
 

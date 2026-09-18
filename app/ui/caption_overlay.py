@@ -1270,24 +1270,31 @@ class CaptionOverlay(QWidget):
             # body = 剩余且**与 src 无关** → y = chrome + hist + src，一对一跟手。
             screen_h = int(QGuiApplication.primaryScreen().availableGeometry().height()
                            or 800)
-            hist_want = min(self._dual_hist_lay.sizeHint().height() + 4,
+            body_min = 92 if src_on else 60        # 原文30+把手8+译文30+边距：可拖下限
+            # +12：历史区至少留一行多一点的空间（v2.19.4：旧 +4 在"关原文"档下
+            # 算出的 hist 份额比内容还矮，2 行历史被压成 13px 视口、内容需 39px，
+            # 回看功能等于没有——offscreen 实测）
+            hist_want = min(self._dual_hist_lay.sizeHint().height() + 12,
                             int(screen_h * 0.45))
             if self._user_height:
                 total = self._user_height          # 用户拖过底缘：总高锁定
             elif self._dual_hist_enabled:
-                total = min(chrome + body_want + hist_want, int(screen_h * 0.68))
+                # v2.19.4：总高必须按**生效后的 body 地板**算，不能按 body_want——
+                # 旧写法 body_want 在空句/短句时只有 46px，随后 body_min(60/92)
+                # 又把这点空间从历史份额里吃掉，历史区被挤成细条。
+                total = min(chrome + max(body_want, body_min) + hist_want,
+                            int(screen_h * 0.68))
             else:
                 # 历史区关闭（v2.19.0 出厂默认）：面板**贴内容**，不再撑到
                 # 0.68 屏——否则关掉历史区只剩一个两行字的大空框（用户实拍吐槽的
                 # 就是这个空框感）
                 total = min(chrome + max(body_want, 46), int(screen_h * 0.68))
             avail = max(46, total - chrome)
-            body_min = 92 if src_on else 60        # 原文30+把手8+译文30+边距：可拖下限
             if self._dual_hist_enabled:
                 hist_h = max(0, min(hist_want, int(avail * 0.5), avail - min(body_min, avail)))
             else:
                 hist_h = 0
-            body_h = max(46, avail - hist_h)
+            body_h = max(min(body_min, avail), avail - hist_h)
             self._dual_body.setFixedHeight(body_h)
             # v2.17.0a 的"恒显示"是为锁总高服务的；新模型里 body = 剩余，总高
             # 天然锁定，故关闭/无内容时直接收起，不留空白块
@@ -1418,6 +1425,12 @@ class CaptionOverlay(QWidget):
     def _build_font_menu(self):
         m = QMenu(self)
         self._font_actions = []
+        # v2.19.4：首行写真实字号——四档（16/22/30/40）只是"快捷档"，滚轮与
+        # 设置页能落在档外的值（18/19/44…），旧菜单在这种值下要么双勾要么无勾，
+        # 用户看不出自己现在到底多大。
+        hdr = m.addAction("当前字号 %dpx" % int(self._font_size))
+        hdr.setEnabled(False)
+        self._font_header = hdr
         for name, px in self.FONTS:
             a = m.addAction(f"{name}（{px}px）")
             a.setCheckable(True)
@@ -1428,9 +1441,21 @@ class CaptionOverlay(QWidget):
 
     def _sync_font_checks(self):
         """v2.5.3：勾选态随当前字号同步互斥——此前菜单只在构造时 setChecked
-        一次且非互斥，换档/滚轮调节后旧勾永不消失（用户实测四档全勾）。"""
-        for a, px in getattr(self, "_font_actions", []):
-            a.setChecked(abs(px - self._font_size) <= 3)
+        一次且非互斥，换档/滚轮调节后旧勾永不消失（用户实测四档全勾）。
+
+        v2.19.4：改为**只勾最接近的一档（唯一）**。上一版用 `abs(px-fs) <= 3`
+        的半径，档位间距只有 6px，半径彼此重叠 → offscreen 实测：19px 同时勾上
+        「小号16」与「中号22」、12px 与 44px 整组无勾、18px 勾的是"16px"——
+        菜单显示与实际字号不符（红线）。真实字号现在直接写在菜单首行。"""
+        acts = getattr(self, "_font_actions", [])
+        if not acts:
+            return
+        nearest = min(acts, key=lambda ap: abs(ap[1] - self._font_size))[1]
+        for a, px in acts:
+            a.setChecked(px == nearest)
+        hdr = getattr(self, "_font_header", None)
+        if hdr is not None:
+            hdr.setText("当前字号 %dpx" % int(self._font_size))
 
     def _pick_font(self, px):
         if self._on_font_size:
@@ -1577,6 +1602,14 @@ class CaptionOverlay(QWidget):
         self._relayout()
         self._schedule_relayout()
 
+    def set_session_has_content(self, has):
+        """v2.19.4：主窗告知"本会有没有字幕"，用于 ⋯ 菜单「导出 SRT…」置灰。
+
+        主窗的「导出」按钮 v2.6.5（R7-L3）就已无字幕禁用，面板这个入口没门控：
+        零字幕时点了只弹一句"当前会话还没有可导出的字幕"——同一动作两入口
+        一个亮一个灰，正是 v2.19.2 为「清空」修过的老毛病。"""
+        self._session_has = bool(has)
+
     def _keep_content_clear(self, w):
         """QScrollArea 的内容控件必须在 setWidget **之后**再关一次 autoFill。
 
@@ -1607,7 +1640,10 @@ class CaptionOverlay(QWidget):
             QToolButton:checked {{ background: rgba(255,255,255,45); }}
             QToolButton:disabled {{ color: rgba(255,255,255,60); }}
             QToolButton#PanelClose {{ color: #ff8f8f; }}
-            QLabel#PanelHint {{ color: rgba(255,255,255,72); font-size: 12px; }}
+            /* v2.19.4：占位/引导文字对比度 72/255 合成后约 2.5:1，低于可读下限
+               （承载的是首启三行小抄）；提到 110 后约 4.6:1。像素锁判的是
+               "整行均匀亮像素"，文字占比仅 0.66，不受此改动影响 */
+            QLabel#PanelHint {{ color: rgba(255,255,255,110); font-size: 12px; }}
             QLabel#PanelSrc {{ font-size: {src_fs}px; color: #98a2b3; }}
             QLabel#PanelTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
             QLabel#PanelMiniSrc {{ font-size: {max(11, int(fs * 0.62))}px; color: #98a2b3; }}
@@ -1624,9 +1660,14 @@ class CaptionOverlay(QWidget):
             QLabel#DualSrc {{ color: #98a2b3; }}
             QLabel#DualTgt {{ color: {self._text_color.name()}; }}
             QLabel#DualTgt[spec="true"] {{ color: rgba(255,255,255,205); }}
-            QLabel#DualTgt[empty="true"] {{ color: rgba(255,255,255,72); }}
-            # v2.16.1：DualSep 把手为自绘（_DualSepHandle：平时仅一条极淡
-            # 细线，悬停浮现中央胶囊）——旧的 8px 实心灰带"太生硬、难看"
+            QLabel#DualTgt[empty="true"] {{ color: rgba(255,255,255,110); }}
+            /* v2.16.1：DualSep 把手为自绘（_DualSepHandle：平时仅一条极淡
+               细线，悬停浮现中央胶囊）——旧的 8px 实心灰带"太生硬、难看"。
+               注意：QSS 只认 C 风格块注释，用 # 写注释会让 Qt 从该行起丢弃
+               后续全部规则（最小实验实测：井号夹在中间则后面的规则全不生效；
+               放在首行则整张表作废）。本条注释此前正是井号写法，其后的
+               PanelRow / PanelRowNewest / PanelScroll / QScrollBar 等 12 条
+               规则从未生效过。另：注释正文里不得出现块注释的闭合符。 */
             QScrollArea#DualSrcWrap {{ background: transparent; border: none; }}
             QScrollArea#DualSrcWrap > QWidget {{ background: transparent; }}
             QScrollArea#DualSrcWrap > QWidget > QWidget {{ background: transparent; }}
@@ -1977,6 +2018,7 @@ class CaptionOverlay(QWidget):
         acts["fix_asr"] = menu.addAction("纠正最近识别…")
         acts["fix_tr"] = menu.addAction("纠正最近译文…")
         acts["export"] = menu.addAction("导出 SRT…")
+        acts["export"].setEnabled(getattr(self, "_session_has", True))
         acts["clear"] = menu.addAction("清空面板字幕")   # v2.4.3（A）：与工具条清空同源
         menu.addSeparator()
         acts["pin"] = menu.addAction("置顶显示")

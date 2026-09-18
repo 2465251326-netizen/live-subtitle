@@ -280,7 +280,9 @@ _STD_ROWS = [
      "desc": "在识别前用 Silero 模型过滤段内非语音（背景音乐/噪声更干净），与切句 VAD 双保险。"},
     {"key": "low_latency_mode", "attr": "low_latency_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "低延迟模式（直播/新闻推荐）",
-     "desc": "字幕更快上屏（看视频强烈推荐）：分段上限 14 秒→6 秒、静音判停收紧，连续说话时字幕不再攒十几秒才出。v2.3.7 起翻译自动攒整句"
+     "desc": "字幕更快上屏（看视频强烈推荐）：静音判停收紧 0.45 秒→0.30 秒，连续说话时字幕不再攒十几秒才出。"
+             "分段上限也从 14 秒收到 6 秒——「注意」：下方「连续语流分段上限」一旦设成具体秒数就以该项为准"
+             "（出厂默认 4 秒），此时本项实际只改变静音判停。v2.3.7 起翻译自动攒整句"
              "（上屏快、译文仍是完整句子，不再半截话各翻各的）；显示上句子可能切短。",
      "opts": {}},
     {"key": "early_flush", "attr": "early_flush_check", "page": "asr", "section": "语言与计算",
@@ -304,7 +306,7 @@ _STD_ROWS = [
               "译文在同一张字幕卡／同一面板行上原地生长覆盖。连续语流中译文不再干等攒句"
               "（实测这类等待约占端到端延迟 87%、中位 4.1 秒），上屏提前约一个分段周期。"
               "中间版译文可能先显示半句、稍后被完整整句覆盖；停止时若仍是半句会保留并标注"
-              "「译文可能不完整」。**仅离线 Argos 引擎生效**——在线引擎有额度与限流"
+              "「译文可能不完整」。「仅离线 Argos 引擎生效」——在线引擎有额度与限流"
               "（MyMemory 每天约 5000 字符免费额度），逐片加发中间版会成倍消耗，故一律保持整句翻译。",
      "opts": {}},
     {"key": "translate_grouping", "attr": "grouping_check", "page": "asr", "section": "语言与计算",
@@ -319,9 +321,9 @@ _STD_ROWS = [
     {"key": "neural_vad", "attr": "neural_vad_check", "page": "asr", "section": "语言与计算",
      "kind": "check", "title": "神经 VAD 句末判定（实验性，默认关）",
      "desc": "用 Silero 模型判定「这块是不是人声」来找句末停顿，代替能量判据。默认关闭的原因如实相告："
-              "项目实测中它对干净素材与能量判据持平，对带**稳定背景乐**的素材反而切句更晚约 0.7 秒"
+              "项目实测中它对干净素材与能量判据持平，对带「稳定背景乐」的素材反而切句更晚约 0.7 秒"
               "（神经判定带滞回，会多抱一段尾音）；能量判据的自适应噪声底本就压得住稳定背景乐。"
-              "仅当你的视频是**突发强背景乐/噪声盖过语音**、且字幕明显不切句时值得一开一试，"
+              "仅当你的视频是「突发强背景乐/噪声盖过语音」、且字幕明显不切句时值得一开一试，"
               "建议开启后与关闭状态对比字幕节奏。开销极小（约 0.4% CPU），模型缺失或加载失败会"
               "自动静默退回能量判据；只认人声，唱歌/纯音乐为主的场景字幕可能变少。",
      "opts": {}},
@@ -337,8 +339,8 @@ _STD_ROWS = [
      "kind": "combo", "title": "连续语流分段上限",
      "desc": "连续说话不停顿时，强制在这个长度切一刀交付一片。v2.7.5 实测「译文等待中位数」约等于这个数值"
               "（因为本句要等下一片到达才被冲刷出去）；v2.7.6 起有「推测式增量翻译」让译文跟着碎片立刻上屏，"
-              "本项不再直接决定译文迟到，主要影响**刷新粒度与腰斩程度**。真实音频实测对照：2.5 秒时 71% 的"
-              "句子在 2.5 秒处被硬生生腰斩，4 秒时只有 17~33%；调小字幕刷新更密，代价是句子更碎、单次识别"
+              "本项不再直接决定译文迟到，主要影响「刷新粒度与腰斩程度」。真实素材 A/B 实测对照：2.5 秒档"
+              "有 57~71% 的句子在上限处被硬生生腰斩，4 秒档只有 0~17%；调小字幕刷新更密，代价是句子更碎、单次识别"
               "上下文更少。默认 4 秒；选 0 = 跟随模式默认（低延迟 6 秒／榨干模式 4 秒／普通 14 秒）。",
      "opts": {"items": _STD_ROW_ITEMS["segment_cap"]}},
     {"key": "lang_recheck", "attr": "lang_recheck_check", "page": "asr", "section": "语言与计算",
@@ -384,7 +386,7 @@ _STD_ROWS = [
      "desc": "悬浮在所有窗口之上的字幕面板：顶部工具条（目标语言/原文开关/字号/收起），"
               "正文是原文+译文成对的历史滚动区，上滚暂停自动跟随。整板可拖、右缘拖宽、"
               "底缘拉高、双击工具条贴顶/底。托盘「显隐字幕面板」或热键（默认 Ctrl+Alt+O）随时可切。"
-              "面板**启动即常驻**：在此取消勾选、或用热键/X 隐藏，只在本次运行内有效，"
+              "面板「启动即常驻」：在此取消勾选、或用热键/X 隐藏，只在本次运行内有效，"
               "下次打开软件会自动恢复显示（不想看到时就按热键藏一下）。"
               "注：是否压过其他窗口，用面板工具条的 📌 控制。",
      "opts": {"on_change": "_on_overlay_toggle"}},
@@ -394,8 +396,8 @@ _STD_ROWS = [
     {"key": "overlay_layout", "attr": "layout_combo", "page": "display", "section": "字幕显示",
      "kind": "combo", "title": "面板布局",
      "desc": "「列表历史」= 现在的面板：原文+译文成对的历史滚动区，可回看整场。\n"
-             "「上下双语」= 豆包式实时翻译：上半是随识别**流式生长的原文**（淡色小字），"
-             "下半是**加粗大字译文**——原文一出就上屏，译文随即就地更新（配合推测式增量翻译几乎"
+             "「上下双语」= 豆包式实时翻译：上半是随识别「流式生长的原文」（淡色小字），"
+             "下半是「加粗大字译文」——原文一出就上屏，译文随即就地更新（配合推测式增量翻译几乎"
              "无等待），说完即换下一句，是否保留可回看的历史见下方「双语面板历史区」。\n"
              "面板 ⋯ 菜单可随时互切，保存后立即生效。",
      "opts": {"items": _STD_ROW_ITEMS["overlay_layout"]}},
@@ -2258,7 +2260,7 @@ class SettingsDialog(QDialog):
         字号 / 透明度 / 布局 / 历史区四项漏网——面板切完，设置页控件仍显示旧值；
         用户把控件拨到"屏幕上的实际值"时被 `_stage` 判成"改回原值"而静默吞掉
         （显示改了、底部仍提示"所有改动已保存"）。规矩与 `sync_target_lang`
-        一致：**不清 `_staged`**，用户已暂存该键时不覆盖其暂存值。
+        一致：「不清 `_staged`」，用户已暂存该键时不覆盖其暂存值。
         """
         widget_of = {"overlay_font_size": "overlay_font_spin",
                      "overlay_bg_opacity": "bg_opacity_slider",
@@ -2280,6 +2282,10 @@ class SettingsDialog(QDialog):
                     w.setCurrentIndex(w.findData(val))
                 else:
                     w.setValue(int(val))
+                    if w is getattr(self, "bg_opacity_slider", None):
+                        # 滑条旁的读数 QLabel 是 valueChanged 驱动的，blockSignals
+                        # 后不刷新 → 面板改了透明度、设置页滑条动了但还写"92%"
+                        self.bg_opacity_label.setText("%d%%" % int(val))
             except (TypeError, ValueError):
                 pass
             finally:
@@ -2370,6 +2376,11 @@ class SettingsDialog(QDialog):
         tgt = self.target_combo.currentData() or "zh-CN"
         argos_tgt = "zh" if tgt.startswith("zh") else tgt
         tgt_name = LANGUAGES.get(tgt, argos_tgt)
+        # v2.19.4：zh-TW 在离线包里被折成 "zh"（Argos 只有简体方向），按钮却写
+        # 「下载所选 → 繁体中文 语言包」，装回来的其实是简体中文包——同页另一条
+        # 说明本来就写着"暂缺繁体中文"（红线：文案不许与实际不符）。
+        if argos_tgt == "zh" and tgt not in ("zh-CN", "zh"):
+            tgt_name = "简体中文（离线包暂无繁体）"
         self.argos_combo.clear()
         # v2.0.0：候选源语言从翻译目标列表派生（单一数据源），不再手写副本漏项
         # v2.0.7：已安装的方向不再进下载列表（此前仅标"（已安装）"仍可重复
@@ -2435,7 +2446,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "卸载失败", f"删除目录时出错：{e}")
             return
         if removed:
-            # v2.19.2：必须在刷新列表**之前**取体积文本——`_refresh_packs_list()`
+            # v2.19.2：必须在刷新列表「之前」取体积文本——`_refresh_packs_list()`
             # 里的 `lst.clear()` 会删掉 QListWidgetItem 的 C++ 对象，之后再碰
             # `sel.text()` 抛 `RuntimeError: Internal C++ object … already deleted`，
             # 槽异常被 PySide 吞进 stderr：卸载其实已成功，但"完成"对话框永不弹，
@@ -2492,19 +2503,20 @@ class SettingsDialog(QDialog):
         self._refresh_argos_section()
         self.argos_hint.setText(msg)
 
-    def closeEvent(self, event):
+    def _prepare_close(self):
+        """关窗前的一致处理。返回 False = 本次不关。
+
+        后台任务在跑 → 只隐藏（进程退出会硬杀迁移/下载线程留半状态）；
+        有未保存暂存 → 问一次，放弃则把面板样式与显隐还原成已保存配置。"""
         # v2.0.1：迁移进行中同样只隐藏——进程退出会硬杀迁移线程，留下半迁移状态
         if getattr(self, "_storage_worker", None) and self._storage_worker.isRunning():
             self.hide()
-            event.ignore()
-            return
+            return False
         if getattr(self, "argos_worker", None) and self.argos_worker.isRunning():
             self.hide()
-            event.ignore()
-            return
+            return False
         if self._staged and not self._confirm_discard():
-            event.ignore()
-            return
+            return False
         # 放弃改动时把悬浮条样式还原为已保存配置
         if self._staged:
             self._staged.clear()
@@ -2517,7 +2529,24 @@ class SettingsDialog(QDialog):
                 self.main.set_overlay_visible(bool(self.c.get("overlay_enabled")))
             except Exception:
                 pass
+        return True
+
+    def closeEvent(self, event):
+        if not self._prepare_close():
+            event.ignore()
+            return
         event.accept()
+
+    def reject(self):
+        """v2.19.4：Esc / 系统关闭走 reject→done，**完全不经过 closeEvent**
+        （Qt 官方文档确认；本文件的模型下载框在 v2.2.1 就踩过并写了注释，
+        设置页一直没补）。后果：拨完透明度/攒句按 Esc → 没有"放弃修改？"确认、
+        暂存被静默丢弃，而面板还停在预览出来的值上；更糟的是 `_staged` 没清空，
+        下次打开设置页这批"幽灵暂存"照常生效，还会挡住 v2.19.2 的
+        `sync_overlay_keys`（已暂存的键不被面板值覆盖）。"""
+        if not self._prepare_close():
+            return
+        super().reject()
 
     # ---------- 外部联动 ----------
 
@@ -2533,9 +2562,9 @@ class SettingsDialog(QDialog):
     def sync_target_lang(self, code):
         """悬浮条 🌐 切换目标语言后，同步设置页的「翻译目标语言」下拉框。
 
-        v2.18.1：主窗原先调的是**不存在的** `dlg.reload_values()`——全库仅此
+        v2.18.1：主窗原先调的是「不存在的」 `dlg.reload_values()`——全库仅此
         一处引用，AttributeError 被 `except Exception: pass` 静默吞掉，同步
-        从未发生（设置页开着时下拉框仍显示旧语言）。这里做**窄同步**而不是
+        从未发生（设置页开着时下拉框仍显示旧语言）。这里做「窄同步」而不是
         直接 load_from_config()：后者会 `_staged.clear()`，把用户其他尚未
         保存的改动一并丢掉。用户已暂存该键时同样不覆盖其暂存值。"""
         combo = getattr(self, "target_combo", None)

@@ -416,6 +416,16 @@ class MainWindow(QMainWindow):
         self.scroll_layout.setSpacing(10)
         self.scroll_layout.addStretch()
         self.scroll.setWidget(self.scroll_container)
+        # v2.19.4：跟底状态做成**粘性标志**而不是当场比 value/maximum——字幕卡的
+        # 高度要等布局与换行算完才落定（offscreen 实测滚动范围 0→130→794 分几步
+        # 长起来），当场判定"是否贴底"必然误判：正常跟随会被记成"上滚了"、
+        # 角标乱跳。改为只在用户真的把滚动条离开底部时取消跟随，并在滚动范围
+        # 每次变化后重贴一次。
+        self._follow_latest = True
+        self._new_since_scroll = 0
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_list_scrolled)
+        self.scroll.verticalScrollBar().rangeChanged.connect(
+            lambda _mn, _mx: self._settle_bottom())
 
         self.empty_hint = QLabel(
             "点击右上角「开始翻译」\n\n播放任意视频或说话，字幕将实时出现在这里\n\n"
@@ -523,7 +533,21 @@ class MainWindow(QMainWindow):
         self.level_bar.setStyleSheet(
             "QProgressBar { background: #262c38; border: none; border-radius: 5px; }"
             "QProgressBar::chunk { background: #34d399; border-radius: 5px; }")
+        # 空页面指引让用户"看音量条有无波动"判断有没有抓到声音，可这根条
+        # 全应用无名无 tooltip（v2.19.4）
+        self.level_bar.setToolTip("实时输入音量（开始翻译后无波动 = 没抓到声音，"
+                                  "请到「设置-音频输入」更换设备）")
         status.addPermanentWidget(self.level_bar)
+
+        # v2.19.4：回看提示——用户上滚读旧句时，新句不再把他拽回底部（面板早就是
+        # 这套判据，主窗此前无条件 setValue(maximum)），改为挂一个可点的计数角标。
+        self.jump_new_button = QPushButton("↓ 新字幕")
+        self.jump_new_button.setObjectName("GhostButton")
+        self.jump_new_button.setCursor(Qt.PointingHandCursor)
+        self.jump_new_button.setToolTip("你正在回看旧字幕，点此跳回最新一条")
+        self.jump_new_button.clicked.connect(self._jump_to_latest)
+        self.jump_new_button.hide()
+        status.addPermanentWidget(self.jump_new_button)
 
         self.clear_button = QPushButton("清空")
         self.clear_button.setObjectName("GhostButton")
@@ -812,6 +836,16 @@ class MainWindow(QMainWindow):
             self.start_pipeline()
         name = "麦克风" if new == "microphone" else "系统声音"
         self._set_engine_status(f"已切换输入来源：{name}")
+        # v2.19.4：托盘菜单里切来源时主窗往往是隐藏的，那行状态字看不见；
+        # 而「当前配置」速览卡的"音频来源"也停在旧值（同 v2.7.4 QA-02 那类谎报）。
+        self._refresh_quick_panel()
+        self.update_overlay_status()
+        if not self.isVisible() and self.tray is not None:
+            try:
+                self.tray.showMessage("LiveSubtitle", f"输入来源已切换：{name}",
+                                      QSystemTrayIcon.Information, 2500)
+            except Exception:
+                pass
 
     def update_overlay_status(self):
         """把运行状态/来源/引擎/模型同步到悬浮条状态行。"""
@@ -1118,6 +1152,51 @@ class MainWindow(QMainWindow):
         if dlg is not None:
             dlg.sync_overlay_check(False)
         self._refresh_quick_panel()  # v2.3.2（G1）
+
+    def _follow_bottom(self):
+        """主窗字幕列表的跟底判据（v2.19.4，与悬浮面板同一套语义）。
+
+        直播场景下用户常上滚重读刚说过的一句；旧实现每来一张卡就无条件
+        `setValue(maximum)`，2~6 秒后新片段把他拽回底部，回看根本完不成——
+        而悬浮面板早有 `_follow`/`_hist_follow` 守卫 + 「↓ 最新」按钮，主窗
+        却没有（两入口行为不一致）。现在只在已贴底时跟底，否则累计条数挂角标。
+        """
+        sb = self.scroll.verticalScrollBar()
+        if self._follow_latest:
+            self._settle_bottom()
+            QTimer.singleShot(0, self._settle_bottom)   # 布局落定后再贴一次
+            return True
+        self._new_since_scroll += 1
+        self._sync_new_badge()
+        return False
+
+    def _on_list_scrolled(self, value):
+        sb = self.scroll.verticalScrollBar()
+        self._follow_latest = value >= sb.maximum() - 4
+        if self._follow_latest:
+            self._new_since_scroll = 0
+        self._sync_new_badge()
+
+    def _settle_bottom(self):
+        if not getattr(self, "_follow_latest", True):
+            return                      # 用户在上轮回看，不拽回
+        sb = self.scroll.verticalScrollBar()
+        if sb.value() < sb.maximum():
+            sb.setValue(sb.maximum())
+
+    def _sync_new_badge(self):
+        n = getattr(self, "_new_since_scroll", 0)
+        if n <= 0:
+            self.jump_new_button.hide()
+            return
+        self.jump_new_button.setText("↓ %d 条新字幕" % n)
+        self.jump_new_button.show()
+
+    def _jump_to_latest(self):
+        self._new_since_scroll = 0
+        self._sync_new_badge()
+        sb = self.scroll.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _clear_captions(self):
         while self.scroll_layout.count() > 1:
@@ -1449,7 +1528,7 @@ class MainWindow(QMainWindow):
         slow = (now - self._dl_start[0] > 20) and (mb - self._dl_start[1] < 5)
         if mb >= total * 0.9 or pct >= 99:
             slow = False
-        hint = "· 速度慢？到「设置-通用」配置代理可显著提速" if slow else ""
+        hint = "· 速度慢？到「设置-翻译」配置代理可显著提速" if slow else ""
         # v2.2.14：ETA——采样 3 秒后按平均速度估算剩余（起步阶段不显示，
         # 避免"剩余 3 小时"式惊吓；接近完成时也不显示，误差大）
         from app.fmt import eta_text
@@ -1547,7 +1626,7 @@ class MainWindow(QMainWindow):
             return
         self._engine_fallback_warn = (
             f"⚠ 在线翻译引擎不可达（{engine_desc}）：{reason}。"
-            "译文频繁出错请到「设置-通用」配置代理，或改用「自动」引擎")
+            "译文频繁出错请到「设置-翻译」配置代理，或改用「自动」引擎")
         if self.running:
             self._set_alert(self._engine_fallback_warn, error=True)
 
@@ -2145,8 +2224,9 @@ class MainWindow(QMainWindow):
         card.set_active(True)
         # v2.18.2（D-2）：此处第二次 overlay.show_pending(text) 已删除——
         # 面板占位统一在方法开头（同一 text 调两遍会让 dual 原文区重复拼接）
-        sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        if self._follow_bottom():
+            sb = self.scroll.verticalScrollBar()
+            sb.setValue(sb.maximum())
         if self._active_translate() is not None:   # v2.6.2（P1-4）：排水期解析
             self._submit_for_translation(text, detected)
 
@@ -2518,6 +2598,13 @@ class MainWindow(QMainWindow):
         has = self._has_cards()
         self.clear_button.setEnabled(has)
         self.export_button.setEnabled(has)
+        try:
+            self.overlay.set_session_has_content(has)   # v2.19.4：面板导出入口同步
+        except Exception:
+            pass
+        tip = "" if has else "暂无字幕，开始翻译后自动可用"
+        self.clear_button.setToolTip(tip or "清空当前会话的字幕记录")
+        self.export_button.setToolTip(tip or "把当前会话的双语字幕导出为文本文件")
 
     def _card_menu(self, card):
         menu = QMenu(self)
@@ -2703,9 +2790,10 @@ class MainWindow(QMainWindow):
                 self.overlay.dual_push_history(
                     combined_src or source_text,
                     translated or "")
-                self._dual_current = ""   # 数据清空：下一拍草稿从新句零起点合并
-        sb = self.scroll.verticalScrollBar()
-        sb.setValue(sb.maximum())
+                self._dual_current = ""   # v2.19.1：数据清空：下一拍草稿从新句零起点合并
+        if self._follow_bottom():
+            sb = self.scroll.verticalScrollBar()
+            sb.setValue(sb.maximum())
         evicted = []
         while self.scroll_layout.count() - 1 > self.config.get("max_history"):
             item = self.scroll_layout.takeAt(0)
