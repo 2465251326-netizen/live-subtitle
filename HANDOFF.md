@@ -937,4 +937,5 @@ UIA 点"开始翻译"→日志验证→每秒抓面板帧）**，t=20/t=40 帧�
 ### 28.5 套件与产物
 
 单元 **88** / 集成 **124** 全绿（+2 锁：QSS 禁 `#`、主窗跟底守卫）。发版 v2.19.4：bump → `--check` 一致 → CHANGELOG/本节 → 提交（含 `app/config.py`）→ push → tag → CI 双资产。
-临时产物（`%TEMP%`）：`ls_ux_walk.py`（真机逐屏截图走查，11 张，**下次 UX 巡检直接复用**）、`ls_qss_min.py`（QSS 注释行为最小实验）、`ls_qss_ab2.py`/`ls_qss_after.py`、`ls_ux_verify.py`、`ls_clip_check.py`、`ls_panel_look.py`、worktree `ls_wt_old`（挂在 v2.19.1，用完请 `git worktree remove`）。子代理探针在 `%TEMP%\ux_panel_probe*`、`ls_ux_audit\`。
+- **发布记录**：提交 `45959f9`（tag 对象 `f0c141d`），CI run `35340354968` completed/success，耗时 7m14s（近四版里最慢，增量落在 smoke 与 PyInstaller 段，趋势留意）；`Version check OK: tag v2.19.4 == 三处`、**UNIT: 88 tests PASS**、`SMOKE PASS (captions=3)`、EXE 存活 PID 984、ASR 基准 RTF=0.99；双资产 `LiveSubtitle-Setup-2.19.4.exe` 91,340,872 B（较上版 +1.7KB）/ `LiveSubtitle-2.19.4-portable.zip` 136,305,661 B（+4.7KB）。⚠ CI 只跑单元+smoke，本轮两把新锁与所有视觉改动**CI 侧无证据**，视觉结论只能靠本地真机逐屏（28.1 的两条教训即用在此）。
+临时产物（`%TEMP%`）：`ls_ux_walk.py`（真机逐屏截图走查，11 张，**下次 UX 巡检直接复用**）、`ls_qss_min.py`（QSS 注释行为最小实验）、`ls_qss_ab2.py`/`ls_qss_after.py`、`ls_ux_verify.py`、`ls_clip_check.py`、`ls_panel_look.py`、worktree `ls_wt_old`（挂在 v2.19.1 做 A/B，**已 `git worktree remove` 清理**）。子代理探针在 `%TEMP%\ux_panel_probe*`、`ls_ux_audit\`。
