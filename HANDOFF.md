@@ -1015,13 +1015,13 @@ dual 布局的长相在这一周里被裁决了三次：v2.14.0 加顶部历史�
   ⚠ 与历轮同样：CI 只跑单元 + smoke，本轮**布局改版的视觉结论全部来自本地真机逐屏**，CI 侧无证据；
   用户本机 `overlay_layout` 仍是 `list`，要看新双语形态需先在设置页或 ⋯ 菜单切过去。
 
-## 三十、会话快照（2026-09-18 深夜 双语两栏累积 + 贴边退役 + 常驻实时显示 · v2.20.1 待发版）
+## 三十、会话快照（2026-09-18/19 深夜 双语两栏累积 + 贴边退役 + 常驻实时显示 + 全面实测修复 · v2.20.1 已发布）
 
 ### 30.1 本轮性质：三条用户点名改动 + 两次我自造的事故
 
 用户在 v2.20.0 发布后连插三条需求（双语两栏累积+译文卡片样式、删贴边、面板常驻实时显示并删设置页启用开关），
-并明确"**我测试之后你再发布新版本**"。截至本节：代码/文案/锁全改完，单元 89 / 集成 124 全绿，
-**未提交未发版**（等用户验收）。
+最初明确"**我测试之后你再发布新版本**"；随后改为由我做全面实测并直接发版（原话见 30.6），
+最终态＝四条需求（含 30.7 的把手）+ 三处实测修复，单元 91 / 集成 126 全绿，**已发布**（见 30.8）。
 
 两次自造事故，都写死成规矩：
 
@@ -1145,3 +1145,20 @@ DW 网页直播 120s：n_reco=43、reco p50 0.41s / p95 0.72s、tr p50 0.12s / p
 热键/托盘/主窗按钮三条路径都改得动 `running`，自己翻就是谎报。位置放最左：窄面板下尾部按钮会被裁
 （v2.4.0 宽度主权归用户）。动作复用 `MainWindow.toggle_running`，与 `Ctrl+Alt+S`、托盘项同一个开关，
 **没有新增配置键**。锁 `t_panel_run_toggle_button`。套件：单元 **91** / 集成 **126**。
+
+### 30.8 v2.20.1 发布记录（2026-09-19 00:43）
+
+commit `7a0c53c`（main）→ tag `v2.20.1` → run **35369441584** `success`，16:36:09Z→16:43:25Z（**7m16s**）。
+版本一致性步骤过（`tag v2.20.1 == setup.iss / config.py / version_info.txt`）。日志标记行原样：
+`UNIT: 91 tests PASS`、`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`、
+`EXE is running OK (PID 5644)`。唯一非绿步骤＝`Prefetch whisper model` skipped（缓存命中）。
+Release 双资产齐：`LiveSubtitle-Setup-2.20.1.exe` **91,346,297 B**、
+`LiveSubtitle-2.20.1-portable.zip` **136,306,990 B**（https://github.com/2465251326-netizen/live-subtitle/releases/tag/v2.20.1）。
+
+⚠ **本轮核实出的 CI 缺口（下轮要么补上、要么别再拿它当集成层证据）**：
+`build.yml` 里唯一的测试步骤是第 73 行 `python tests/test_units.py`——**126 条集成锁从未在 CI 跑过**。
+`TOTAL:` 那行只在 `tests/test_integration.py` 末尾打印，没有任何 workflow 调用该文件。
+所以"CI 全绿"历来只代表**单元 + smoke**，集成层契约的判定依据只来自本地机器。
+真要接进 CI 得先解决两件事：① 套件里有真窗口 / `grabWindow` / 环回设备相关锁，Windows runner 上要给
+`QT_QPA_PLATFORM=offscreen` 并逐条筛掉需要真实音频设备的锁；② 它退出码天然不可信（v2.3.7/v2.3.8 定性的
+Qt 收尾 AV，见 `TerminateProcess` 那段注释），必须按 `TOTAL:` 标记行判定而不是 exit code。
