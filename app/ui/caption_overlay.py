@@ -1,5 +1,6 @@
 """v2.4.0 字幕面板（用户裁决：旧字幕条退役，工具条+历史滚动面板上位）。
 
+
 形态：深灰圆角不透明面板。顶部工具条 = 🌐目标语言▾ | 关闭原文 | Aa字号▾ |
 状态 | ↓最新 | 清空 | ⋯ | 📌 | 收起 | ✕；正文 = "原文(灰) + 译文(白加粗)"
 成对左对齐的历史滚动区，自动跟随最新，上滚暂停跟随（v2.4.3 起非跟随时
@@ -19,6 +20,8 @@
 主窗接口保持兼容：show_pending / show_pending_result / show_caption /
 clear_caption / set_status / apply_style(去描边参数)。
 """
+
+from app.i18n import ui_text
 
 from PySide6.QtCore import Qt, QPoint, QTimer, QSize, QEvent
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QFont
@@ -96,15 +99,15 @@ class CaptionOverlay(QWidget):
     RESIZE_EDGE = 14   # v2.4.1：右缘调宽命中带（10px 太窄且无光标反馈→普通人找不到）
     MAX_ROWS = 40
     MAX_DUAL_LINES = 40   # v2.20.1：dual 每栏逐句累积的上限（超出删最老，与列表同规格）
-    LANGS = [("zh-CN", "中文"), ("en", "英语"), ("ja", "日语"), ("ko", "韩语"),
-             ("fr", "法语"), ("de", "德语"), ("ru", "俄语"), ("es", "西班牙语")]
-    FONTS = [("小号", 16), ("中号", 22), ("大号", 30), ("特大", 40)]
+    LANGS = [("zh-CN", ui_text("中文")), ("en", ui_text("英语")), ("ja", ui_text("日语")), ("ko", ui_text("韩语")),
+             ("fr", ui_text("法语")), ("de", ui_text("德语")), ("ru", ui_text("俄语")), ("es", ui_text("西班牙语"))]
+    FONTS = [(ui_text("小号"), 16), (ui_text("中号"), 22), (ui_text("大号"), 30), (ui_text("特大"), 40)]
     # v2.4.3（B/D）：空状态占位。亮度压在 rgba(255,255,255,72)——混到深底上仍
     # <RGB(120,120,120)，不触碰 v2.4.2"空闲正文无浅灰块"像素回归锁的阈值
-    HINT_IDLE = "字幕将在这里逐句显示"
-    HINT_GUIDE = ("首次使用小抄：拖工具条移动面板 · 拖右缘改宽度\n"
+    HINT_IDLE = ui_text("字幕将在这里逐句显示")
+    HINT_GUIDE = (ui_text("首次使用小抄：拖工具条移动面板 · 拖右缘改宽度\n"
                   "拖底缘改高度 · 右键或 ⋯ 打开更多操作\n"
-                  "字幕将在这里逐句显示")
+                  "字幕将在这里逐句显示"))
 
     def __init__(self, on_closed=None, on_moved=None,
                  on_open_settings=None, on_toggle_source=None,
@@ -209,18 +212,18 @@ class CaptionOverlay(QWidget):
 
         self._lang_btn = QToolButton()
         self._lang_btn.setPopupMode(QToolButton.InstantPopup)
-        self._lang_btn.setToolTip("翻译目标语言")
+        self._lang_btn.setToolTip(ui_text("翻译目标语言"))
         self._lang_btn.setMenu(self._build_lang_menu())
         bl.addWidget(self._lang_btn)
 
         self._src_btn = QToolButton()
         self._src_btn.clicked.connect(self._toggle_src)
-        self._src_btn.setToolTip("切换：只看译文 / 译文+原文")
+        self._src_btn.setToolTip(ui_text("切换：只看译文 / 译文+原文"))
         bl.addWidget(self._src_btn)
 
         self._font_btn = QToolButton()
         self._font_btn.setPopupMode(QToolButton.InstantPopup)
-        self._font_btn.setToolTip("面板字号")
+        self._font_btn.setToolTip(ui_text("面板字号"))
         self._font_btn.setMenu(self._build_font_menu())
         bl.addWidget(self._font_btn)
 
@@ -232,8 +235,8 @@ class CaptionOverlay(QWidget):
         bl.addWidget(self.status_lbl, 1)
 
         self._jump_btn = QToolButton()
-        self._jump_btn.setText("↓ 最新")
-        self._jump_btn.setToolTip("滚动到最新一条字幕")
+        self._jump_btn.setText(ui_text("↓ 最新"))
+        self._jump_btn.setToolTip(ui_text("滚动到最新一条字幕"))
         self._jump_btn.clicked.connect(self._scroll_bottom)
         self._jump_btn.hide()
         bl.addWidget(self._jump_btn)
@@ -241,14 +244,14 @@ class CaptionOverlay(QWidget):
         # v2.4.3（A）：一键清空面板历史（⋯/右键菜单同源"清空面板字幕"）；
         # 只动面板行，不碰主窗历史与 SRT 导出
         self._clear_btn = QToolButton()
-        self._clear_btn.setText("清空")
-        self._clear_btn.setToolTip("清空面板字幕（主窗历史与导出不受影响）")
+        self._clear_btn.setText(ui_text("清空"))
+        self._clear_btn.setToolTip(ui_text("清空面板字幕（主窗历史与导出不受影响）"))
         self._clear_btn.clicked.connect(self.clear_caption)
         bl.addWidget(self._clear_btn)
 
         self._more_btn = QToolButton()
         self._more_btn.setText("⋯")
-        self._more_btn.setToolTip("更多操作（导出、置顶、透明度、攒句等）")
+        self._more_btn.setToolTip(ui_text("更多操作（导出、置顶、透明度、攒句等）"))
         self._more_btn.clicked.connect(self._show_more_menu)
         bl.addWidget(self._more_btn)
 
@@ -257,7 +260,7 @@ class CaptionOverlay(QWidget):
         self._pin_btn = QToolButton()
         self._pin_btn.setText("📌")
         self._pin_btn.setCheckable(True)
-        self._pin_btn.setToolTip("置顶显示：开 = 面板始终浮在其他窗口之上")
+        self._pin_btn.setToolTip(ui_text("置顶显示：开 = 面板始终浮在其他窗口之上"))
         self._pin_btn.clicked.connect(self._toggle_pin)
         bl.addWidget(self._pin_btn)
 
@@ -267,7 +270,7 @@ class CaptionOverlay(QWidget):
         self._close_btn = QToolButton()
         self._close_btn.setText("✕")
         self._close_btn.setObjectName("PanelClose")
-        self._close_btn.setToolTip("隐藏面板（热键或托盘右键「显隐字幕面板」再显示；下次启动自动显示）")
+        self._close_btn.setToolTip(ui_text("隐藏面板（热键或托盘右键「显隐字幕面板」再显示；下次启动自动显示）"))
         self._close_btn.clicked.connect(self._request_close)
         bl.addWidget(self._close_btn)
         outer.addWidget(self._bar)
@@ -582,7 +585,7 @@ class CaptionOverlay(QWidget):
             return
         # v2.7.5（R-4）：_pending_row 死变量移除——T1 多待决并存后匹配走
         # _find_pending（按原文精确/后缀），单槽指针已无读方
-        self._add_row(source_text, "⟳ 翻译中…", True)   # v2.20.3：此刻原文已经出来了，在等的是翻译——写"识别中"会让人# 去查麦克风
+        self._add_row(source_text, ui_text("⟳ 翻译中…"), True)   # v2.20.3：此刻原文已经出来了，在等的是翻译——写"识别中"会让人# 去查麦克风
 
     def show_pending_result(self, source_text, target_text, show_source=True,
                             merged_from=None):
@@ -1187,7 +1190,7 @@ class CaptionOverlay(QWidget):
 
     def _sync_unread_btn(self):
         n = self._unread
-        self._jump_btn.setText(f"↓ 最新 {n}" if n else "↓ 最新")
+        self._jump_btn.setText(f"{ui_text('↓ 最新 ')}{n}" if n else ui_text("↓ 最新"))
         self._jump_btn.setStyleSheet("color: #ff8f8f;" if n else "color: #cfd6e4;")
 
     def set_status(self, text, is_error=False):
@@ -1374,7 +1377,7 @@ class CaptionOverlay(QWidget):
 
     def _sync_bar_texts(self):
         # 文案从紧（520px 实测：长文案挤没 ⋯/收起/✕）
-        self._src_btn.setText("原文 开" if self._show_source else "原文 关")
+        self._src_btn.setText(ui_text("原文 开") if self._show_source else ui_text("原文 关"))
         self._font_btn.setText(f"Aa {self._font_size} ▾")
         lang = dict(self.LANGS).get(self._target_lang, self._target_lang)
         self._lang_btn.setText(f"🌐 {lang}")
@@ -1401,12 +1404,12 @@ class CaptionOverlay(QWidget):
     def set_running(self, on):
         """同步运行态显示（主窗 update_overlay_status 是唯一调用方）。"""
         self._running = bool(on)
-        self._run_btn.setText("⏸ 暂停" if self._running else "▶ 开始")
+        self._run_btn.setText(ui_text("⏸ 暂停") if self._running else ui_text("▶ 开始"))
         self._run_btn.setStyleSheet(
             "color: #8fd18a;" if self._running else "color: #ffc46b;")
         self._run_btn.setToolTip(
-            ("停止翻译（运行中）" if self._running else "开始翻译（已停止）")
-            + " · 与全局热键、托盘菜单同一个开关")
+            (ui_text("停止翻译（运行中）") if self._running else ui_text("开始翻译（已停止）"))
+            + ui_text(" · 与全局热键、托盘菜单同一个开关"))
 
     def set_show_source(self, on):
         """外部（设置页/回调）同步原文开关的显示态。"""
@@ -1448,7 +1451,7 @@ class CaptionOverlay(QWidget):
         # v2.19.4：首行写真实字号——四档（16/22/30/40）只是"快捷档"，滚轮与
         # 设置页能落在档外的值（18/19/44…），旧菜单在这种值下要么双勾要么无勾，
         # 用户看不出自己现在到底多大。
-        hdr = m.addAction("当前字号 %dpx" % int(self._font_size))
+        hdr = m.addAction(ui_text("当前字号 %dpx") % int(self._font_size))
         hdr.setEnabled(False)
         self._font_header = hdr
         for name, px in self.FONTS:
@@ -1475,7 +1478,7 @@ class CaptionOverlay(QWidget):
             a.setChecked(px == nearest)
         hdr = getattr(self, "_font_header", None)
         if hdr is not None:
-            hdr.setText("当前字号 %dpx" % int(self._font_size))
+            hdr.setText(ui_text("当前字号 %dpx") % int(self._font_size))
 
     def _pick_font(self, px):
         if self._on_font_size:
@@ -1501,20 +1504,20 @@ class CaptionOverlay(QWidget):
                 self._mini_src.setVisible(bool(src))
                 self._mini_tgt.setText(
                     self._dual_tgt.text()
-                    if not self._dual_tgt.property("empty") else "⟳ 识别中…")
+                    if not self._dual_tgt.property("empty") else ui_text("⟳ 识别中…"))
             else:
                 self._mini_src.setVisible(False)
-                self._mini_tgt.setText("暂无字幕 · 单击展开")
+                self._mini_tgt.setText(ui_text("暂无字幕 · 单击展开"))
             return
         if self._rows:
             it = self._rows[-1]
             src = it["src_text"] if self._show_source else ""
             self._mini_src.setText(src)
             self._mini_src.setVisible(bool(src))
-            self._mini_tgt.setText(it["tgt_text"] or "⟳ 识别中…")
+            self._mini_tgt.setText(it["tgt_text"] or ui_text("⟳ 识别中…"))
         else:
             self._mini_src.setVisible(False)
-            self._mini_tgt.setText("暂无字幕 · 单击展开")
+            self._mini_tgt.setText(ui_text("暂无字幕 · 单击展开"))
 
     def set_user_height(self, h):
         """v2.5.3：手动高度入口（主窗配置恢复/恢复自动传 0）。"""
@@ -2005,17 +2008,17 @@ class CaptionOverlay(QWidget):
     def _build_menu(self):
         menu = QMenu(self)
         acts = {}
-        acts["settings"] = menu.addAction("打开设置…")
-        acts["source"] = menu.addAction("切换输入来源")
+        acts["settings"] = menu.addAction(ui_text("打开设置…"))
+        acts["source"] = menu.addAction(ui_text("切换输入来源"))
         # v2.11.0：面板布局快捷切换（与设置页「面板布局」同源落盘，主窗回调）
         acts["layout"] = menu.addAction(
-            "切换为列表历史布局" if self._layout_mode == "dual"
-            else "切换为上下双语布局（豆包风）")
+            ui_text("切换为列表历史布局") if self._layout_mode == "dual"
+            else ui_text("切换为上下双语布局（豆包风）"))
         # v2.20.0（用户点名）：攒句开关上面板。此前这个能力只藏在
         # 「设置-识别与翻译」的一堆勾选里，想从"整句连贯译文"临时切到
         # "逐片实时译文"必须开设置页→翻页→保存三步，而它和布局/字号一样
         # 属于"看着字幕效果想立刻试一下"的观感开关
-        acts["grouping"] = menu.addAction("攒句合并（整句翻译，译文更连贯）")
+        acts["grouping"] = menu.addAction(ui_text("攒句合并（整句翻译，译文更连贯）"))
         acts["grouping"].setCheckable(True)
         acts["grouping"].setChecked(self._grouping)
         # v2.20.3：迷你条入口回归。`_collapse_btn` 自 e94cb59「R7 体验修复批次」
@@ -2024,22 +2027,22 @@ class CaptionOverlay(QWidget):
         # 而 README 还在教"工具条 ⌄ 可把面板收成一条精简字幕行"。工具条已 8 颗按钮、
         # 窄板会裁字，故入口放这里，不塞回工具条。
         acts["collapse"] = menu.addAction(
-            "展开为完整面板" if self._collapsed else "收起为迷你条（只显示最新一句）")
+            ui_text("展开为完整面板") if self._collapsed else ui_text("收起为迷你条（只显示最新一句）"))
         menu.addSeparator()
-        acts["copy"] = menu.addAction("复制最近一句")
-        acts["fix_asr"] = menu.addAction("纠正最近识别…")
-        acts["fix_tr"] = menu.addAction("纠正最近译文…")
-        acts["export"] = menu.addAction("导出 SRT…")
+        acts["copy"] = menu.addAction(ui_text("复制最近一句"))
+        acts["fix_asr"] = menu.addAction(ui_text("纠正最近识别…"))
+        acts["fix_tr"] = menu.addAction(ui_text("纠正最近译文…"))
+        acts["export"] = menu.addAction(ui_text("导出 SRT…"))
         acts["export"].setEnabled(getattr(self, "_session_has", True))
-        acts["clear"] = menu.addAction("清空面板字幕")   # v2.4.3（A）：与工具条清空同源
+        acts["clear"] = menu.addAction(ui_text("清空面板字幕"))   # v2.4.3（A）：与工具条清空同源
         menu.addSeparator()
-        acts["pin"] = menu.addAction("置顶显示")
+        acts["pin"] = menu.addAction(ui_text("置顶显示"))
         acts["pin"].setCheckable(True)
         acts["pin"].setChecked(self._pinned)
         # v2.20.1（用户点名）：「贴到屏幕顶部/底部/左侧/右侧」四项已删除
         # （连同双击贴边、松手磁吸一起，贴边能力整族退役）
         # v2.5.0：透明度常用档直调（滚轮 Ctrl+Shift 的菜单版；细调仍走设置页）
-        op_menu = menu.addMenu("背景透明度")
+        op_menu = menu.addMenu(ui_text("背景透明度"))
         cur_op = alpha_to_opacity(self._bg_alpha)
         for val in (60, 75, 85, 92, 100):
             a = op_menu.addAction(f"{val}%")
@@ -2047,11 +2050,11 @@ class CaptionOverlay(QWidget):
             a.setChecked(cur_op == val)
             a.triggered.connect(lambda _c=False, v=val: self._apply_opacity(v))
         # v2.5.3：手动高度恢复入口（拖底缘拉长后可回到自动贴内容）
-        act_auto_h = menu.addAction("恢复自动高度")
+        act_auto_h = menu.addAction(ui_text("恢复自动高度"))
         act_auto_h.setEnabled(bool(self._user_height))
         act_auto_h.triggered.connect(lambda _c=False: self._reset_user_height())
         menu.addSeparator()
-        acts["hide"] = menu.addAction("隐藏字幕面板")
+        acts["hide"] = menu.addAction(ui_text("隐藏字幕面板"))
         src, tgt = self._last_result
         acts["copy"].setEnabled(bool(src.strip() or tgt.strip()))
         acts["fix_asr"].setEnabled(bool(src.strip()))

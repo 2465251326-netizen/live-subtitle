@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 import requests
 
 from app.config import CONFIG_DIR
+from app.i18n import ui_text
+
 from app import net
 from app import log as app_log
 
@@ -82,7 +84,7 @@ def fetch_index(timeout=8, use_cache=True):
                 return packs
         except Exception as e:
             last_err = e
-    raise RuntimeError(f"语言包索引获取失败: {last_err}")
+    raise RuntimeError(f"{ui_text('语言包索引获取失败: ')}{last_err}")
 
 
 def _pack_dir(pair_code):
@@ -199,7 +201,7 @@ def _extract_pack(model_path: Path, dest: Path):
         # 前缀过滤会排除所有文件，解压出空目录但仍报"安装成功"
         inner_root = names[0].split("/")[0]
         if not any(n.startswith(inner_root + "/") and n != inner_root + "/" for n in names):
-            raise RuntimeError("语言包结构异常：缺少模型目录，文件可能已损坏")
+            raise RuntimeError(ui_text("语言包结构异常：缺少模型目录，文件可能已损坏"))
         tmp = dest.with_suffix(".extracting")
         if tmp.exists():
             shutil.rmtree(tmp)
@@ -271,7 +273,7 @@ def _download_stream(url, tmp_path, progress_cb=None):
                     pct = int(done * 100 / total)
                     progress_cb(min(pct, 100))
     if total and tmp_path.stat().st_size != total:
-        raise RuntimeError("下载不完整，请重试")
+        raise RuntimeError(ui_text("下载不完整，请重试"))
 
 
 def install_pack(pack: PackInfo, progress_cb=None):
@@ -427,7 +429,7 @@ class PackTranslator:
                         chars=len(text))
             out = self._decode_chunk(tokens, try_beam)
         if out.count(",") > max(3, len(out) * 0.3) and len(out) > len(text):
-            raise RuntimeError("离线翻译输出异常，请重试或切换在线引擎")
+            raise RuntimeError(ui_text("离线翻译输出异常，请重试或切换在线引擎"))
         return out
 
     def _decode_chunk(self, tokens, beam_size):
@@ -496,5 +498,5 @@ def _get_translator(source, target):
 def translate(text, source, target, beam_size=2):
     tr = _get_translator(source, target)
     if tr is None:
-        raise RuntimeError(f"离线语言包缺失: {source}->{target}，请先在侧栏下载语言包")
+        raise RuntimeError(f"{ui_text('离线语言包缺失: ')}{source}->{target}{ui_text('，请先在侧栏下载语言包')}")
     return tr.translate(text, beam_size=beam_size)

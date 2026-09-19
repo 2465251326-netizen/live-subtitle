@@ -2,9 +2,9 @@
 """界面语言（i18n）：**中文原文即 key**。
 
 为什么用原文当 key 而不是人造 key 表：本仓库界面文案有 800 余条且一直在改，
-`tr("攒句合并")` 这种写法在源码里就能读懂，漏译时缺的是词典一行而不是一个查不到的 key。
+`ui_text("攒句合并")` 这种写法在源码里就能读懂，漏译时缺的是词典一行而不是一个查不到的 key。
 
-兼容底座：`ui_language` 默认 `"zh"`，此时 `tr()` 原样返回入参。所以既有那两百多项
+兼容底座：`ui_language` 默认 `"zh"`，此时 `ui_text()` 原样返回入参。所以既有那两百多项
 按中文断言的测试仍然是有效回归证明——默认态一字不变，改了才会红。
 
 英文词典在 `app/locales/en.py`。`tests/test_units.py` 里有一道完整性锁：扫描 UI 源码
@@ -72,7 +72,7 @@ def reload_catalog():
     return catalog()
 
 
-def tr(text):
+def ui_text(text):
     if not isinstance(text, str) or not text:
         return text
     if _LANG == "zh":

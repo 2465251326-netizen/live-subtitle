@@ -10,14 +10,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.styles import SETTING_QSS
+from app.i18n import ui_text
+
 
 MODEL_INFO = [
-    ("tiny", "tiny · 极速", "75MB · 延迟约 2s · 中文易误判，适合纯英文内容"),
-    ("base", "base · 流畅", "145MB · 延迟约 2.5s · 中文较弱"),
-    ("small", "small · 推荐", "480MB · 延迟约 3s · 中文良好，4 核以上 CPU 流畅实时"),
-    ("medium", "medium · 高精度", "1.5GB · 延迟约 6s · 需高配 CPU 或 GPU"),
+    ("tiny", ui_text("tiny · 极速"), ui_text("75MB · 延迟约 2s · 中文易误判，适合纯英文内容")),
+    ("base", ui_text("base · 流畅"), ui_text("145MB · 延迟约 2.5s · 中文较弱")),
+    ("small", ui_text("small · 推荐"), ui_text("480MB · 延迟约 3s · 中文良好，4 核以上 CPU 流畅实时")),
+    ("medium", ui_text("medium · 高精度"), ui_text("1.5GB · 延迟约 6s · 需高配 CPU 或 GPU")),
     # v2.0.3：与设置页同步（此前向导缺此模型，已选该模型时向导会静默降级成 small）
-    ("large-v3-turbo", "large-v3-turbo · 顶级", "约 1.6GB · 需 GPU 或高配 CPU"),
+    ("large-v3-turbo", ui_text("large-v3-turbo · 顶级"), ui_text("约 1.6GB · 需 GPU 或高配 CPU")),
 ]
 
 
@@ -25,7 +27,7 @@ class FirstRunWizard(QDialog):
     def __init__(self, main, parent=None):
         super().__init__(parent or main)
         self.main = main
-        self.setWindowTitle("欢迎使用 LiveSubtitle")
+        self.setWindowTitle(ui_text("欢迎使用 LiveSubtitle"))
         self.setModal(True)
         self.resize(560, 440)
         self.setStyleSheet(SETTING_QSS)
@@ -34,10 +36,10 @@ class FirstRunWizard(QDialog):
         v.setContentsMargins(28, 24, 28, 20)
         v.setSpacing(16)
 
-        self.title_label = QLabel("欢迎使用 LiveSubtitle")
+        self.title_label = QLabel(ui_text("欢迎使用 LiveSubtitle"))
         self.title_label.setObjectName("AboutAppName")
         v.addWidget(self.title_label)
-        self.step_hint = QLabel("第 1 步 / 共 3 步")
+        self.step_hint = QLabel(ui_text("第 1 步 / 共 3 步"))
         self.step_hint.setObjectName("SettingDesc")
         v.addWidget(self.step_hint)
 
@@ -49,9 +51,9 @@ class FirstRunWizard(QDialog):
         self.stack.addWidget(self._page_done())
 
         nav = QHBoxLayout()
-        self.back_button = QPushButton("上一步")
+        self.back_button = QPushButton(ui_text("上一步"))
         self.back_button.setObjectName("GhostButton")
-        self.next_button = QPushButton("下一步")
+        self.next_button = QPushButton(ui_text("下一步"))
         self.next_button.setObjectName("PrimaryButton")
         nav.addStretch()
         nav.addWidget(self.back_button)
@@ -69,16 +71,16 @@ class FirstRunWizard(QDialog):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setSpacing(10)
-        q = QLabel("你主要用哪种方式生成字幕？")
+        q = QLabel(ui_text("你主要用哪种方式生成字幕？"))
         q.setObjectName("SettingTitle")
         v.addWidget(q)
-        d = QLabel("看视频 / 听会议 → 选「系统声音」，直接抓取电脑播放的一切声音，无需任何声卡设置；\n"
-                   "翻译别人对你说话 → 选「麦克风」。之后可随时在设置里更改。")
+        d = QLabel(ui_text("看视频 / 听会议 → 选「系统声音」，直接抓取电脑播放的一切声音，无需任何声卡设置；\n"
+                   "翻译别人对你说话 → 选「麦克风」。之后可随时在设置里更改。"))
         d.setObjectName("SettingDesc")
         d.setWordWrap(True)
         v.addWidget(d)
-        self.radio_system = QRadioButton("🎧  系统声音（推荐）——网页视频 / 播放器 / 会议的声音")
-        self.radio_mic = QRadioButton("🎙  麦克风——采集外部人声")
+        self.radio_system = QRadioButton(ui_text("🎧  系统声音（推荐）——网页视频 / 播放器 / 会议的声音"))
+        self.radio_mic = QRadioButton(ui_text("🎙  麦克风——采集外部人声"))
         # v2.18.1：**回显当前配置**。旧实现恒勾「系统声音」，而 _finish 无条件
         # 把 radio 的选择写回 source_type——麦克风用户重跑向导一路点『完成』
         # 就被静默改回系统声音，与设置页"不会改动你的现有配置/默认项即当前
@@ -97,11 +99,11 @@ class FirstRunWizard(QDialog):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setSpacing(8)
-        q = QLabel("选择语音识别模型")
+        q = QLabel(ui_text("选择语音识别模型"))
         q.setObjectName("SettingTitle")
         v.addWidget(q)
-        d = QLabel("模型在本地运行，语音不出电脑。首次选择后自动下载（一次性），之后永久离线可用。\n"
-                   "中文内容建议 small；配置一般、只识别英文可先选 tiny/base。")
+        d = QLabel(ui_text("模型在本地运行，语音不出电脑。首次选择后自动下载（一次性），之后永久离线可用。\n"
+                   "中文内容建议 small；配置一般、只识别英文可先选 tiny/base。"))
         d.setObjectName("SettingDesc")
         d.setWordWrap(True)
         v.addWidget(d)
@@ -124,7 +126,7 @@ class FirstRunWizard(QDialog):
         if rec_code and not user_chosen:
             d.setText(d.text() + f"\n已根据你的硬件自动推荐：{rec_code}（{rec_reason}）")
         for code, title, desc in MODEL_INFO:
-            label = title + ("　⭐ 按你的硬件推荐" if code == rec_code else "")
+            label = title + (ui_text("　⭐ 按你的硬件推荐") if code == rec_code else "")
             rb = QRadioButton(f"{label}\n    {desc}")
             rb.setProperty("model_code", code)
             self.model_group.addButton(rb)
@@ -138,7 +140,7 @@ class FirstRunWizard(QDialog):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setSpacing(10)
-        q = QLabel("全部就绪！")
+        q = QLabel(ui_text("全部就绪！"))
         q.setObjectName("SettingTitle")
         v.addWidget(q)
         # v2.2.11：热键提示按用户实际配置动态生成——此前写死 Ctrl+Alt+O，
@@ -148,17 +150,17 @@ class FirstRunWizard(QDialog):
             # v2.20.2：v2.20.1 删掉了「启用字幕面板」勾选与 `overlay_enabled` 键
             # （面板改常驻实时显示），向导这两支文案一直在教一个不存在的控件——
             # 新用户的第一个动作就是去设置页找一个勾不上的东西。
-            ov_line = f"· 字幕面板：打开软件就在，任何界面按 {hk} 显隐；不显示时托盘右键「显隐字幕面板」也能唤回\n"
+            ov_line = f"{ui_text('· 字幕面板：打开软件就在，任何界面按 ')}{hk} 显隐；不显示时托盘右键「显隐字幕面板」也能唤回\n"
         else:
-            ov_line = ("· 字幕面板：打开软件即常驻显示；想临时藏一下走托盘右键菜单「显隐字幕面板」，"
+            ov_line = (ui_text("· 字幕面板：打开软件即常驻显示；想临时藏一下走托盘右键菜单「显隐字幕面板」，"
                        "显隐组合热键可在「设置-通用」开启并设置；是否压在其他窗口之上，"
-                       "用面板工具条的 📌 控制\n")
+                       "用面板工具条的 📌 控制\n"))
         tips = QLabel(
-            "· 点主窗口右上角「开始翻译」，播放视频即可看到字幕逐句出现\n"
-            "· 翻译目标语言、翻译引擎（含 Google 通道代理解锁）在「设置 → 翻译」\n"
+            ui_text("· 点主窗口右上角「开始翻译」，播放视频即可看到字幕逐句出现\n"
+            "· 翻译目标语言、翻译引擎（含 Google 通道代理解锁）在「设置 → 翻译」\n")
             + ov_line +
-            "· 有 NVIDIA 显卡可在「设置 → 语音识别」选择 GPU 加速\n\n"
-            "三分钟即可上手，遇到问题请查看「使用说明」。")
+            ui_text("· 有 NVIDIA 显卡可在「设置 → 语音识别」选择 GPU 加速\n\n"
+            "三分钟即可上手，遇到问题请查看「使用说明」。"))
         tips.setObjectName("SettingDesc")
         tips.setWordWrap(True)
         v.addWidget(tips)
@@ -169,9 +171,9 @@ class FirstRunWizard(QDialog):
 
     def _sync_nav(self):
         self.stack.setCurrentIndex(self._page)
-        self.step_hint.setText(f"第 {self._page + 1} 步 / 共 3 步")
+        self.step_hint.setText(f"{ui_text('第 ')}{self._page + 1}{ui_text(' 步 / 共 3 步')}")
         self.back_button.setEnabled(self._page > 0)
-        self.next_button.setText("完成" if self._page == 2 else "下一步")
+        self.next_button.setText(ui_text("完成") if self._page == 2 else ui_text("下一步"))
 
     def _go_back(self):
         if self._page > 0:

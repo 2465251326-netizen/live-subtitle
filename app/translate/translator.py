@@ -11,6 +11,8 @@ from PySide6.QtCore import QThread, Signal
 
 from app import config as _cfgmod
 from app.config import WHISPER_LANG_MAP
+from app.i18n import ui_text
+
 from app import net
 from app.errors import friendly_error
 from app import log as app_log
@@ -79,8 +81,8 @@ class TranslationCache:
                     except Exception:
                         pass
                     app_log.log("translate.cache_unreadable", path=str(f),
-                                err="顶层不是对象（%s）" % type(data).__name__,
-                                preserved=keep or "未留存（复制失败）")
+                                err=ui_text("顶层不是对象（%s）") % type(data).__name__,
+                                preserved=keep or ui_text("未留存（复制失败）"))
                 else:
                     self._data = data
         except Exception as e:
@@ -102,7 +104,7 @@ class TranslationCache:
                 pass
             app_log.log("translate.cache_unreadable", path=str(f),
                         err=f"{type(e).__name__}: {str(e)[:80]}",
-                        preserved=keep or "未留存（复制失败）")
+                        preserved=keep or ui_text("未留存（复制失败）"))
         # v2.7.4（C 级）：清理上次崩溃可能残留的 .json.tmp——缓存 tmp 没有
         # 读取侧兜底路径，不清就会永久占盘（config 侧同类残留有双路径清理）
         try:
@@ -218,13 +220,13 @@ class GoogleFree:
         列表逐字符拼接出乱译（本地单测实测暴露）。
         """
         if not isinstance(data, list) or not data:
-            raise ValueError("Google 响应为空")
+            raise ValueError(ui_text("Google 响应为空"))
         first = data[0]
         if isinstance(first, list) and first and isinstance(first[0], list):
             # single 结构：段列表
             out = "".join(seg[0] for seg in first if seg and seg[0])
             if not out:
-                raise ValueError("译文为空")
+                raise ValueError(ui_text("译文为空"))
             return out, (data[2] if len(data) > 2 and isinstance(data[2], str) else None)
         # clients5 /translate_a/t：[[译文, 检测语言], ...]，多句 q 会返回多行——
         # 全部拼接（此前只取 rows[0] 会截断丢失后续句子）
@@ -234,11 +236,11 @@ class GoogleFree:
         if rows and all(isinstance(r, list) and r and isinstance(r[0], str) for r in rows):
             out = "".join(r[0] for r in rows)
             if not out:
-                raise ValueError("译文为空")
+                raise ValueError(ui_text("译文为空"))
             det = next((r[1] for r in rows
                         if len(r) > 1 and isinstance(r[1], str)), None)
             return out, det
-        raise ValueError("Google 响应结构无法解析")
+        raise ValueError(ui_text("Google 响应结构无法解析"))
 
     @classmethod
     def translate(cls, text, source, target):
@@ -251,16 +253,16 @@ class GoogleFree:
                 r = _SESSION.get(url, params=params, headers=HEADERS, timeout=8,
                                  proxies=net.proxies())
                 if r.status_code == 429:
-                    last_err = RuntimeError("Google 接口限流(429)")
+                    last_err = RuntimeError(ui_text("Google 接口限流(429)"))
                     continue
                 r.raise_for_status()
                 out, detected = cls._parse(r.json())
                 return out, detected or (source or "auto")
             except RuntimeError:
-                last_err = RuntimeError("Google 接口限流(429)")
+                last_err = RuntimeError(ui_text("Google 接口限流(429)"))
             except Exception as e:
                 last_err = e
-        raise last_err or RuntimeError("Google 全部通道不可用")
+        raise last_err or RuntimeError(ui_text("Google 全部通道不可用"))
 
     @staticmethod
     def detect_lang(text):
@@ -273,7 +275,7 @@ class GoogleFree:
         except Exception as e:
             # v2.0.3：失败不再静默回 "en"——非英文文本会被按英文方向翻译出
             # 乱译且写入持久缓存放大；抛出让备援链接手
-            raise RuntimeError(f"语言检测失败: {e}") from e
+            raise RuntimeError(f"{ui_text('语言检测失败: ')}{e}") from e
 
 
 class MyMemory:
@@ -329,7 +331,7 @@ class MyMemory:
             # 此前警告被当译文上屏并写入持久缓存（整天命中坏缓存）
             if status not in ("", "200") or not txt.strip() or "MYMEMORY WARNING" in txt.upper():
                 raise RuntimeError(
-                    f"MyMemory 响应异常（status={status or '空译文'}），已切换备援")
+                    f"{ui_text('MyMemory 响应异常（status=')}{status or ui_text('空译文')}{ui_text('），已切换备援')}")
             out_parts.append(txt)
         return "".join(out_parts), source
 
@@ -365,7 +367,7 @@ class ArgosEngine:
 
         source = WHISPER_LANG_MAP.get(source, source)
         if not source:
-            raise RuntimeError("缺少源语言信息，无法定位离线语言包，请锁定识别语言或改用在线引擎")
+            raise RuntimeError(ui_text("缺少源语言信息，无法定位离线语言包，请锁定识别语言或改用在线引擎"))
         if source.startswith("zh"):
             source = "zh"
         target = "zh" if target.startswith("zh") else target
@@ -437,15 +439,15 @@ def probe_engine(name, timeout=2.5, src="", tgt=""):
             from .offline_pack import list_installed
             packs = list_installed()
             if not packs:
-                return False, "未安装任何离线语言包（设置-翻译-语言包下载）"
+                return False, ui_text("未安装任何离线语言包（设置-翻译-语言包下载）")
             s = str(src or "").split("-")[0]
             t = str(tgt or "")
             t = "zh" if t.startswith("zh") else t.split("-")[0]
             if s and t and s != "auto":
                 if any(fc == s and tc == t for fc, tc in packs):
-                    return True, f"离线包 {s}→{t} 可用"
-                return False, f"缺少 {s}→{t} 离线包（已装 {len(packs)} 个方向）"
-            return True, f"离线包可用（{len(packs)} 个方向）"
+                    return True, f"{ui_text('离线包 ')}{s}→{t}{ui_text(' 可用')}"
+                return False, f"{ui_text('缺少 ')}{s}→{t}{ui_text(' 离线包（已装 ')}{len(packs)}{ui_text(' 个方向）')}"
+            return True, f"{ui_text('离线包可用（')}{len(packs)}{ui_text(' 个方向）')}"
         if name == "google":
             t0 = time.time()
             r = _SESSION.get(
@@ -455,7 +457,7 @@ def probe_engine(name, timeout=2.5, src="", tgt=""):
             )
             ms = int((time.time() - t0) * 1000)
             if r.status_code == 429:
-                return False, "HTTP 429：出口 IP 被 Google 限流，请更换代理节点（期间自动使用备援引擎）"
+                return False, ui_text("HTTP 429：出口 IP 被 Google 限流，请更换代理节点（期间自动使用备援引擎）")
             if r.ok:
                 return True, f"HTTP 200（{ms}ms）"
             return False, f"HTTP {r.status_code}"
@@ -467,10 +469,10 @@ def probe_engine(name, timeout=2.5, src="", tgt=""):
             )
             if r.ok and r.json().get("responseData", {}).get("translatedText"):
                 return True, "OK"
-            return False, f"HTTP {r.status_code}（响应异常）"
+            return False, f"HTTP {r.status_code}{ui_text('（响应异常）')}"
     except Exception as e:
         return False, f"{type(e).__name__}: {str(e)[:80]}"
-    return False, "未知引擎"
+    return False, ui_text("未知引擎")
 
 
 def select_engine_ex(timeout=2.5, src="", tgt=""):
@@ -675,7 +677,7 @@ class TranslateThread(QThread):
         if ok:
             app_log.log("translate.primary_recovered", engine=self._primary_engine)
             self.primary_recovered.emit()   # 先于状态文本：见信号声明处
-            self.status_changed.emit(f"主引擎 {self._primary_engine} 已恢复，自动切回")
+            self.status_changed.emit(f"{ui_text('主引擎 ')}{self._primary_engine}{ui_text(' 已恢复，自动切回')}")
             self._active_engine = self._primary_engine
 
     def _preload_argos(self):
@@ -701,12 +703,12 @@ class TranslateThread(QThread):
     def run(self):
         self._active_engine = self.engine_name
         if self.engine_name == "auto":
-            self.status_changed.emit("正在探测可用翻译引擎...")
+            self.status_changed.emit(ui_text("正在探测可用翻译引擎..."))
             self._active_engine, fails = select_engine_ex(
                 src=str(getattr(self, "expected_src", "") or ""), tgt=str(self.target or ""))
-            self.status_changed.emit(f"已选用翻译引擎: {self._active_engine}")
+            self.status_changed.emit(f"{ui_text('已选用翻译引擎: ')}{self._active_engine}")
             if fails:  # G2：主引擎不可达，事前横幅（携带具体失败原因）
-                self.engine_fallback.emit(f"Google 未通过，已选 {self._active_engine}",
+                self.engine_fallback.emit(f"{ui_text('Google 未通过，已选 ')}{self._active_engine}",
                                           "；".join(fails))
         elif self.engine_name in ("google", "mymemory"):
             # G2：用户显式指定在线引擎——启动即探测一次，不可达先告知，
@@ -815,7 +817,7 @@ class TranslateThread(QThread):
                             pass
                 for fb in fallbacks:
                     try:
-                        self.status_changed.emit(f"{self._active_engine} 失败，切换备援引擎 {fb}...")
+                        self.status_changed.emit(f"{self._active_engine}{ui_text(' 失败，切换备援引擎 ')}{fb}...")
                         src = None
                         if fb != "google" and detected and detected != "auto":
                             src = WHISPER_LANG_MAP.get(detected, detected)
@@ -826,7 +828,7 @@ class TranslateThread(QThread):
                         translated = unescape_html(translated)
                         used_engine = fb
                         self._active_engine = fb
-                        self.status_changed.emit(f"本次会话已固定使用备援引擎 {fb}")
+                        self.status_changed.emit(f"{ui_text('本次会话已固定使用备援引擎 ')}{fb}")
                         error = ""
                         # v2.0.4：key 与 _do_translate 统一（含源语言维度）——
                         # 此前缺 norm_src 段与读取侧永不匹配，备援译文

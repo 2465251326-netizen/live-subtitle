@@ -1,5 +1,6 @@
 """v2.12.0 流式原文预览通道（dual 布局的"实时不能停"核心）。
 
+
 背景：正式识别按分段节奏出文本（连续语流下=分段上限周期，默认 4s）——
 dual 原文区若只靠它刷新，就是"停 4 秒蹦一段"，完全不实时（用户三连
 "必须实时不能停"）。本通道用**滑动窗口重识别**补上实时性：
@@ -16,6 +17,8 @@ dual 原文区若只靠它刷新，就是"停 4 秒蹦一段"，完全不实时�
 - 仅 dual 布局 + GPU（cuda）时启用：CPU 上 4s 音频一次推理要数秒，
   预览通道反而拖垮正式识别（启用闸门在主窗）。
 """
+
+from app.i18n import ui_text
 
 from collections import deque
 
@@ -123,7 +126,7 @@ class StreamPreview(QThread):
                         app_log.log("preview.degraded",
                                     consecutive=self._fail_streak,
                                     language=self._lang or "auto-detect",
-                                    hint="流式原文连续失败，通道可能整体不可用",
+                                    hint=ui_text("流式原文连续失败，通道可能整体不可用"),
                                     err=str(e)[:120])
                 except Exception:
                     pass

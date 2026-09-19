@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import Config
-from app.i18n import tr
+from app.i18n import ui_text
 from app.audio.capture import CaptureThread
 from app.asr.engine import AsrThread
 from app.asr.preview import StreamPreview
@@ -60,7 +60,7 @@ def icon_path():
 # v2.20.6（i18n）：卡片"译文未落地"的内部标记。这三个串**不参与界面翻译**——
 # 它们同时是显示文本和判据（右键可用性、导出过滤、待决队列），一旦按语言翻译掉，
 # 散在各处的 ==/in 判断会同时失灵，导出又会把失败卡混进去（v2.20.4 刚修过的老问题）。
-# 规则：比较一律走 `_is_untranslated()`，只有写进 QLabel 的那一刻才过 tr()。
+# 规则：比较一律走 `_is_untranslated()`，只有写进 QLabel 的那一刻才过 ui_text()。
 TEXT_PENDING = "..."
 TEXT_PENDING_STREAM = "⟳ …"
 TEXT_FAILED = "[翻译失败]"
@@ -71,7 +71,7 @@ _UNTRANSLATED = _PENDING + (TEXT_FAILED,)
 def _is_one_of(target, marks):
     """既认原始形态，也认按当前界面语言显示后的形态——比较点因此与 tr()
     的调用时机无关（模块导入早于语言初始化也不会错位）。"""
-    return target in marks or target in tuple(tr(m) for m in marks)
+    return target in marks or target in tuple(ui_text(m) for m in marks)
 
 
 def _is_untranslated(target):
@@ -103,7 +103,7 @@ class CaptionCard(QFrame):
         self.source_label.setObjectName("CaptionSource")
         self.source_label.setWordWrap(True)
         self.source_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.target_label = QLabel(tr(TEXT_PENDING))
+        self.target_label = QLabel(ui_text(TEXT_PENDING))
         self.target_label.setObjectName("CaptionTarget")
         self.target_label.setWordWrap(True)
         self.target_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -129,8 +129,8 @@ class CaptionCard(QFrame):
         if translated:
             self.target_label.setText(translated)
         else:
-            self.target_label.setText(tr(TEXT_FAILED))
-        note = f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} · 引擎: {engine}"
+            self.target_label.setText(ui_text(TEXT_FAILED))
+        note = f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'}{ui_text(' · 引擎: ')}{engine}"
         self.meta_label.setText(note)
         self.source_label.setStyleSheet("")   # v2.3.17（P22）撤下占位弱化色
         self.source_label.setVisible(show_source)
@@ -148,7 +148,7 @@ class CaptionCard(QFrame):
         self.source_label.setVisible(show_source)
         self.meta_label.setText(
             f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} · "
-            f"引擎: {engine} · 攒句中")
+            f"引擎: {engine}{ui_text(' · 攒句中')}")
 
     def finalize_spec(self):
         """v2.7.6（A）：停止/收尾时把推测中间版就地终态化。
@@ -160,7 +160,7 @@ class CaptionCard(QFrame):
             return False
         self.spec = False
         self.meta_label.setText(
-            f"{datetime.now().strftime('%H:%M:%S')} · 已停止 · 译文可能不完整")
+            f"{datetime.now().strftime('%H:%M:%S')}{ui_text(' · 已停止 · 译文可能不完整')}")
         return True
 
     def is_pending(self):
@@ -192,7 +192,7 @@ class CaptionCard(QFrame):
             menu.deleteLater()
 
     def set_failed(self, msg):
-        self.target_label.setText(tr(TEXT_FAILED))
+        self.target_label.setText(ui_text(TEXT_FAILED))
         self.meta_label.setText(f"{datetime.now().strftime('%H:%M:%S')} · {msg}")
 
     def set_merged_away(self):
@@ -381,7 +381,7 @@ class MainWindow(QMainWindow):
         self.session_count = 0
         # v2.20.3：被 max_history 淘汰的卡片文本留在台账里供导出（见 export_row）
         self._export_ledger = []
-        self.setWindowTitle("LiveSubtitle · 实时字幕翻译")
+        self.setWindowTitle(ui_text("LiveSubtitle · 实时字幕翻译"))
         self.resize(1150, 760)
         self.setStyleSheet(DARK_QSS)
         self._build_ui()
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("LiveSubtitle")
         title.setObjectName("HeaderTitle")
-        subtitle = QLabel("实时语音识别 · 自动语言检测 · 多语翻译（在线 / 离线）")
+        subtitle = QLabel(ui_text("实时语音识别 · 自动语言检测 · 多语翻译（在线 / 离线）"))
         subtitle.setObjectName("HeaderSub")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -452,28 +452,28 @@ class MainWindow(QMainWindow):
         self.status_dot.setObjectName("StatusDot")
         self.status_dot.setFixedSize(14, 14)
         self.status_dot.setAlignment(Qt.AlignCenter)
-        self.status_dot.setToolTip("未启动：点击「开始翻译」开始")
-        self.status_text = QLabel("未启动")
+        self.status_dot.setToolTip(ui_text("未启动：点击「开始翻译」开始"))
+        self.status_text = QLabel(ui_text("未启动"))
         self.status_text.setObjectName("HeaderSub")
         header.addWidget(self.status_dot)
         header.addWidget(self.status_text)
 
-        self.help_button = QPushButton("使用说明")
+        self.help_button = QPushButton(ui_text("使用说明"))
         self.help_button.setObjectName("GhostButton")
         self.help_button.setCursor(Qt.PointingHandCursor)
-        self.help_button.setToolTip("打开浏览器查看详细使用说明")
+        self.help_button.setToolTip(ui_text("打开浏览器查看详细使用说明"))
         self.help_button.clicked.connect(self._open_docs)
         header.addWidget(self.help_button)
 
-        self.settings_button = QPushButton("设置")
+        self.settings_button = QPushButton(ui_text("设置"))
         self.settings_button.setObjectName("GhostButton")
         self.settings_button.setCursor(Qt.PointingHandCursor)
         self.settings_button.setFixedWidth(64)
-        self.settings_button.setToolTip("打开设置窗口")
+        self.settings_button.setToolTip(ui_text("打开设置窗口"))
         self.settings_button.clicked.connect(self._open_settings)
         header.addWidget(self.settings_button)
 
-        self.toggle_button = QPushButton("开始翻译")
+        self.toggle_button = QPushButton(ui_text("开始翻译"))
         self.toggle_button.setObjectName("PrimaryButton")
         self.toggle_button.setCursor(Qt.PointingHandCursor)
         self.toggle_button.clicked.connect(self.toggle_running)
@@ -503,8 +503,8 @@ class MainWindow(QMainWindow):
             lambda _mn, _mx: self._settle_bottom())
 
         self.empty_hint = QLabel(
-            "点击右上角「开始翻译」\n\n播放任意视频或说话，字幕将实时出现在这里\n\n"
-            "系统声音模式可直接抓取网页视频 / 播放器 / 会议的声音"
+            ui_text("点击右上角「开始翻译」\n\n播放任意视频或说话，字幕将实时出现在这里\n\n"
+            "系统声音模式可直接抓取网页视频 / 播放器 / 会议的声音")
         )
         self.empty_hint.setObjectName("EmptyHint")
         self.empty_hint.setAlignment(Qt.AlignCenter)
@@ -518,7 +518,7 @@ class MainWindow(QMainWindow):
         qv = QVBoxLayout(self._quick)
         qv.setContentsMargins(18, 14, 18, 14)
         qv.setSpacing(8)
-        qtitle = QLabel("当前配置")
+        qtitle = QLabel(ui_text("当前配置"))
         qtitle.setObjectName("PanelTitle")
         qv.addWidget(qtitle)
         qgrid = _QGrid()
@@ -527,9 +527,9 @@ class MainWindow(QMainWindow):
         self._quick_labels = {}
         # v2.20.6：行名与显示文案解耦——此前中文字面量同时充当 `_quick_labels` 的
         # 键和 QLabel 显示文字，一旦显示文字走 i18n，按键回查就 KeyError。
-        for i, (lkey, title) in enumerate((("model", "识别模型"),
-                                           ("engine", "翻译引擎"),
-                                           ("source", "音频来源"))):
+        for i, (lkey, title) in enumerate((("model", ui_text("识别模型")),
+                                           ("engine", ui_text("翻译引擎")),
+                                           ("source", ui_text("音频来源")))):
             k = QLabel(title)
             k.setObjectName("PanelTitle")
             k.setMinimumHeight(18)  # v2.2.9：行高按字体下限给足，不裁字
@@ -544,7 +544,7 @@ class MainWindow(QMainWindow):
             qgrid.addWidget(v, i, 1, Qt.AlignTop)
         # v2.3.2（G1）：悬浮字幕条状态行——用户关了悬浮条后软件从不提醒，
         # "关了都忘了"是模拟用户报告的真实痛点；空页面仪表盘常驻显示状态与开启方法
-        ov_key = QLabel("字幕面板")
+        ov_key = QLabel(ui_text("字幕面板"))
         ov_key.setObjectName("PanelTitle")
         ov_key.setMinimumHeight(18)
         ov_val = QLabel("—")
@@ -557,7 +557,7 @@ class MainWindow(QMainWindow):
         # 而 word-wrap 标签的换行高度不通知父布局，卡片高度冻结导致第二行
         # 被提示行压住（v2.2.9 的 adjustSize 修复实际从未生效）。两行短文本
         # 永不换行，从结构上消除该问题；"热键"键名跨两行居左对齐。
-        hk_key = QLabel("热键")
+        hk_key = QLabel(ui_text("热键"))
         hk_key.setObjectName("PanelTitle")
         hk_key.setMinimumHeight(18)
         qgrid.addWidget(hk_key, 4, 0, 2, 1, Qt.AlignTop | Qt.AlignLeft)
@@ -568,8 +568,8 @@ class MainWindow(QMainWindow):
             self._quick_labels[lkey] = v
             qgrid.addWidget(v, r, 1, Qt.AlignTop)
         qv.addLayout(qgrid)
-        qtip = QLabel("提示：托盘图标右键可显隐字幕面板、快速切换输入来源；"
-                     "热键可在「设置-通用」修改")
+        qtip = QLabel(ui_text("提示：托盘图标右键可显隐字幕面板、快速切换输入来源；"
+                     "热键可在「设置-通用」修改"))
         qtip.setObjectName("SettingDesc")
         qtip.setAlignment(Qt.AlignCenter)
         qtip.setWordWrap(True)  # v2.2.9：提示自动换行，不截断
@@ -595,7 +595,7 @@ class MainWindow(QMainWindow):
 
         status = QStatusBar()
         self.setStatusBar(status)
-        self.engine_status_label = QLabel("引擎：待启动")
+        self.engine_status_label = QLabel(ui_text("引擎：待启动"))
         status.addWidget(self.engine_status_label, 1)
         # v2.2.5：关键提示横幅（积压/连续失败等排障信息）——独立彩色标签，
         # 不再挤进常规状态行被截断；无提示时隐藏不占位
@@ -614,37 +614,37 @@ class MainWindow(QMainWindow):
             "QProgressBar::chunk { background: #34d399; border-radius: 5px; }")
         # 空页面指引让用户"看音量条有无波动"判断有没有抓到声音，可这根条
         # 全应用无名无 tooltip（v2.19.4）
-        self.level_bar.setToolTip("实时输入音量（开始翻译后无波动 = 没抓到声音，"
-                                  "请到「设置-音频输入」更换设备）")
+        self.level_bar.setToolTip(ui_text("实时输入音量（开始翻译后无波动 = 没抓到声音，"
+                                  "请到「设置-音频输入」更换设备）"))
         status.addPermanentWidget(self.level_bar)
 
         # v2.19.4：回看提示——用户上滚读旧句时，新句不再把他拽回底部（面板早就是
         # 这套判据，主窗此前无条件 setValue(maximum)），改为挂一个可点的计数角标。
-        self.jump_new_button = QPushButton("↓ 新字幕")
+        self.jump_new_button = QPushButton(ui_text("↓ 新字幕"))
         self.jump_new_button.setObjectName("GhostButton")
         self.jump_new_button.setCursor(Qt.PointingHandCursor)
-        self.jump_new_button.setToolTip("你正在回看旧字幕，点此跳回最新一条")
+        self.jump_new_button.setToolTip(ui_text("你正在回看旧字幕，点此跳回最新一条"))
         self.jump_new_button.clicked.connect(self._jump_to_latest)
         self.jump_new_button.hide()
         status.addPermanentWidget(self.jump_new_button)
 
-        self.clear_button = QPushButton("清空")
+        self.clear_button = QPushButton(ui_text("清空"))
         self.clear_button.setObjectName("GhostButton")
         self.clear_button.setCursor(Qt.PointingHandCursor)
-        self.clear_button.setToolTip("清空当前会话的字幕记录")
+        self.clear_button.setToolTip(ui_text("清空当前会话的字幕记录"))
         self.clear_button.clicked.connect(self._clear_captions)
         self.clear_button.setEnabled(False)  # v2.6.5（R7-L3）：无字幕时禁用，有卡再启用
         status.addPermanentWidget(self.clear_button)
 
-        self.export_button = QPushButton("导出")
+        self.export_button = QPushButton(ui_text("导出"))
         self.export_button.setObjectName("GhostButton")
         self.export_button.setCursor(Qt.PointingHandCursor)
-        self.export_button.setToolTip("把当前会话的双语字幕导出为文本文件")
+        self.export_button.setToolTip(ui_text("把当前会话的双语字幕导出为文本文件"))
         self.export_button.clicked.connect(self._export_captions)
         self.export_button.setEnabled(False)  # v2.6.5（R7-L3）：同上
         status.addPermanentWidget(self.export_button)
 
-        self.session_label = QLabel("本次会话：0 条")
+        self.session_label = QLabel(ui_text("本次会话：0 条"))
         status.addPermanentWidget(self.session_label)
 
         self.overlay = CaptionOverlay(on_closed=self.on_overlay_closed,
@@ -762,7 +762,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         if self.running:
-            self._set_alert(f"目标语言已切换为 {code}，重启翻译后对新字幕生效")
+            self._set_alert(f"{ui_text('目标语言已切换为 ')}{code}{ui_text('，重启翻译后对新字幕生效')}")
 
     def _on_panel_font_size(self, px):
         self.config.set("overlay_font_size", int(px))
@@ -832,7 +832,7 @@ class MainWindow(QMainWindow):
         status = self.apply_hotkey_config()
         # v2.0.0：启动时注册失败不再静默（组合被占用/不支持时用户毫无感知）
         if status.startswith("✗"):
-            self.tray.showMessage("LiveSubtitle 全局热键", status[2:], QSystemTrayIcon.Warning, 4000)
+            self.tray.showMessage(ui_text("LiveSubtitle 全局热键"), status[2:], QSystemTrayIcon.Warning, 4000)
 
     def _toggle_overlay_hotkey(self):
         """显隐字幕面板——全局热键与托盘右键菜单**共用**这一条路径（v2.2.6 起）。
@@ -862,7 +862,7 @@ class MainWindow(QMainWindow):
         hotkey.unregister()
         if not c.get("hotkey_enabled"):
             self._update_tray_hotkey_text("")
-            return "全局热键已关闭"
+            return ui_text("全局热键已关闭")
         seq = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
         ok = hotkey.register(int(self.winId()), seq)
         # v2.2.6：显隐悬浮条热键（默认 Ctrl+Alt+O，可留空禁用）
@@ -871,16 +871,16 @@ class MainWindow(QMainWindow):
         oseq = str(c.get("hotkey_overlay") or "").strip()
         if oseq:
             if oseq.upper() == seq.upper():
-                self._set_alert("⚠ 悬浮条显隐热键与开始/停止热键相同，已忽略——请在「设置-通用」改键")
+                self._set_alert(ui_text("⚠ 悬浮条显隐热键与开始/停止热键相同，已忽略——请在「设置-通用」改键"))
             elif not hotkey.register_overlay(int(self.winId()), oseq):
                 self.tray.showMessage(
-                    "LiveSubtitle 全局热键",
-                    f"悬浮条显隐热键 {oseq} 注册失败（已被其他程序占用或不被支持），"
+                    ui_text("LiveSubtitle 全局热键"),
+                    f"{ui_text('悬浮条显隐热键 ')}{oseq} 注册失败（已被其他程序占用或不被支持），"
                     "该热键未生效——请在「设置-通用」换一个组合。",
                     QSystemTrayIcon.Warning, 5000)
         self._update_tray_hotkey_text(seq if ok else "")
-        base = (f"✓ 全局热键 {seq} 已生效（托盘菜单同步显示）" if ok
-                else f"✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用，请在「设置-通用」换一个组合")
+        base = (f"{ui_text('✓ 全局热键 ')}{seq}{ui_text(' 已生效（托盘菜单同步显示）')}" if ok
+                else f"{ui_text('✗ 热键 ')}{seq}{ui_text(' 注册失败：组合不被支持或已被其他程序占用，请在「设置-通用」换一个组合')}")
         # v2.2.7：悬浮条显隐热键注册结果同样透传到设置页状态行
         if oseq and oseq.upper() != seq.upper() and not hotkey.overlay_text():
             base += (f"\n✗ 悬浮条显隐热键 {oseq} 注册失败：已被其他程序占用"
@@ -892,7 +892,7 @@ class MainWindow(QMainWindow):
     def _update_tray_hotkey_text(self, seq):
         act = getattr(self, "_tray_toggle_action", None)
         if act is not None:
-            act.setText(f"开始 / 停止翻译（{seq}）" if seq else "开始 / 停止翻译")
+            act.setText(f"{ui_text('开始 / 停止翻译（')}{seq}）" if seq else ui_text("开始 / 停止翻译"))
 
     def _open_overlay_settings(self):
         """悬浮条右键「打开设置」：打开设置窗口并定位到「显示」页。"""
@@ -924,15 +924,15 @@ class MainWindow(QMainWindow):
                 except RuntimeError:
                     pass   # C++ 对象已销毁（线程早已终结）
             self.start_pipeline()
-        name = "麦克风" if new == "microphone" else "系统声音"
-        self._set_engine_status(f"已切换输入来源：{name}")
+        name = ui_text("麦克风") if new == "microphone" else ui_text("系统声音")
+        self._set_engine_status(f"{ui_text('已切换输入来源：')}{name}")
         # v2.19.4：托盘菜单里切来源时主窗往往是隐藏的，那行状态字看不见；
         # 而「当前配置」速览卡的"音频来源"也停在旧值（同 v2.7.4 QA-02 那类谎报）。
         self._refresh_quick_panel()
         self.update_overlay_status()
         if not self.isVisible() and self.tray is not None:
             try:
-                self.tray.showMessage("LiveSubtitle", f"输入来源已切换：{name}",
+                self.tray.showMessage("LiveSubtitle", f"{ui_text('输入来源已切换：')}{name}",
                                       QSystemTrayIcon.Information, 2500)
             except Exception:
                 pass
@@ -948,47 +948,47 @@ class MainWindow(QMainWindow):
             # v2.20.3：面板状态行只有 10 字符的额度（`set_status` 截断），长句一律
             # 被腰斩成"系统静音中 · 不会…"这种半截话。这里只放状态词，完整解释在
             # 主窗状态栏与横幅里。
-            self.overlay.set_status("系统静音中", is_error=True)
+            self.overlay.set_status(ui_text("系统静音中"), is_error=True)
             return
         if getattr(self, "_low_input_warn", False):
-            self.overlay.set_status("信号弱", is_error=True)
+            self.overlay.set_status(ui_text("信号弱"), is_error=True)
             return
         if not self.running:
-            self.overlay.set_status("已停止 · 待机中")
+            self.overlay.set_status(ui_text("已停止 · 待机中"))
             return
-        src = "麦克风" if self.config.get("source_type") == "microphone" else "系统声音"
+        src = ui_text("麦克风") if self.config.get("source_type") == "microphone" else ui_text("系统声音")
         model = self.config.get("asr_model")
-        eng = getattr(self, "_last_engine_name", "") or "自动"
+        eng = getattr(self, "_last_engine_name", "") or ui_text("自动")
         # v2.20.3：面板状态行 `set_status` 只留 10 个字符（长提示截成"运行中 · 系统声…"），
         # 引擎与模型名**从来没能看见过**——那串长文本是给主窗状态栏写的。面板这里
         # 只报"在不在跑、听的是哪路声音"，详情归主窗与设置页。
-        self.overlay.set_status(f"运行中 · {src}")
-        self._engine_status_detail = f"运行中 · {src} · {eng} · {model} 模型"
+        self.overlay.set_status(f"{ui_text('运行中 · ')}{src}")
+        self._engine_status_detail = f"{ui_text('运行中 · ')}{src} · {eng} · {model}{ui_text(' 模型')}"
 
     def set_overlay_caption_error(self, failed):
         """字幕翻译失败时让状态行变橙红提醒。"""
         if hasattr(self, "overlay"):
-            self.overlay.set_status("翻译失败 · 检查网络或切换引擎", is_error=failed)
+            self.overlay.set_status(ui_text("翻译失败 · 检查网络或切换引擎"), is_error=failed)
             if not failed:
                 self.update_overlay_status()
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(QIcon(str(icon_path())), self)
-        self.tray.setToolTip("LiveSubtitle · 实时字幕翻译")
+        self.tray.setToolTip(ui_text("LiveSubtitle · 实时字幕翻译"))
         menu = QMenu(self)
-        act_show = QAction("显示主窗口", self)
+        act_show = QAction(ui_text("显示主窗口"), self)
         act_show.triggered.connect(self._restore_window)
-        act_toggle = QAction("开始 / 停止翻译", self)
+        act_toggle = QAction(ui_text("开始 / 停止翻译"), self)
         act_toggle.triggered.connect(self.toggle_running)
         # v2.2.8：速览卡承诺过的托盘快捷操作补齐（此前文案撒谎）
-        act_overlay = QAction("显隐字幕面板", self)
+        act_overlay = QAction(ui_text("显隐字幕面板"), self)
         act_overlay.triggered.connect(self._toggle_overlay_hotkey)
         self._tray_overlay_action = act_overlay
-        act_source = QAction("切换输入来源", self)
+        act_source = QAction(ui_text("切换输入来源"), self)
         act_source.triggered.connect(self._toggle_source)
-        act_settings = QAction("打开设置…", self)
+        act_settings = QAction(ui_text("打开设置…"), self)
         act_settings.triggered.connect(self._open_settings)
-        act_quit = QAction("退出", self)
+        act_quit = QAction(ui_text("退出"), self)
         act_quit.triggered.connect(self._quit_app)
         menu.addAction(act_show)
         menu.addAction(act_toggle)
@@ -1064,10 +1064,10 @@ class MainWindow(QMainWindow):
             return
         c = self.config
         model = c.get("asr_model")
-        engine_names = {"google": "Google（在线）", "mymemory": "MyMemory（在线）",
-                        "argos": "离线翻译包（直译）", "auto": "自动（在线优先，失败切离线）"}
+        engine_names = {"google": ui_text("Google（在线）"), "mymemory": ui_text("MyMemory（在线）"),
+                        "argos": ui_text("离线翻译包（直译）"), "auto": ui_text("自动（在线优先，失败切离线）")}
         eng = engine_names.get(c.get("engine"), str(c.get("engine")))
-        src = "系统声音" if c.get("source_type") == "system" else "麦克风"
+        src = ui_text("系统声音") if c.get("source_type") == "system" else ui_text("麦克风")
         hk_cfg = str(c.get("hotkey_sequence") or "Ctrl+Alt+S")
         # v2.2.6：显隐悬浮条热键同步显示
         oseq_cfg = str(c.get("hotkey_overlay") or "").strip()
@@ -1077,7 +1077,7 @@ class MainWindow(QMainWindow):
         # v2.3.2（G1）：悬浮条状态常驻仪表盘——关闭时明说怎么再打开
         # （文案刻意短：值列不换行，长句会撑爆卡片 520px 上限）
         if self.overlay.isVisible():
-            labels["overlay"].setText("已开启（可拖动位置）")
+            labels["overlay"].setText(ui_text("已开启（可拖动位置）"))
             labels["overlay"].setStyleSheet("")
         else:
             # v2.7.4（B-9）：不再硬编码 Ctrl+Alt+O——改键/禁用/注册失败时谎报指引；
@@ -1085,11 +1085,11 @@ class MainWindow(QMainWindow):
             o_cfg = str(c.get("hotkey_overlay") or "").strip()
             if not o_cfg:
                 # v2.20.1：设置页「启用字幕面板」勾选已删——指引改指托盘右键菜单
-                labels["overlay"].setText("已关闭 · 托盘右键可重新显示")
+                labels["overlay"].setText(ui_text("已关闭 · 托盘右键可重新显示"))
             elif hotkey.overlay_text():
-                labels["overlay"].setText(f"已关闭 · 按 {o_cfg} 打开")
+                labels["overlay"].setText(f"{ui_text('已关闭 · 按 ')}{o_cfg}{ui_text(' 打开')}")
             else:
-                labels["overlay"].setText(f"已关闭 · 显隐热键未生效（可在设置-通用改键）")
+                labels["overlay"].setText(f"{ui_text('已关闭 · 显隐热键未生效（可在设置-通用改键）')}")
             labels["overlay"].setStyleSheet("color: #fbbf24;")
         # v2.2.11：热键行以“实际注册成功”为准显示——配置了但被占用未注册时
         # 标红“（未生效）”，不再拿配置值谎称可用（文案不许承诺做不到的事）
@@ -1098,19 +1098,19 @@ class MainWindow(QMainWindow):
         failed = False
         hk_failed = o_failed = False
         if not c.get("hotkey_enabled"):
-            hk_disp, o_disp = "全局热键已关闭（设置-通用）", ""
+            hk_disp, o_disp = ui_text("全局热键已关闭（设置-通用）"), ""
         else:
             hk_failed = not hk_live
             o_failed = bool(oseq_cfg) and not o_live
             failed = hk_failed or o_failed
-            hk_disp = (f"{hk_cfg} 开始/停止（未生效）" if hk_failed
-                       else f"{hk_live} 开始/停止")
+            hk_disp = (f"{hk_cfg}{ui_text(' 开始/停止（未生效）')}" if hk_failed
+                       else f"{hk_live}{ui_text(' 开始/停止')}")
             if not oseq_cfg:
-                o_disp = "未设 显隐悬浮条"
+                o_disp = ui_text("未设 显隐悬浮条")
             elif o_failed:
-                o_disp = f"{oseq_cfg} 显隐悬浮条（未生效）"
+                o_disp = f"{oseq_cfg}{ui_text(' 显隐悬浮条（未生效）')}"
             else:
-                o_disp = f"{o_live} 显隐悬浮条"
+                o_disp = f"{o_live}{ui_text(' 显隐悬浮条')}"
         # v2.2.13：两行分别落位；哪行未生效哪行标红（不再拼接换行）
         labels["hotkey"].setText(hk_disp)
         labels["hotkey_o"].setText(o_disp)
@@ -1195,9 +1195,9 @@ class MainWindow(QMainWindow):
         self._sync_settings_overlay(translate_grouping=on)
         # 即时生效的非错误反馈 → 走状态行（`_set_alert` 是常驻橙黄横幅，
         # 一次随手切换不该在主窗挂一条"警告"）
-        self._set_engine_status("攒句合并已" + ("开启：攒成整句再翻译，译文更连贯"
+        self._set_engine_status(ui_text("攒句合并已") + (ui_text("开启：攒成整句再翻译，译文更连贯")
                                                 if on else
-                                                "关闭：每个识别片段一到就送翻译，观感最实时"))
+                                                ui_text("关闭：每个识别片段一到就送翻译，观感最实时")))
 
     def apply_overlay_from_config(self):
         c = self.config
@@ -1295,7 +1295,7 @@ class MainWindow(QMainWindow):
         if n <= 0:
             self.jump_new_button.hide()
             return
-        self.jump_new_button.setText("↓ %d 条新字幕" % n)
+        self.jump_new_button.setText(ui_text("↓ %d 条新字幕") % n)
         self.jump_new_button.show()
 
     def _jump_to_latest(self):
@@ -1311,7 +1311,7 @@ class MainWindow(QMainWindow):
             if w:
                 w.deleteLater()
         self.session_count = 0
-        self.session_label.setText("本次会话：0 条")
+        self.session_label.setText(ui_text("本次会话：0 条"))
         # v2.20.3：主窗「清空」以前只清主窗卡片——面板上还留着全部字幕，用户以为
         # 没清掉；而卡片是这场字幕的唯一副本，清掉就没了。台账一并清空，保持
         # "清空 = 这场真的作废" 的语义。
@@ -1368,17 +1368,17 @@ class MainWindow(QMainWindow):
         # v2.20.3：台账（已被历史上限淘汰的旧卡快照）排在前面，导出=整场而非最近 N 条
         cards = list(getattr(self, "_export_ledger", [])) + cards
         if not cards:
-            QMessageBox.information(self, "导出字幕", "当前会话还没有可导出的字幕。")
+            QMessageBox.information(self, ui_text("导出字幕"), ui_text("当前会话还没有可导出的字幕。"))
             return
         ext = "srt" if fmt == "srt" else "txt"
         default_name = f"LiveSubtitle_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
         # 默认落到用户文档目录：安装目录（Program Files）对标准权限用户不可写
         docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or str(Path.home())
         # v2.4.4（BUG-6）：默认过滤器与菜单入口一致——SRT 入口首选 SRT
-        filt = ("SRT 字幕 (*.srt);;文本文件 (*.txt);;所有文件 (*)" if fmt == "srt"
-                else "文本文件 (*.txt);;SRT 字幕 (*.srt);;所有文件 (*)")
+        filt = (ui_text("SRT 字幕 (*.srt);;文本文件 (*.txt);;所有文件 (*)") if fmt == "srt"
+                else ui_text("文本文件 (*.txt);;SRT 字幕 (*.srt);;所有文件 (*)"))
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出字幕", str(Path(docs) / default_name), filt)
+            self, ui_text("导出字幕"), str(Path(docs) / default_name), filt)
         if not path:
             return
         # v2.2.11：按扩展名选格式——.srt 生成带时间轴的标准字幕（播放器/剪映
@@ -1386,7 +1386,7 @@ class MainWindow(QMainWindow):
         fmt = "srt" if str(path).lower().endswith(".srt") else "txt"
         content, count = build_export_text(cards, fmt)
         if fmt == "srt" and count == 0:
-            QMessageBox.information(self, "导出字幕", "没有已完成的字幕可导出为 SRT。")
+            QMessageBox.information(self, ui_text("导出字幕"), ui_text("没有已完成的字幕可导出为 SRT。"))
             return
         try:
             # v2.20.4（P0，实测）：`Path.write_text` 是文本模式 open("w")——
@@ -1403,12 +1403,12 @@ class MainWindow(QMainWindow):
                 _os.fsync(fp.fileno())
             _os.replace(tmp, path)
         except Exception as e:
-            QMessageBox.warning(self, "导出字幕", f"写入文件失败：{e}")
+            QMessageBox.warning(self, ui_text("导出字幕"), f"{ui_text('写入文件失败：')}{e}")
             return
         # v2.4.4（BUG-8）：完成提示路径规范化为 Windows 反斜杠——QFileDialog
         # 返回正斜杠路径，用户复制到资源管理器打不开
         QMessageBox.information(
-            self, "导出字幕", f"已导出 {count} 条字幕到：\n{os.path.normpath(path)}")
+            self, ui_text("导出字幕"), f"{ui_text('已导出 ')}{count} 条字幕到：\n{os.path.normpath(path)}")
 
     def toggle_running(self):
         # v2.0.4：热键连按防抖——界面被 stop_pipeline 短暂阻塞时按下的热键
@@ -1440,7 +1440,7 @@ class MainWindow(QMainWindow):
             if tray is not None:
                 tray.showMessage(
                     "LiveSubtitle",
-                    "已停止翻译" if was_running else "已开始翻译（首次使用会先下载模型）",
+                    ui_text("已停止翻译") if was_running else ui_text("已开始翻译（首次使用会先下载模型）"),
                     QSystemTrayIcon.Information, 2000)
 
     def start_pipeline(self):
@@ -1470,13 +1470,13 @@ class MainWindow(QMainWindow):
         # v2.7.2：榨干模式——翻译运行期提升进程优先级（停止后恢复），
         # 让采集/转写线程在系统负载下不被普通进程抢时间片
         self._apply_process_priority(True)
-        self.toggle_button.setText("停止翻译")
+        self.toggle_button.setText(ui_text("停止翻译"))
         self.toggle_button.setObjectName("StopButton")
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
         self.status_dot.setStyleSheet("background-color: #2ecc71; border-radius: 7px;")
-        self.status_dot.setToolTip("运行中：正在识别并翻译")
-        self.status_text.setText("运行中")
+        self.status_dot.setToolTip(ui_text("运行中：正在识别并翻译"))
+        self.status_text.setText(ui_text("运行中"))
         self.stack.setCurrentIndex(1)
         self.session_count = 0
         self._last_asr_lang = ""      # v2.18.2（D-3）：会话级语言记忆随新会话清零
@@ -1623,8 +1623,8 @@ class MainWindow(QMainWindow):
             app_log.log("pipeline.no_segments_hint", window_s=25,
                         source=self.config.get("source_type"))
             self._set_engine_status(
-                "模型就绪 25 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
-                "系统音量/应用音量未静音，或到「设置-音频输入」更换设备")
+                ui_text("模型就绪 25 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
+                "系统音量/应用音量未静音，或到「设置-音频输入」更换设备"))
             self.update_overlay_status()
 
     def _start_model_download_feedback(self, model_size):
@@ -1670,7 +1670,7 @@ class MainWindow(QMainWindow):
         slow = (now - self._dl_start[0] > 20) and (mb - self._dl_start[1] < 5)
         if mb >= total * 0.9 or pct >= 99:
             slow = False
-        hint = "· 速度慢？到「设置-翻译」配置代理可显著提速" if slow else ""
+        hint = ui_text("· 速度慢？到「设置-翻译」配置代理可显著提速") if slow else ""
         # v2.2.14：ETA——采样 3 秒后按平均速度估算剩余（起步阶段不显示，
         # 避免"剩余 3 小时"式惊吓；接近完成时也不显示，误差大）
         from app.fmt import eta_text
@@ -1681,10 +1681,10 @@ class MainWindow(QMainWindow):
             if sp > 0.02:
                 t = eta_text((total - mb) / sp)
                 if t:
-                    eta = f"，{sp:.1f}MB/s，剩余约{t}"
+                    eta = f"，{sp:.1f}{ui_text('MB/s，剩余约')}{t}"
         # v2.2.5：模型下载进度走彩色横幅（下载是当前最重要的事，别挤状态行）
-        self._set_engine_status("正在下载识别模型…")
-        self._set_alert(f"⬇ 正在下载识别模型（{mb:.0f}/{total}MB，{pct}%{eta}，"
+        self._set_engine_status(ui_text("正在下载识别模型…"))
+        self._set_alert(f"{ui_text('⬇ 正在下载识别模型（')}{mb:.0f}/{total}MB，{pct}%{eta}，"
                         f"仅首次；完成前请保持网络畅通{hint}）…")
 
     def _set_engine_status(self, text):
@@ -1693,13 +1693,13 @@ class MainWindow(QMainWindow):
         # （此前一句话即被"识别完成/就绪"覆盖，用户从未看到丢段原因）
         # v2.2.5：积压/连续失败等关键提示改走独立彩色横幅（不再挤常规状态行）
         if getattr(self, "_backlog_warn", False):
-            self._set_alert("⚠ 积压丢段中：CPU 转写跟不上，"
-                            "建议到「设置-语音识别」换 small/tiny 模型")
+            self._set_alert(ui_text("⚠ 积压丢段中：CPU 转写跟不上，"
+                            "建议到「设置-语音识别」换 small/tiny 模型"))
         elif getattr(self, "_heavy_cpu_warn", False):
             # v2.3.1：重模型+CPU 预警（用户实测"非常不好用"根因之一：medium/CPU
             # 每 10s 音频要 10~15s 转写，字幕越拖越晚永远追不上，且毫无提示）
-            self._set_alert("⚠ 当前为重模型且运行在 CPU：字幕会明显滞后。建议到"
-                            "「设置-语音识别」换 small，或安装 GPU 加速后选「强制 GPU」")
+            self._set_alert(ui_text("⚠ 当前为重模型且运行在 CPU：字幕会明显滞后。建议到"
+                            "「设置-语音识别」换 small，或安装 GPU 加速后选「强制 GPU」"))
         elif getattr(self, "_engine_fallback_warn", None):
             # v2.3.2（G2）：在线引擎不可达预警持续展示（后续常规状态不覆盖）
             self._set_alert(self._engine_fallback_warn, error=True)
@@ -1751,7 +1751,7 @@ class MainWindow(QMainWindow):
         # stop_pipeline 写完"已停止"之后才送达
         if not self.running or self.sender() is not self.asr_thread:
             return
-        self._set_engine_status(f"识别: {text}")
+        self._set_engine_status(f"{ui_text('识别: ')}{text}")
 
     def _on_asr_backlog(self):
         """v2.0.8：积压提示置顶常驻——此前一句话即被后续状态覆盖，用户
@@ -1765,7 +1765,7 @@ class MainWindow(QMainWindow):
     def _on_translate_status(self, text):
         if not self.running or self.sender() is not self.translate_thread:
             return
-        self._set_engine_status(f"翻译: {text}")
+        self._set_engine_status(f"{ui_text('翻译: ')}{text}")
 
     def _on_primary_recovered(self):
         """v2.3.2（G2）：主引擎恢复切回 → 撤销不可达预警横幅。
@@ -1781,7 +1781,7 @@ class MainWindow(QMainWindow):
         if not self.running or not self._session_ok(getattr(self, "_sid_tr", None)):
             return
         self._engine_fallback_warn = (
-            f"⚠ 在线翻译引擎不可达（{engine_desc}）：{reason}。"
+            f"{ui_text('⚠ 在线翻译引擎不可达（')}{engine_desc}）：{reason}。"
             "译文频繁出错请到「设置-翻译」配置代理，或改用「自动」引擎")
         if self.running:
             self._set_alert(self._engine_fallback_warn, error=True)
@@ -1806,7 +1806,7 @@ class MainWindow(QMainWindow):
             self._no_segment_timer.start(25000)
         # v2.2.12：就绪但还没出字——状态灯呼吸 + 明确"正在聆听"状态行（#3）
         if getattr(self, "running", False) and getattr(self, "session_count", 0) == 0:
-            self._set_engine_status("模型就绪，正在聆听…（播放声音或说话即可出字幕）")
+            self._set_engine_status(ui_text("模型就绪，正在聆听…（播放声音或说话即可出字幕）"))
             self._set_listen_pulse(True)
         # v2.12.0：模型就绪 → 启动流式原文预览（dual+GPU 时）
         self._maybe_start_stream_preview()
@@ -2110,7 +2110,7 @@ class MainWindow(QMainWindow):
                 self._low_input_warn = False
                 return
             self.engine_status_label.setText(
-                "⚠ 输入信号过弱：字幕可能无法识别，请检查系统音量或音频设备")
+                ui_text("⚠ 输入信号过弱：字幕可能无法识别，请检查系统音量或音频设备"))
         else:
             self.engine_status_label.setText(getattr(self, "_engine_status_text", ""))
         self.update_overlay_status()
@@ -2122,7 +2122,7 @@ class MainWindow(QMainWindow):
         if m and self.running:
             self._muted_warn = True
             self.engine_status_label.setText(
-                "⚠ 系统已静音：正在抓取系统声音，静音期间不会有字幕；取消静音后自动恢复")
+                ui_text("⚠ 系统已静音：正在抓取系统声音，静音期间不会有字幕；取消静音后自动恢复"))
         else:
             self._muted_warn = False
             self.engine_status_label.setText(getattr(self, "_engine_status_text", ""))
@@ -2168,7 +2168,7 @@ class MainWindow(QMainWindow):
         from app import log as app_log
         app_log.log("pipeline.stop")
         self.running = False
-        self.toggle_button.setText("开始翻译")
+        self.toggle_button.setText(ui_text("开始翻译"))
         self.toggle_button.setObjectName("PrimaryButton")
         self.toggle_button.style().unpolish(self.toggle_button)
         self.toggle_button.style().polish(self.toggle_button)
@@ -2176,8 +2176,8 @@ class MainWindow(QMainWindow):
         self._heavy_cpu_warn = False   # v2.3.1：撤重模型CPU预警
         self._engine_fallback_warn = None  # v2.3.2（G2）：撤引擎不可达预警
         self.status_dot.setStyleSheet("background-color: #3a4152; border-radius: 7px;")
-        self.status_dot.setToolTip("未启动：点击「开始翻译」开始")
-        self.status_text.setText("未启动")
+        self.status_dot.setToolTip(ui_text("未启动：点击「开始翻译」开始"))
+        self.status_text.setText(ui_text("未启动"))
         self.level_bar.setValue(0)
         self._low_input_warn = False
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
@@ -2195,7 +2195,7 @@ class MainWindow(QMainWindow):
                     # 不能覆盖成"未完成翻译"（用户正在看那行字，半句也胜过失败文案）
                     finalize = getattr(_card, "finalize_spec", None)
                     if not (finalize and finalize()):
-                        _card.set_failed("已停止 · 该句未完成翻译")
+                        _card.set_failed(ui_text("已停止 · 该句未完成翻译"))
                 except Exception:
                     pass
             self._pending.clear()
@@ -2290,7 +2290,7 @@ class MainWindow(QMainWindow):
         self.capture_thread = None
         self.asr_thread = None
         self.translate_thread = None
-        self.engine_status_label.setText("引擎：已停止")
+        self.engine_status_label.setText(ui_text("引擎：已停止"))
         self._log_latency_summary()   # v2.3.20（P26）：会话延迟摘要入日志
         self._apply_process_priority(False)   # v2.7.2：榨干模式停止后归还优先级
         self.update_overlay_status()
@@ -2315,7 +2315,7 @@ class MainWindow(QMainWindow):
         if s is not None and s is not getattr(self, "_sid_asr", None):
             return
         card = self._new_card(text)
-        card.set_failed("语言复检与当前锁定语言不一致且置信度不足 · 该段保守丢弃")
+        card.set_failed(ui_text("语言复检与当前锁定语言不一致且置信度不足 · 该段保守丢弃"))
         self._insert_card(card)
         if self.stack.currentIndex() == 0:
             self.stack.setCurrentIndex(1)
@@ -2360,8 +2360,8 @@ class MainWindow(QMainWindow):
         if self.running and audio:
             self.stop_pipeline()
             # stop_pipeline 会把状态重置为"已停止"，错误信息要在其后显示才能被看到
-            self.engine_status_label.setText(f"错误：{msg}")
-            self._show_info("音频错误", msg)
+            self.engine_status_label.setText(f"{ui_text('错误：')}{msg}")
+            self._show_info(ui_text("音频错误"), msg)
         else:
             # v2.20.3（离屏实测）：模型加载失败这类非音频错误此前只写一行状态字——
             # running 仍是 True、面板仍写"运行中 · 系统声音"、把手仍是"⏸ 暂停"、
@@ -2414,7 +2414,7 @@ class MainWindow(QMainWindow):
         # v2.1.5：instant_caption 开关——开（默认）为流式两段式（原文先上屏、
         # 译文占位、就绪后原地补齐）；关 = 旧行为（识别+翻译都完成后一次性上屏）
         if not bool(self.config.get("instant_caption")):
-            self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
+            self._set_engine_status(f"{ui_text('识别完成 [')}{detected or '?'}] ({duration}{ui_text('s)，翻译中…')}")
             if self._active_translate() is not None:   # v2.6.2（P1-4）：排水期解析
                 self._submit_for_translation(text, detected)
             return
@@ -2435,7 +2435,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_pending") or self._pending is None:
             self._pending = []
         self._pending.append((text, card))
-        self._set_engine_status(f"识别完成 [{detected or '?'}] ({duration}s)，翻译中…")
+        self._set_engine_status(f"{ui_text('识别完成 [')}{detected or '?'}] ({duration}{ui_text('s)，翻译中…')}")
         # v2.2.5：占位卡即刻聚焦（原文先出时用户视线在此）
         prev = getattr(self, "_active_card", None)
         if prev is not None and prev is not card:
@@ -2476,7 +2476,7 @@ class MainWindow(QMainWindow):
                 # v2.20.4：与攒句路径 `_flush_tgroup` 的 B-1 守卫同一件事，此前
                 # 只有那条路有守卫——关掉攒句时翻译线程若已自然退出，文本投进死
                 # 队列永不回来，占位卡永久停在 "⟳ …"，且没有任何日志。
-                self._drop_translation(text, "翻译已停止，本句未翻译")
+                self._drop_translation(text, ui_text("翻译已停止，本句未翻译"))
                 return
             self._submit_ts = getattr(self, "_submit_ts", {})
             self._submit_ts[text] = time.monotonic()  # v2.3.20（P26）
@@ -2603,7 +2603,7 @@ class MainWindow(QMainWindow):
             # v2.7.4（B-1）：翻译线程已自然退出（asr 排水超过 15s 宽限等场景）——
             # 投进死队列的尾组会让占位卡永久悬挂"⟳ …"，直接整组终态化
             for piece in grp:
-                self._drop_translation(piece, "翻译已停止，本句未翻译")
+                self._drop_translation(piece, ui_text("翻译已停止，本句未翻译"))
             return
         # v2.7.0（T2）："末片到达→整句冲送"的攒住时长入遥测——提前冲是否
         # 起效，看日志 hold_p50 一行即证（此前"慢"的大头恰好不在任何遥测里）
@@ -2744,7 +2744,7 @@ class MainWindow(QMainWindow):
         if self.overlay.isVisible():
             self.overlay.update_spec_result(source_text, translated, show_source)
 
-    def _drop_translation(self, src_text, reason="翻译队列繁忙，本句已跳过"):
+    def _drop_translation(self, src_text, reason=ui_text("翻译队列繁忙，本句已跳过")):
         """v2.6.2（P1-7）：翻译队列满被挤掉的句子——占位卡/攒句簿记立即
         终态化，不再永久悬挂 "⟳ …"、不再累积悬挂引用。攒句合并句整组处理：
         末片卡显示终态文案、前片卡保持并入态。
@@ -2836,22 +2836,22 @@ class MainWindow(QMainWindow):
             self.overlay.set_session_has_content(has)   # v2.19.4：面板导出入口同步
         except Exception:
             pass
-        tip = "" if has else "暂无字幕，开始翻译后自动可用"
-        self.clear_button.setToolTip(tip or "清空当前会话的字幕记录")
-        self.export_button.setToolTip(tip or "把当前会话的双语字幕导出为文本文件")
+        tip = "" if has else ui_text("暂无字幕，开始翻译后自动可用")
+        self.clear_button.setToolTip(tip or ui_text("清空当前会话的字幕记录"))
+        self.export_button.setToolTip(tip or ui_text("把当前会话的双语字幕导出为文本文件"))
 
     def _card_menu(self, card):
         menu = QMenu(self)
-        act = menu.addAction("复制原文")
+        act = menu.addAction(ui_text("复制原文"))
         act.triggered.connect(lambda: QApplication.clipboard().setText(card.source_text))
         tr = card.translated_text()
-        act = menu.addAction("复制译文")
+        act = menu.addAction(ui_text("复制译文"))
         act.setEnabled(bool(tr))
         act.triggered.connect(lambda: QApplication.clipboard().setText(card.translated_text()))
         menu.addSeparator()
-        act = menu.addAction("纠正识别（加入误听词典）…")
+        act = menu.addAction(ui_text("纠正识别（加入误听词典）…"))
         act.triggered.connect(lambda: self._correct_from_card(card, "mishear_map"))
-        act = menu.addAction("纠正译文（加入译文修正词典）…")
+        act = menu.addAction(ui_text("纠正译文（加入译文修正词典）…"))
         act.setEnabled(bool(tr))
         act.triggered.connect(lambda: self._correct_from_card(card, "translate_fix_map"))
         return menu
@@ -2868,7 +2868,7 @@ class MainWindow(QMainWindow):
         wrong0 = (wrong0 or "").strip()
         if not wrong0:
             return                      # 无内容不弹框（菜单项本应置灰，双保险）
-        title = "纠正识别" if dict_key == "mishear_map" else "纠正译文"
+        title = ui_text("纠正识别") if dict_key == "mishear_map" else ui_text("纠正译文")
         wrong, right = self._dict_dialog(title, wrong0)
         if wrong is None:
             return
@@ -2882,12 +2882,12 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle(title)
         dlg.setMinimumWidth(480)
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("错误片段（已从字幕预填，删改到只剩要纠正的词句即可）："))
+        v.addWidget(QLabel(ui_text("错误片段（已从字幕预填，删改到只剩要纠正的词句即可）：")))
         e_wrong = QLineEdit(wrong_prefill)
         v.addWidget(e_wrong)
-        v.addWidget(QLabel("正确文本："))
+        v.addWidget(QLabel(ui_text("正确文本：")))
         e_right = QLineEdit()
-        e_right.setPlaceholderText("例如：Norfolk")
+        e_right.setPlaceholderText(ui_text("例如：Norfolk"))
         v.addWidget(e_right)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dlg.accept)
@@ -2905,8 +2905,8 @@ class MainWindow(QMainWindow):
             self.apply_pipeline_hotfix()
         except Exception:
             pass
-        tip = "误听词典" if dict_key == "mishear_map" else "译文修正词典"
-        self._set_alert(f"已保存到{tip}：「{wrong[:16]}」→「{right[:16]}」· 已即时生效")
+        tip = ui_text("误听词典") if dict_key == "mishear_map" else ui_text("译文修正词典")
+        self._set_alert(f"{ui_text('已保存到')}{tip}：「{wrong[:16]}」→「{right[:16]}{ui_text('」· 已即时生效')}")
 
     def _take_pending(self, source_text):
         """按原文取出最早的待补齐卡片（流式两段式配对，v2.1.4）。"""
@@ -2992,25 +2992,25 @@ class MainWindow(QMainWindow):
         # 失败卡，两边对不上更让人困惑）。
         if not error:
             self.session_count = getattr(self, "session_count", 0) + 1
-            self.session_label.setText(f"本次会话：{self.session_count} 条")
+            self.session_label.setText(f"{ui_text('本次会话：')}{self.session_count}{ui_text(' 条')}")
         if error:
             self._set_engine_status(
-                f"⚠ 翻译失败（连续 {self._fail_streak} 条）：{error}")
+                f"{ui_text('⚠ 翻译失败（连续 ')}{self._fail_streak}{ui_text(' 条）：')}{error}")
             # v2.2.5：连续失败走彩色横幅（排障建议不被截断）
-            advice = "检查网络/代理节点，或到「设置-翻译」测试通道 / 下载离线语言包"
+            advice = ui_text("检查网络/代理节点，或到「设置-翻译」测试通道 / 下载离线语言包")
             self._set_alert(
-                f"⚠ 翻译连续失败 {self._fail_streak} 条 · {advice}", error=True)
+                f"{ui_text('⚠ 翻译连续失败 ')}{self._fail_streak}{ui_text(' 条 · ')}{advice}", error=True)
         else:
-            self._set_engine_status(f"引擎：{engine} · 源语言: {detected or '?'}")
+            self._set_engine_status(f"{ui_text('引擎：')}{engine}{ui_text(' · 源语言: ')}{detected or '?'}")
             self._set_alert(None)
         self.update_overlay_status()
         if error:
             # 连续 ≥3 条失败：状态行升级为通道级提示 + 悬浮条橙红常驻，
             # 直到有成功译文才恢复正常
-            advice = "检查网络/代理节点，或到「设置-翻译」测试通道 / 下载离线语言包"
+            advice = ui_text("检查网络/代理节点，或到「设置-翻译」测试通道 / 下载离线语言包")
             self.overlay.set_status(
-                f"翻译连续失败 {self._fail_streak} 条 · {advice}" if self._fail_streak >= 3
-                else "翻译失败 · 检查网络或切换引擎",
+                f"{ui_text('翻译连续失败 ')}{self._fail_streak}{ui_text(' 条 · ')}{advice}" if self._fail_streak >= 3
+                else ui_text("翻译失败 · 检查网络或切换引擎"),
                 is_error=True)
         if self.overlay.isVisible():
             # v2.1.8：三档路由统一由 overlay.show_pending_result 内部分派
@@ -3020,7 +3020,7 @@ class MainWindow(QMainWindow):
             # 末片，面板行显示"半句话的原文配整句译文"，与主窗分叉
             self.overlay.show_pending_result(
                 combined_src or source_text,
-                translated or ("[" + engine + " 翻译失败]"), show_source,
+                translated or ("[" + engine + ui_text(" 翻译失败]")), show_source,
                 merged_from=merged_srcs)
             # v2.20.0：dual 历史区已删除——终版句就地留在大字区显示，直到下一句
             # 的流式拍/片段触发**原子换句**（面板侧 _dual_cur_open 收口）。
@@ -3109,13 +3109,13 @@ class MainWindow(QMainWindow):
             QApplication.quit()
             return
         box = QMessageBox(self)
-        box.setWindowTitle("关闭 LiveSubtitle")
-        box.setText("关闭软件后要做什么？")
-        box.setInformativeText("隐藏到托盘后，字幕悬浮窗继续显示，可从右下角托盘图标重新打开主窗口。")
-        tray_btn = box.addButton("隐藏到托盘", QMessageBox.AcceptRole)
-        exit_btn = box.addButton("退出程序", QMessageBox.DestructiveRole)
-        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-        remember_box = QCheckBox("记住我的选择，下次不再询问")
+        box.setWindowTitle(ui_text("关闭 LiveSubtitle"))
+        box.setText(ui_text("关闭软件后要做什么？"))
+        box.setInformativeText(ui_text("隐藏到托盘后，字幕悬浮窗继续显示，可从右下角托盘图标重新打开主窗口。"))
+        tray_btn = box.addButton(ui_text("隐藏到托盘"), QMessageBox.AcceptRole)
+        exit_btn = box.addButton(ui_text("退出程序"), QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton(ui_text("取消"), QMessageBox.RejectRole)
+        remember_box = QCheckBox(ui_text("记住我的选择，下次不再询问"))
         box.setCheckBox(remember_box)
         box.exec()
         # 打包环境下部分 PySide6 版本 box.checkBox() 返回的对象没有 isChecked，
@@ -3146,9 +3146,9 @@ class MainWindow(QMainWindow):
         self.hide()
         if getattr(self, "tray", None):
             self.tray.showMessage(
-                "LiveSubtitle 仍在运行",
-                "字幕悬浮窗继续工作。左键托盘图标恢复窗口，右键可退出/切来源；"
-                "关闭行为可在「设置-通用」修改。",
+                ui_text("LiveSubtitle 仍在运行"),
+                ui_text("字幕悬浮窗继续工作。左键托盘图标恢复窗口，右键可退出/切来源；"
+                "关闭行为可在「设置-通用」修改。"),
                 QSystemTrayIcon.Information, 3500)
 
 
@@ -3162,8 +3162,8 @@ def run_app():
             app = QApplication(sys.argv)
             QMessageBox.warning(
                 None, "LiveSubtitle",
-                "LiveSubtitle 已经在运行中。\n\n"
-                "请点击任务栏右下角托盘区的 LiveSubtitle 图标打开主窗口。")
+                ui_text("LiveSubtitle 已经在运行中。\n\n"
+                "请点击任务栏右下角托盘区的 LiveSubtitle 图标打开主窗口。"))
             return
     except Exception:
         pass  # 互斥检测失败时按原行为启动，不阻塞正常使用

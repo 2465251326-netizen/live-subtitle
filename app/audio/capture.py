@@ -1,4 +1,6 @@
 import queue
+from app.i18n import ui_text
+
 import time
 
 import numpy as np
@@ -58,12 +60,12 @@ def friendly_audio_error(e: Exception) -> str:
     """把 pyaudio 的英文错误码翻译成用户能执行的下一步动作。"""
     s = str(e)
     if "-9996" in s or "Invalid device" in s:
-        return ("无法打开所选音频设备（该设备可能不支持当前采集模式）。"
-                "请到「设置 - 音频输入」重新选择设备，或点「刷新」后重试。")
+        return (ui_text("无法打开所选音频设备（该设备可能不支持当前采集模式）。"
+                "请到「设置 - 音频输入」重新选择设备，或点「刷新」后重试。"))
     if "-9985" in s or "Device unavailable" in s:
-        return "音频设备被其他程序占用或暂时不可用，请关闭占用它的程序后重试。"
+        return ui_text("音频设备被其他程序占用或暂时不可用，请关闭占用它的程序后重试。")
     if "-9984" in s or "unanticipated host error" in s.lower():
-        return "音频驱动异常，请尝试更换音频设备或重启程序。"
+        return ui_text("音频驱动异常，请尝试更换音频设备或重启程序。")
     return s
 
 
@@ -549,7 +551,7 @@ class CaptureThread(QThread):
             try:
                 import pyaudio
             except ImportError:
-                self.error_occurred.emit("缺少音频库 pyaudiowpatch，请运行 pip install -r requirements.txt")
+                self.error_occurred.emit(ui_text("缺少音频库 pyaudiowpatch，请运行 pip install -r requirements.txt"))
                 return
 
         p = None
@@ -566,13 +568,13 @@ class CaptureThread(QThread):
                         p, self.device_index, self.device_name, "system")
                     if device is None or not device.get("isLoopbackDevice"):
                         self.error_occurred.emit(
-                            "所选输出设备不可用或不是回环设备，请到「设置-音频输入」重新选择。")
+                            ui_text("所选输出设备不可用或不是回环设备，请到「设置-音频输入」重新选择。"))
                         return
                     device_index = dev_index
                 else:
                     device = self._resolve_loopback(p, p.get_default_output_device_info()["index"])
                     if device is None:
-                        self.error_occurred.emit("未找到可用的系统声音回环设备")
+                        self.error_occurred.emit(ui_text("未找到可用的系统声音回环设备"))
                         return
                     device_index = device["index"]
                 channels = min(2, device.get("maxInputChannels", 2))
@@ -583,7 +585,7 @@ class CaptureThread(QThread):
                         p, self.device_index, self.device_name, "microphone")
                     if device is None:
                         self.error_occurred.emit(
-                            "所选麦克风不可用（可能已被拔出），请到「设置-音频输入」重新选择。")
+                            ui_text("所选麦克风不可用（可能已被拔出），请到「设置-音频输入」重新选择。"))
                         return
                     device_index = dev_index
                 else:
@@ -642,7 +644,7 @@ class CaptureThread(QThread):
                         time.sleep(0.3)
                         continue
                     self.error_occurred.emit(
-                        f"音频设备连续读取失败: {friendly_audio_error(e)}")
+                        f"{ui_text('音频设备连续读取失败: ')}{friendly_audio_error(e)}")
                     break
                 data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
                 data = data.reshape(-1, channels) if channels > 1 else data.reshape(-1, 1)
@@ -697,7 +699,7 @@ class CaptureThread(QThread):
             except Exception:
                 pass
         except Exception as e:
-            self.error_occurred.emit(f"音频采集失败: {friendly_audio_error(e)}")
+            self.error_occurred.emit(f"{ui_text('音频采集失败: ')}{friendly_audio_error(e)}")
         finally:
             if stream:
                 try:

@@ -7,6 +7,8 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from app.fixmap import apply_dict
+from app.i18n import ui_text
+
 
 
 def _silero_assets_ok() -> bool:
@@ -420,16 +422,16 @@ class AsrThread(QThread):
                     # "在同一个槽里先置标志再刷状态"的时序一致）
                     self.backlog.emit()
                     self.status_changed.emit(
-                        "识别积压，部分较早语音来不及转写已被跳过："
-                        "CPU 跟不上当前模型，建议换 small/tiny（状态栏持续提醒）")
+                        ui_text("识别积压，部分较早语音来不及转写已被跳过："
+                        "CPU 跟不上当前模型，建议换 small/tiny（状态栏持续提醒）"))
                 from app import log as app_log
                 app_log.log("asr.segment_dropped", queue=self.queue_in.qsize())
             elif self.queue_in.qsize() >= self.QUEUE_LIMIT - 2 and not self._backlog_reported:
                 self._backlog_reported = True
                 self.backlog.emit()
                 self.status_changed.emit(
-                    "识别积压：转写速度跟不上语音产出，字幕会延迟陆续出现"
-                    "（CPU 较慢建议换 small/tiny）")
+                    ui_text("识别积压：转写速度跟不上语音产出，字幕会延迟陆续出现"
+                    "（CPU 较慢建议换 small/tiny）"))
         except Exception:
             pass
 
@@ -455,7 +457,7 @@ class AsrThread(QThread):
                     outcome = download_model_files(
                         self.model_size, should_stop=lambda: self._stop)
                     if outcome == "stopped":
-                        self.status_changed.emit("已停止模型下载（已下载部分保留，下次继续）")
+                        self.status_changed.emit(ui_text("已停止模型下载（已下载部分保留，下次继续）"))
                         return False
                     cached = True
                 except Exception:
@@ -533,7 +535,7 @@ class AsrThread(QThread):
             # 此前 GPU 用户被静默回落 CPU，延迟 6~10 倍且界面仍显示 GPU。
             if cached and not self._stop:
                 try:
-                    self.status_changed.emit("模型缓存校验异常，正在联网修复…")
+                    self.status_changed.emit(ui_text("模型缓存校验异常，正在联网修复…"))
                     self._model = self._construct_model(
                         model_ref, device, compute_type, local_only=False)
                     if self._stop:
@@ -542,7 +544,7 @@ class AsrThread(QThread):
                     self._after_model_constructed(device, cache_key)
                     app_log.log("asr.model_repaired_online", model=self.model_size,
                                 device=device, first_error=str(e)[:120])
-                    self.status_changed.emit("模型缓存已修复")
+                    self.status_changed.emit(ui_text("模型缓存已修复"))
                     self._device_used = device
                     return True
                 except Exception as e2:
@@ -562,7 +564,7 @@ class AsrThread(QThread):
                     # GPU，用户无感损失 6~10 倍速度）。走状态通道进主窗状态行
                     self.status_changed.emit(
                         "⚠ GPU 加载失败已回落 CPU（模型较重时字幕明显滞后）——"
-                        f"原因：{str(e)[:60]}。可在「设置-语音识别」检测 GPU 环境")
+                        f"原因：{str(e)[:60]}{ui_text('。可在「设置-语音识别」检测 GPU 环境')}")
                     app_log.log("asr.cuda_fallback_cpu", model=self.model_size, err=str(e)[:120])
                     return True
                 except Exception:
@@ -571,7 +573,7 @@ class AsrThread(QThread):
             from app.errors import friendly_error
             from app import log as app_log
             app_log.exception("asr.model_load_failed", e, model=self.model_size)
-            self.error_occurred.emit(f"模型加载失败：{friendly_error(e)}")
+            self.error_occurred.emit(f"{ui_text('模型加载失败：')}{friendly_error(e)}")
             return False
 
     def _construct_model(self, model_ref, device, compute_type, local_only):
@@ -603,19 +605,19 @@ class AsrThread(QThread):
                 # 文案必须如实——此前只说"几秒到几十秒"，用户以为卡死
                 if str(self.device) == "cuda":
                     self.status_changed.emit(
-                        f"正在加载 {self.model_size} 模型（GPU 首次初始化约 1 分钟，"
+                        f"{ui_text('正在加载 ')}{self.model_size} 模型（GPU 首次初始化约 1 分钟，"
                         "仅第一次；之后秒开，可在「设置-语音识别」开启启动预热）...")
                 else:
-                    self.status_changed.emit(f"正在加载 {self.model_size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...")
+                    self.status_changed.emit(f"{ui_text('正在加载 ')}{self.model_size}{ui_text(' 模型（本地缓存，CPU 上通常需几秒到几十秒）...')}")
             else:
-                self.status_changed.emit(f"正在准备 {self.model_size} 模型（首次运行会自动下载，见状态栏进度）...")
+                self.status_changed.emit(f"{ui_text('正在准备 ')}{self.model_size}{ui_text(' 模型（首次运行会自动下载，见状态栏进度）...')}")
             if not self._load_model():
                 return
         except Exception as e:
             from app.errors import friendly_error
             from app import log as app_log
             app_log.exception("asr.setup_failed", e)
-            self.error_occurred.emit(f"识别引擎启动失败：{friendly_error(e)}")
+            self.error_occurred.emit(f"{ui_text('识别引擎启动失败：')}{friendly_error(e)}")
             return
         if self._stop:
             # 加载期间用户已按停止：直接退出，不再报“就绪”
@@ -623,22 +625,22 @@ class AsrThread(QThread):
         self.model_ready.emit()
         dev = getattr(self, "_device_used", "cpu")
         if dev == "cuda":
-            self.status_changed.emit("就绪，正在聆听...（GPU · CUDA 加速已生效）")
+            self.status_changed.emit(ui_text("就绪，正在聆听...（GPU · CUDA 加速已生效）"))
         elif dev == "cpu" and self.device == "cuda":
             # v2.1.1：显式"强制 GPU"回落 CPU 时明确告知原因与出路
-            self.status_changed.emit("就绪，正在聆听...（CPU 模式 · 强制 GPU 不可用已回落："
-                                     "请先「检测 GPU 环境」并安装 CUDA 版 PyTorch）")
+            self.status_changed.emit(ui_text("就绪，正在聆听...（CPU 模式 · 强制 GPU 不可用已回落："
+                                     "请先「检测 GPU 环境」并安装 CUDA 版 PyTorch）"))
         elif dev == "cpu" and self.device == "auto":
             # v2.0.11：auto 明确回落为 CPU 时如实告知（此前 auto 显示与
             # 显式 CPU 无差别，用户不知道 GPU 没用上）
-            self.status_changed.emit("就绪，正在聆听...（CPU 模式 · auto 未启用 GPU："
-                                     "如需加速请显式选 cuda 并安装 CUDA 版 PyTorch，见 GPU 检测引导）")
+            self.status_changed.emit(ui_text("就绪，正在聆听...（CPU 模式 · auto 未启用 GPU："
+                                     "如需加速请显式选 cuda 并安装 CUDA 版 PyTorch，见 GPU 检测引导）"))
         else:
-            self.status_changed.emit("就绪，正在聆听...（CPU 模式）")
+            self.status_changed.emit(ui_text("就绪，正在聆听...（CPU 模式）"))
         if self.silero_vad and not _silero_assets_ok():
             # 打包资产缺失（v1.9.0 安装包）：回退能量 VAD，原因并入就绪提示
             self.silero_vad = False
-            self.status_changed.emit("就绪，正在聆听...（Silero VAD 组件缺失，已回退默认切句，请更新安装包）")
+            self.status_changed.emit(ui_text("就绪，正在聆听...（Silero VAD 组件缺失，已回退默认切句，请更新安装包）"))
         if self._stop:
             return
         self._warmup()
@@ -665,7 +667,7 @@ class AsrThread(QThread):
                 from app.errors import friendly_error
                 from app import log as app_log
                 app_log.exception("asr.transcribe_failed", e)
-                self.status_changed.emit(f"识别异常：{friendly_error(e)}")
+                self.status_changed.emit(f"{ui_text('识别异常：')}{friendly_error(e)}")
 
     def _warmup(self):
         # v2.0.7：复用实例只预热一次（实例标记）；停止后不再空跑——
@@ -736,13 +738,13 @@ class AsrThread(QThread):
                     # 而用户本来就是自动检测、界面上也没有「auto」这个标签。
                     lang = str(self.language or "").strip()
                     if not lang or lang.lower() == "auto":
-                        hint = ("识别语言＝自动检测；若内容语言固定，"
-                                "在设置里手动锁定该语言可减少误听")
+                        hint = (ui_text("识别语言＝自动检测；若内容语言固定，"
+                                "在设置里手动锁定该语言可减少误听"))
                     else:
-                        hint = (f"当前锁定为「{lang}」，与内容不符时"
+                        hint = (f"{ui_text('当前锁定为「')}{lang}」，与内容不符时"
                                 "请在设置中改为自动检测或换语言")
                     self.status_changed.emit(
-                        "有语音被识别但质量过滤丢弃（可能为音乐/噪声，或识别语言与内容不符——"
+                        ui_text("有语音被识别但质量过滤丢弃（可能为音乐/噪声，或识别语言与内容不符——")
                         + hint + "）")
             else:
                 self._filtered_streak = 0
@@ -762,9 +764,9 @@ class AsrThread(QThread):
                 with self._lang_lock:
                     self._last_lang = detected
                 lang = detected
-                self.status_changed.emit("语言复检：检测到说话语言变化，已切换")
+                self.status_changed.emit(ui_text("语言复检：检测到说话语言变化，已切换"))
             elif detected and detected != lang:
-                self.status_changed.emit("语言复检结果不一致，本段保守丢弃，下段按原语言继续")
+                self.status_changed.emit(ui_text("语言复检结果不一致，本段保守丢弃，下段按原语言继续"))
                 self.recheck_dropped.emit(text, duration)
                 return
         if self.language == "auto" and conf < 0.6:
@@ -773,10 +775,10 @@ class AsrThread(QThread):
             self._discard_streak += 1
             if self._discard_streak >= 3:
                 self.status_changed.emit(
-                    "已连续丢弃多段不确定的语音：当前模型对这段内容识别吃力，"
-                    "建议在「设置 - 语音识别」换更大模型（如 small）或锁定识别语言")
+                    ui_text("已连续丢弃多段不确定的语音：当前模型对这段内容识别吃力，"
+                    "建议在「设置 - 语音识别」换更大模型（如 small）或锁定识别语言"))
             else:
-                self.status_changed.emit("语言检测不确定已丢弃，下段重新检测；若持续偏差请锁定语言")
+                self.status_changed.emit(ui_text("语言检测不确定已丢弃，下段重新检测；若持续偏差请锁定语言"))
             return
         if self.language == "auto":
             with self._lang_lock:
