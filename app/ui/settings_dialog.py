@@ -1054,7 +1054,10 @@ class SettingsDialog(QDialog):
         device_row.setSpacing(6)
         device_row.addWidget(self.device_combo)
         self.refresh_button = QPushButton(ui_text("刷新"))
-        self.refresh_button.setMinimumWidth(64)
+        # v2.21.2：原来 setFixedWidth(64)→改成 setMinimumWidth(64) 仍不够——
+        # 布局就按这个 64 下限把它压死，扣掉 QSS 的 28px 内边距后英文 'Refresh'
+        # 只剩 36px 可用（实测截屏显示成 "efres"）。带文字的按钮不设数值下限，
+        # 交给 Qt 自己的 sizeHint。
         self.refresh_button.clicked.connect(self._load_devices)
         device_row.addWidget(self.refresh_button)
         wrap = QWidget()
@@ -1094,7 +1097,7 @@ class SettingsDialog(QDialog):
         model_row.setSpacing(6)
         model_row.addWidget(self.model_combo, 1)
         self.model_manage_button = QPushButton(ui_text("管理"))
-        self.model_manage_button.setMinimumWidth(64)
+        self.model_manage_button.setMinimumWidth(0)   # 同上：'Manage' 实测被裁成 'lanag'
         self.model_manage_button.clicked.connect(self._manage_models)
         model_row.addWidget(self.model_manage_button)
         model_wrap = QWidget()

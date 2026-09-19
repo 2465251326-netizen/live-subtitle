@@ -600,7 +600,7 @@ CATALOG = {
     "重新运行首次向导": "Re-run first-run wizard",
     "链接": "Links",
     "错误片段（已从字幕预填，删改到只剩要纠正的词句即可）：": "Wrong segment (prefilled from the caption - just trim it down to the words to fix): ",
-    "错误：": "Wrong text: ",
+    "错误：": "Error: ",
     "问题反馈 / 源码仓库": "Feedback / source repository",
     "阿拉伯语": "Arabic",
     "隐藏到托盘": "Hide to tray",

@@ -2505,6 +2505,36 @@ def test_ui_no_fixed_width_on_text_buttons():
                            + _NL.join(offenders))
 
 
+def test_i18n_language_applies_after_storage_migration():
+    """P0 锁：迁移过数据目录的用户，默认根下只剩**指针**（只含 storage_root）。
+
+    启动时读界面语言若只看这个文件，会永远回落到 zh——用户选英文、重启、还是中文，
+    而界面明明承诺"重启后生效"。CONFIG_FILE 是 app.config 的模块常量，改环境变量
+    不会重新求值，所以必须起子进程按真实启动路径跑一遍。
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    root = Path(__file__).resolve().parents[1]
+    mig = Path(tempfile.mkdtemp(prefix="ls_ptr_mig_"))
+    home = Path(tempfile.mkdtemp(prefix="ls_ptr_home_"))
+    (mig / "config.json").write_text(
+        json.dumps({"ui_language": "en", "wizard_done": True}), encoding="utf-8")
+    (home / "config.json").write_text(
+        json.dumps({"storage_root": str(mig).replace(chr(92), "/")}), encoding="utf-8")
+    code = ("import os,sys;sys.path.insert(0,%r);import main;"
+            "main._load_ui_language();"
+            "from app import i18n;print(i18n.get_lang())" % str(root))
+    env = dict(os.environ, LIVETRANSLATE_HOME=str(home), QT_QPA_PLATFORM="offscreen")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=env, cwd=str(root), timeout=120)
+    got = (r.stdout or "").strip().splitlines()
+    got = got[-1] if got else ""
+    assert got == "en", ("迁移后界面语言没生效：解析到 %r（stderr %s）"
+                         % (got, (r.stderr or "")[-160:]))
+
+
 def test_i18n_ui_language_registered():
     """配置锁：ui_language 必须存在、默认 zh、且只放中英两档（不做小语种）。"""
     from app.config import DEFAULTS

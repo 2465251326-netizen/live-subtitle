@@ -98,8 +98,21 @@ def _load_ui_language():
         from app.config import CONFIG_FILE
         from app import i18n
         raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        i18n.set_lang(str(raw.get("ui_language") or "zh")
-                      if isinstance(raw, dict) else "zh")
+        if not isinstance(raw, dict):
+            raw = {}
+        # v2.21.2（P0）：迁移过数据目录的用户，默认根下这个文件是**指针**——
+        # 只存 storage_root 单键（见 config.py 的 POINTER_CONFIG_FILE 注释），
+        # 真正的 ui_language 在新根里。原来直接读指针就回落到 zh：
+        # 用户选英文、重启、还是中文，永远如此，而界面明明写着"重启后生效"。
+        root = str(raw.get("storage_root") or "").strip()
+        if "ui_language" not in raw and root:
+            try:
+                deeper = json.loads((Path(root) / "config.json").read_text(encoding="utf-8"))
+                if isinstance(deeper, dict):
+                    raw = deeper
+            except Exception:
+                pass
+        i18n.set_lang(str(raw.get("ui_language") or "zh"))
     except Exception:
         try:
             from app import i18n
