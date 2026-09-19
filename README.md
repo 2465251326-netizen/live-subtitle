@@ -1,4 +1,4 @@
-# LiveSubtitle · 实时字幕翻译   本项目全程都是AI Vibe Coding生成,其中有过使用GLM 5.3f,和千问3.8f
+# LiveSubtitle · 实时字幕翻译
 
 <p>
   <a href="https://github.com/2465251326-netizen/live-subtitle/releases/latest"><img src="https://img.shields.io/github/v/release/2465251326-netizen/live-subtitle?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC&color=2ea44f" alt="latest release"></a>
@@ -6,6 +6,19 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey" alt="Windows">
   <img src="https://img.shields.io/badge/%E8%AF%AD%E9%9F%B3-%E6%9C%AC%E5%9C%B0%E8%AF%86%E5%88%AB-6f42c1" alt="local ASR">
 </p>
+
+> ### ⚠️ 用之前请先读这一句
+>
+> **本项目全程由 AI 生成（Vibe Coding），可能存在不可用的情况，或者体验上的不足。**
+>
+> 我是个代码小白，做这个项目首先是为了**解决自己的问题**，顺便帮助有需要的人。
+> 所以请这样理解它：能跑、每天都在自己用，但**不保证适配你的机器，也不保证长期维护**。
+>
+> - 遇到问题不算意外——欢迎[提 Issue](https://github.com/2465251326-netizen/live-subtitle/issues/new/choose)（附上日志能大幅加快定位），也欢迎直接改代码提 PR
+> - 首次使用需要联网下载识别模型（以及可选的离线语言包），之后可全程离线
+> - 本项目按 **MIT 许可证** 提供，无任何担保；重要场合请先自己试一遍
+>
+> <sub>开发过程使用的模型：GLM 5.3f、千问 3.8f。</sub>
 
 一款 Windows 桌面实时字幕工具：**抓取电脑正在播放的声音**（或麦克风输入），本地识别语音，实时翻译成目标语言。对标 Chrome「实时字幕」，并补齐它的核心短板——**自动检测语言 + 实时翻译 + 完全可控**。在线翻译支持 16 种主流目标语言，离线语言包支持其中 15 种（暂缺繁体中文）。
 
