@@ -1819,4 +1819,81 @@ Release `draft=false pre=false`，created 05:59:30Z / published 06:06:21Z，双�
 HANDOFF 未提交，`git status` 与 `git rev-parse HEAD origin/main` 核对无丢失。
 停电后的第一件事是 `gh run list` 看远端终态，而不是重跑或重推——避免重复构建。
 
+## 三十八、会话快照（2026-09-19 第七轮巡检：**用户实拍"有时候会重复翻译"**）
+
+同一句任务第七次下达，并附了一张实拍截图：dual 面板上同一句英文出现两行，
+各带一份措辞不同的中文（用户把这两行圈了出来）。这轮从这张图倒推根因。
+
+### 38.1 记录：F9 回声隔行漏判（已复现，三条入口都中）
+
+截图实录：
+
+```
+行1  Usually when Trump is demolishing … it's a bucket of KFC.   → 通常特朗普在…会是一桶KFC.
+行2  Great.                                                      → 伟大的。
+行3  Usually when Trump is demolishing … it's a bucket of KFC. that's a bucket of KFC.
+                                                                → 通常特朗普在…是一桶KFC,即一桶KFC.
+```
+
+行3 的原文**以行1 开头**。判据若拿到行1 必然判同句——探针直接把两对都量了一遍：
+`_dual_same_sentence('Great.', 行3) = False`、`_dual_same_sentence(行1, 行3) = True`。
+根因是**同句判据只跟"最新一行"比**（`update_partial` / `_dual_show_pending` 里的
+`cur = self._dual_cur_src()`），滑窗预览把更早那一句连着尾巴重播时，隔了一行就漏。
+
+三条入口全部复现出重复行（`%TEMP%/ls_ux7/probe_k_echo.py`）：
+① 草稿拍 `update_partial`；② 正式片段 `show_pending`；③ **列表布局**的
+`show_caption` / `show_pending_result`。另外主窗卡片侧也复现出第三张卡——
+即"重复翻译"字面成立：那一段还被**又送去翻译了一遍**。
+
+### 38.2 修复：跨行回声判据（面板 + 主窗同一份实现）
+
+新增模块级 `recent_echo(text, settled_sources)`（`caption_overlay.py` 末尾），
+命中即整拍作废：dual 的 `_dual_new_sentence` / `_dual_row_for`（返回 -1）、
+列表的 `show_pending` / `show_pending_result` / `show_caption`、
+以及主窗 `_on_asr_text`（不建卡、不送译，并记一条 `asr.echo_skipped` 日志留痕）。
+草稿译文那扇门也补了一道（`update_dual_draft_tgt`）——原文侧作废了，
+译文侧不能还把它写进**当前这一句**的卡片。
+
+四条护栏，都是"宁可漏去重也不能吞真话"：
+
+1. **只比已定稿的行**。未收口那条路本来就会按原文找回去（`_find_pending` /
+   `_dual_row_for`），把未收口的算进"旧话"会让一句真话的终版被当回声丢掉，
+   那一行就永远停在 `⟳ 翻译中…`——v2.22.0 刚修完的占位家族不能从这儿复发。
+2. **`ECHO_MAX_GROW=1.4`**：比旧条长出 40% 以上不算重播。whisper 带上下文重转
+   有时会把同一句转得**更完整**（"Hello there." → "Hello there, welcome to the
+   show."），那种必须上屏。
+3. **`ECHO_MIN_CHARS=12`**：短句不去重——说话人把 "Great." 说两遍是真话。
+4. **跨行判据不认"前 3 词同源"快判**（`_dual_same_sentence` 新增 `head3` 形参）。
+   这条是写锁的时候才发现的：`head3` 是为"同一句被重转写"设计的（草稿 vs 终版
+   只差标点），用在跨行就会把 "The president said…" 之后的
+   "The president told reporters…" 判成重播整句吞掉。探针实测近义改写那句的
+   有序 LCS 只有 0.786（阈值 0.85），去掉快判后判据仍然抓得住真回声
+   （回声是前缀包含，走的是第一条硬判据）。
+
+窗口取 5 条 ≈ 预览滑窗能追到的最远重播。CJK 侧的局限照实记下：中文没有空格，
+`split()` 分不出词，跨行判据对中文实际只剩"前缀包含"一条——"A。"与"A"这种
+能抓住，句中改标点的抓不住。改成字符级 LCS 会把"我们今天讨论这个项目"与
+"我们今天讨论这个计划"（12/13 字相同）判成同一句，代价更大，故不做。
+
+### 38.3 锁与反证
+
+新增 5 把：双语回声不开重复行、列表回声行同样不补开、主窗回声段不建卡也不送译、
+反向护栏（四条不吞真话 + 一条必须命中）、未收口行绝不参与去重。累计单元 111 /
+集成 **155**。
+
+反证两轮（`inject7b.py off|loose`）：关掉 `recent_echo` → 红的正是三把"必须去重"
+的锁；分别放松 `ECHO_MAX_GROW` / `head3` / "只比已定稿" → 红的正是两把"不许吞
+真话"的锁，且一条消息里同时点名两条失效护栏。
+
+**两条方法论账**：
+1. 反向护栏锁第一版把四条断言串成四个 `assert`，三项判据同时放松时只红一条
+   （第一条挡住后面），等于"哪条护栏没人守"判不出来。改成逐条收集再一次报出。
+2. 注入脚本按 `"head3=False"` 定位，命中的却是它上面那行**注释**——代码没动、
+   锁不红，是**假阴性**的注入。§36.2 记过"按第一个匹配定位会误伤同名结构"，
+   这次它以更隐蔽的形式又犯了一遍：注入点必须点到调用行，并且要看到"红"才作数。
+3. 主窗那把锁第一版断言 `submitted == [...]` 却是空表——`_on_asr_text` 末尾送译前
+   有一道 `_active_translate() is not None` 的闸，没给假线程桩就永不被调用。
+   空桩会让锁"绿得很假"。
+
+
 
