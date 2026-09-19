@@ -85,9 +85,33 @@ def _app_version():
         return "?"
 
 
+def _load_ui_language():
+    """在**任何 app.ui 模块被导入之前**定下界面语言。
+
+    必须是第一步：caption_overlay 的 LANGS/FONTS 是类属性，导入即求值，
+    晚一步就永久定格成中文（选英文也只有一半是英文的）。
+    这里刻意不构造 Config()——那会 mkdir、改环境变量、重定位并起 HF 探测线程；
+    读一次界面语言不该有这些副作用，Config() 仍由 run_app() 自己创建。
+    """
+    try:
+        import json
+        from app.config import CONFIG_FILE
+        from app import i18n
+        raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        i18n.set_lang(str(raw.get("ui_language") or "zh")
+                      if isinstance(raw, dict) else "zh")
+    except Exception:
+        try:
+            from app import i18n
+            i18n.set_lang("zh")
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     install_crash_logger()
     try:
+        _load_ui_language()
         from app.ui.main_window import run_app
         run_app()
     except SystemExit:

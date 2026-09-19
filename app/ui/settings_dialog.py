@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION, DEFAULTS
-from app.i18n import ui_text, ui_fmt
+from app.i18n import ui_text, ui_fmt, SUPPORTED
 
 from app.translate.translator import ArgosEngine, _cache
 from app.translate.offline_pack import cleanup_temp_files
@@ -1277,6 +1277,19 @@ class SettingsDialog(QDialog):
 
     def _page_general(self):
         page = self._page()
+        # v2.20.6：界面语言放在本页最前——用户找"把界面换成英文"默认先翻到「通用」。
+        self._section(page, ui_text("界面语言"))
+        self.ui_lang_combo = QComboBox()
+        # 语言名**刻意不过 ui_text**：各语言用其本族文字显示是通用惯例，
+        # 英文界面里也得看得见「简体中文」，才知道自己选的是什么、怎么换回去。
+        for _code, _name in SUPPORTED:
+            self.ui_lang_combo.addItem(_name, _code)
+        self._row(page, ui_text("界面语言"),
+                  ui_text("改后需重启 LiveSubtitle 才生效（界面文字在启动时一次性载入）。"
+                          "此项只换软件自身的菜单与说明文字，不影响字幕的翻译语言——"
+                          "那由「翻译」页的「目标语言」决定。"),
+                  self.ui_lang_combo)
+        self.ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
         self._section(page, ui_text("窗口行为"))
         # v2.3.0：close_action/auto_start/max_history 改 _STD_ROWS 表驱动
         self._std_rows(page, "general", ui_text("窗口行为"))
@@ -1367,6 +1380,11 @@ class SettingsDialog(QDialog):
 
     def _on_hotkey_enabled_changed(self, v):
         self._stage("hotkey_enabled", bool(v))
+
+    def _on_ui_lang_changed(self, _idx):
+        """界面语言只暂存——生效方式是重启整个程序（界面文字启动时载入），
+        所以既不触发管线重启，也不做运行时热替换。"""
+        self._stage("ui_language", str(self.ui_lang_combo.currentData() or "zh"))
 
     def _on_hotkey_sequence_changed(self, seq):
         self._stage("hotkey_sequence", seq.toString())
@@ -2068,6 +2086,10 @@ class SettingsDialog(QDialog):
                 self.dirty_hint.setText(ui_text("已保存并应用 · 下次开始翻译时生效"))
         elif hotfix and self.main.running:
             self.dirty_hint.setText(ui_text("已保存并应用 · 词典已即时生效"))
+        elif "ui_language" in applied:
+            # 文案不许承诺做不到的事：这一项保存后界面**不会**立刻变，
+            # 必须重启。说"已应用"就是谎报。
+            self.dirty_hint.setText(ui_text("已保存 · 界面语言需重启 LiveSubtitle 后生效"))
         else:
             self.dirty_hint.setText(ui_text("已保存并应用"))
         self.settings_saved.emit()
@@ -2158,6 +2180,7 @@ class SettingsDialog(QDialog):
         self.tfix_edit.setPlainText(self._mishear_to_text(values.get("translate_fix_map",
                                                                      c.get("translate_fix_map"))))
         set_combo(self.proxy_combo, "proxy_mode")
+        set_combo(self.ui_lang_combo, "ui_language")
         self.proxy_url_edit.setText(str(values.get("proxy_url", c.get("proxy_url")) or ""))
         self.hotwords_edit.setText(str(values.get("asr_hotwords", c.get("asr_hotwords")) or ""))
         self.overlay_font_spin.setValue(int(values.get("overlay_font_size", c.get("overlay_font_size"))))

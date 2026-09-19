@@ -2352,6 +2352,91 @@ def test_segmenter_pending_cap_and_expiry():
     assert s3.pending_idle == 0.0, s3.pending_idle
 
 
+
+# ===================== v2.20.6 界面语言（i18n）四道锁 =====================
+# 这四条锁把"英文模式漏翻"从人眼问题变成构建失败。放 test_units 而非
+# integration——CI 只跑单元+smoke，今后任何人新加一句界面文案而漏配英文，CI 当场红。
+
+_I18N_SRC = ["app/ui/main_window.py", "app/ui/settings_dialog.py", "app/ui/caption_overlay.py",
+             "app/ui/first_run.py", "app/asr/engine.py", "app/translate/translator.py",
+             "app/translate/offline_pack.py", "app/audio/capture.py", "app/asr/preview.py"]
+_NL = chr(10)
+
+
+def _i18n_literals():
+    """扫源码，收集所有 ui_text("…") / ui_fmt("…") 的字面量模板 → {模板: [位置]}。"""
+    import ast
+    root = Path(__file__).resolve().parents[1]
+    out = {}
+    for rel in _I18N_SRC:
+        tree = ast.parse((root / rel).read_text(encoding="utf-8"))
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("ui_text", "ui_fmt") and n.args:
+                a = n.args[0]
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    out.setdefault(a.value, []).append(rel + ":" + str(n.lineno))
+    return out
+
+
+def test_i18n_every_ui_string_has_english():
+    """完整性锁：源码里每一句界面文案都必须有英文条目，漏一条即失败。"""
+    from app.locales.en import CATALOG
+    lits = _i18n_literals()
+    assert lits, "没扫到任何 ui_text 字面量——codemod 或本测试的文件清单失效了"
+    missing = [(k, v[0]) for k, v in lits.items() if k not in CATALOG]
+    detail = _NL.join("  " + src + "  " + repr(k[:60]) for k, src in missing[:15])
+    assert not missing, str(len(missing)) + " 条界面文案缺英文翻译:" + _NL + detail
+
+
+def test_i18n_placeholders_match():
+    """模板锁：ui_fmt 的 {占位符} 两侧必须完全一致——少一个 KeyError，多一个静默丢值。"""
+    import re
+    from app.locales.en import CATALOG
+    pat = re.compile(r"\{(\w+)(?::[^}]*)?\}")
+    bad = []
+    for zh, en in CATALOG.items():
+        want = set(pat.findall(zh))
+        got = set(pat.findall(en))
+        if want != got:
+            bad.append("  " + repr(zh[:44]) + " 中文占位 " + str(sorted(want))
+                       + " vs 英文 " + str(sorted(got)))
+    assert not bad, "占位符不一致:" + _NL + _NL.join(bad[:12])
+
+
+def test_i18n_english_has_no_cjk():
+    """残留锁：英文值里不许有汉字或全角标点（漏翻/机器痕迹）。"""
+    import re
+    from app.locales.en import CATALOG
+    pat = re.compile("[　-〿" + chr(0xFF00) + "-" + chr(0xFFEF) + "]|[一-鿿]")
+    bad = ["  " + repr(v[:50]) + " (key=" + repr(k[:32]) + ")"
+           for k, v in CATALOG.items() if pat.search(v)]
+    assert not bad, str(len(bad)) + " 条英文值残留中文/全角标点:" + _NL + _NL.join(bad[:12])
+
+
+def test_i18n_default_zh_is_identity():
+    """兼容底座：默认中文时 ui_text 必须原样返回。破了它，所有按中文断言的既有
+    测试就不再是回归证明。"""
+    from app import i18n
+    saved = i18n.get_lang()
+    try:
+        assert i18n.set_lang("zh") == "zh"
+        for k in list(_i18n_literals())[:400]:
+            assert i18n.ui_text(k) == k
+        # 未知语言代码必须回落中文，而不是显示空白或裸 key
+        assert i18n.set_lang("fr-XX") == "zh"
+        assert i18n.ui_text("攒句合并") == "攒句合并"
+    finally:
+        i18n.set_lang(saved)
+
+
+def test_i18n_ui_language_registered():
+    """配置锁：ui_language 必须存在、默认 zh、且只放中英两档（不做小语种）。"""
+    from app.config import DEFAULTS
+    from app import i18n
+    assert DEFAULTS.get("ui_language") == "zh"
+    assert [c for c, _n in i18n.SUPPORTED] == ["zh", "en"]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
