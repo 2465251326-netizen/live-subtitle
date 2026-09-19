@@ -2062,6 +2062,21 @@ publishedAt 07:34:32Z，双资产
 `LiveSubtitle-2.23.1-portable.zip` **136,412,017 B**、
 `LiveSubtitle-Setup-2.23.1.exe` **91,444,229 B**。
 
+### 38.10 v2.23.2 发布记录
+
+`590f838`（判据 + 四把锁）→ `5860027` release → tag **v2.23.2** →
+run **35434769793** `success`，2026-09-19T09:28:06Z 起 **6m44s**（四条标记与双资产
+字节数均由我自己 `gh run view --log` / `gh release view` 复量，不是转述子代理）：
+`Version check OK: tag v2.23.2 == setup.iss / config.py / version_info.txt`、
+`UNIT: 112 tests PASS`、`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`、
+`EXE is running OK (PID 5556)`。Release `isDraft=false isPrerelease=false`，
+publishedAt 09:34:47Z，双资产 `LiveSubtitle-2.23.2-portable.zip` **136,419,103 B**、
+`LiveSubtitle-Setup-2.23.2.exe` **91,446,267 B**。
+
+**CI 上的数字不会替本轮说话**：本轮四把新锁全在 `tests/test_integration.py`
+（155 → 159），而 CI 按既定策略只跑单元 + smoke——所以 `UNIT: 112` 与上一版**一模一样**
+是正常的，别把它读成"这轮没加锁"。集成套件的实数（159 PASS）以本地那一次为准（§38.8）。
+
 
 
 
