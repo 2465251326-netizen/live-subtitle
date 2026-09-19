@@ -13,6 +13,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["LIVETRANSLATE_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "itest_home")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# 测试名里有 ✕/⏸/▶ 等非 GBK 字符：Windows 默认控制台下 print 直接
+# UnicodeEncodeError，且要跑到第 81 项才炸——前半截已跑完，极易被误读成代码缺陷。
+# 结果文件本来就是 utf-8 写的，这里只把控制台一并转过去。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import faulthandler
 
 RESULTS = []
