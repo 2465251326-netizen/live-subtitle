@@ -1197,8 +1197,14 @@ class CaptionOverlay(QWidget):
         # 状态列宽度主权让位：截短 + 限宽（520px 面板实测长文案会盖住 ⋯）
         self._cap_status_width()
         t = (text or "").strip()
-        if len(t) > 10:
-            t = t[:9] + "…"
+        # v2.20.6：旧实现写死"超过 10 字符截成 9 字 + …"。中文 10 字信息量足够，
+        # 英文 10 字符只剩 "Stopped · …"（双语真机截图实测）。限宽的本职是
+        # _cap_status_width 算出的像素上限（F3：不得压到 ⋯），按像素省略就能
+        # 两种语言都尽量多留字，不再用与语言挂钩的字符数当闸门。
+        budget = max(40, int(self.status_lbl.maximumWidth()))
+        fm = self.status_lbl.fontMetrics()
+        if t and fm.horizontalAdvance(t) > budget:
+            t = str(fm.elidedText(t, Qt.ElideRight, budget))
         self.status_lbl.setText(t)
         # v2.5.2（R1）：不再设 tooltip——悬停 1s 弹出的原生 tooltip 窗口会拦截
         # 光标区域后续所有点击（随机测试实锤：清空/⋯/📌/收起/✕ 全部"点了没反应"

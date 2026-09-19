@@ -2429,6 +2429,15 @@ def test_i18n_default_zh_is_identity():
         i18n.set_lang(saved)
 
 
+def test_i18n_no_bare_ampersand_in_english():
+    """Qt 的 QPushButton / QCheckBox / 菜单项把 `&` 当助记符吃掉——实测英文按钮
+    "Save & apply" 渲染成 "Save  apply"（& 消失、a 变下划线）。词典里不许出现裸 &，
+    统一写 and；否则同类 bug 会随任意一次文案增改复发。"""
+    from app.locales.en import CATALOG
+    bad = [k[:40] + " -> " + CATALOG[k][:40] for k in CATALOG if "&" in CATALOG[k]]
+    assert not bad, str(len(bad)) + " 条英文值含裸 &（Qt 按钮会吃掉）:" + _NL + _NL.join(bad[:8])
+
+
 def test_i18n_ui_language_registered():
     """配置锁：ui_language 必须存在、默认 zh、且只放中英两档（不做小语种）。"""
     from app.config import DEFAULTS

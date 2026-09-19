@@ -1278,7 +1278,7 @@ class SettingsDialog(QDialog):
     def _page_general(self):
         page = self._page()
         # v2.20.6：界面语言放在本页最前——用户找"把界面换成英文"默认先翻到「通用」。
-        self._section(page, ui_text("界面语言"))
+        # 只此一项，不再叠一个同名小节标题（小节名与行名重复读起来像渲染出错）。
         self.ui_lang_combo = QComboBox()
         # 语言名**刻意不过 ui_text**：各语言用其本族文字显示是通用惯例，
         # 英文界面里也得看得见「简体中文」，才知道自己选的是什么、怎么换回去。
