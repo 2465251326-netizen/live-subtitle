@@ -1904,18 +1904,31 @@ def t_overlay_dual_preview_echo_no_dup_row():
     rows = [i["text"] for i in ov._dual_src_items]
     assert len(rows) == 1, f"回声拍另起了一行：{rows}"
     assert rows[0] == S1, f"收口行被更短的回声打回半句：{rows[0]!r}"
-    # v2.20.2 记录一条**已知不吸收**的形态：带结巴的回声（真机原文如此，
-    # whisper 重播时多吐了 "on the sport"）。它在词级统计上与"只差一个数字的
-    # 两句最小对"不可区分（0.82 vs 0.80），而阈值必须守住 0.85 才不吞真句子
-    # ——所以这种回声仍会多出一行重复。判据偏向：**宁多一行重复，不丢一句真话**。
+    # v2.20.2 曾把这条记成"已知不吸收"：带结巴的回声（真机原文如此，whisper
+    # 重播时多吐了 "on the sport"）在词级统计上与"只差一个数字的两句最小对"
+    # 不可区分（0.82 vs 0.80），而终版判据的阈值必须守住 0.85 才不吞真句子。
+    # v2.23.2 改判据偏向（用户为"重复翻译"连报两次、实机 150s 真新闻取证）：
+    # **草稿拍**不再有"另起一行"的资格——它与最近 5 行有任何实质重叠就本拍作废。
+    # 真句子不会因此丢失：它的**终版**照样开行（终版路径阈值仍是 0.85 不变），
+    # 草稿只是可能晚一拍出现。所以这里从"多一行重复"改成"不重复"。
     ov.update_partial("inflation readings this month helped lift sentiment "
                       "across the board on the sport on the sports desk")
     app.processEvents()
-    assert len(ov._dual_src_items) == 2, "结巴回声被吸收了＝阈值又松回去了"
+    assert len(ov._dual_src_items) == 1, \
+        f"结巴回声又被草稿开成第二行：{[i['text'][:40] for i in ov._dual_src_items]}"
+    # 但同一句的**终版**必须照常落地（草稿闸门不许挡权威文本）
+    ov.show_pending_result("Inflation readings this month helped lift sentiment "
+                           "across the board on the sports desk.", "市场情绪回升。")
+    app.processEvents()
+    assert len(ov._dual_src_items) >= 1, "终版被草稿闸门挡掉了"
     # 真正的新句照旧开新行（判据收紧不得把新内容也吞掉）
     ov.update_partial("The national team secured qualification with a late goal")
     app.processEvents()
-    assert len(ov._dual_src_items) == 3, [i["text"] for i in ov._dual_src_items]
+    # 行数：收口行 + 这句新行（结巴回声拍与那条被判定为"嵌在旧行里"的终版
+    # 都没再各开一行——旧契约下这里是 3）
+    assert len(ov._dual_src_items) == 2, [i["text"] for i in ov._dual_src_items]
+    assert ov._dual_src_items[-1]["text"].startswith("The national team"), \
+        "真新句没开成行"
     ov.deleteLater()
 
 
@@ -4775,6 +4788,11 @@ _E2 = "Great."
 _E2T = "伟大的。"
 _ECHO = _E1 + " that's a bucket of KFC."
 _ECHOT = "通常特朗普在空军一号上拆除某事时,是一桶KFC,即一桶KFC."
+# 用户**第二次**实拍（v2.23.1 仍漏）：非前缀包含、差异全在句尾的一对
+_M1 = ("In his new movie, Tom plays the world's most powerful man who tries "
+       "to convince people he's a man")
+_M2 = ("In his new movie, Tom plays the world's most powerful man who tries "
+       "to convince people he's human... humanity's savior.")
 
 
 def t_dual_echo_beat_opens_no_row():
@@ -4809,6 +4827,20 @@ def t_dual_echo_beat_opens_no_row():
         _pump(6)
         assert len(ov._dual_src_items) == 3, "回声之后的真新句被一起吞掉了"
         assert ov._dual_src_items[-1]["text"].startswith("Oil prices")
+        # —— 用户第二次实拍（v2.23.1 仍漏）：非前缀、差异全在句尾的那一对 ——
+        ov.clear_caption()
+        _pump(6)
+        ov._dual_show_pending(_M1)
+        ov._dual_show_result(_M1, "在他的新电影中,汤姆饰演最有权力的人他试图说服人们他是一个男人", True)
+        ov._dual_show_pending("Humanity's savior.")
+        ov._dual_show_result("Humanity's savior.", "人类的救世主", True)
+        _pump(6)
+        assert len(ov._dual_src_items) == 2, "前提：两行已收口"
+        ov._dual_show_pending(_M2)
+        ov._dual_show_result(_M2, "在他的新电影中,汤姆饰演了最有权力的人,他试图说服人们他是人类……", True)
+        _pump(6)
+        assert len(ov._dual_src_items) == 2, \
+            f"实拍二次复发：同一句又开出第二行（{len(ov._dual_src_items)} 行）"
     finally:
         ov.deleteLater()
 check("panel: 双语回声拍不再开出重复行（§38 F9）", t_dual_echo_beat_opens_no_row)
@@ -4891,10 +4923,11 @@ def t_echo_guard_three_ways_not_to_swallow():
     from app.ui.caption_overlay import recent_echo
     settled = [_E1, _E2]
     bad = []
-    # ① 更完整的版本（whisper 带上下文重转常把句子转长）
+    # ① 更完整的版本：判据认它是"同一句"，但**处置**必须是就地覆盖而不是丢弃
+    #    （v2.23.2 起终版走 merge-up：更长的那版胜出，屏上不留两行）。
     fuller = _E1 + " and the secretary added that the review would finish by friday."
-    if recent_echo(fuller, settled):
-        bad.append("把更完整的版本当回声吞掉了（ECHO_MAX_GROW 护栏失效）")
+    if not recent_echo(fuller, settled):
+        bad.append("更完整的版本没被认成同一句（会并排留两行）")
     # ② 短句真重复：说话人把 "Great." 说两遍
     if recent_echo("Great.", ["Great.", "Something else entirely here."]):
         bad.append("短句复读被吞——那是真话（ECHO_MIN_CHARS 护栏失效）")
@@ -4914,6 +4947,14 @@ def t_echo_guard_three_ways_not_to_swallow():
     # ⑤ 用户实拍那条回声必须命中
     if not recent_echo(_ECHO, settled):
         bad.append("用户实拍那条回声没被抓住")
+    # ⑥ **用户第二次实拍**的那一对（v2.23.1 仍漏）：19/20 词相同、差异全在句尾，
+    #    既不是前缀包含，又会被"最小对否决"按逐位差异判成两句（LCS 实测 0.895）。
+    if not recent_echo(_M2, [_M1]):
+        bad.append("实拍二次复发那对（只差句尾、非前缀）仍被漏判")
+    # ⑦ 光看 LCS 会吞掉的两句真话：开头不同的同构句（LCS 0.91）必须不判回声
+    if recent_echo("He said the government would respond within the coming weeks.",
+                   ["She said the government would respond within the coming weeks."]):
+        bad.append("开头不同的同构两句被并成一句（跨行判据必须要求开头同源）")
     assert not bad, "；".join(bad)
 
 
@@ -4947,6 +4988,185 @@ def t_echo_guard_never_strands_open_row():
     finally:
         ov.deleteLater()
 check("echo: 未收口行绝不参与回声去重", t_echo_guard_never_strands_open_row)
+
+
+def t_final_merge_up_keeps_one_row():
+    """v2.23.2 的处置契约：同一句的两次转写——**就地覆盖，更长的那版胜出**。
+
+    实机 150s 真新闻里最常见的一种重复不是"原样重播"，而是草稿先长出一行、
+    收口之后下一段又给出同一句的更完整版本。只"抑制新行"会把更好的文本一起
+    丢掉，所以终版走 merge-up：屏上始终一行，且留下的是更完整的那版。"""
+    fuller = _E1 + " and the secretary added that the review would finish by friday."
+    ov = CaptionOverlay()
+    ov.show()
+    _pump(6)
+    try:
+        # 列表：先上短句版，再上更完整版
+        ov.show_caption(_E1, "汤姆在片中饰演最有权力的人。", True)
+        _pump(4)
+        ov.show_caption(fuller, "汤姆在片中饰演最有权力的人，他还补充说评审周五前结束。", True)
+        _pump(6)
+        assert len(ov._rows) == 1, f"同一句留了两行：{len(ov._rows)}"
+        assert ov._rows[0]["src_text"] == fuller, "更完整的版本没胜出"
+        # 反向：更短的那版不许覆盖掉更长的
+        ov.show_caption(_E1, "短版本。", True)
+        _pump(6)
+        assert len(ov._rows) == 1, "更短的一版又开了一行"
+        assert ov._rows[0]["src_text"] == fuller, "更短的版本把更全的那行覆盖了"
+        # dual 同一契约
+        ov.set_layout_mode("dual")
+        ov.clear_caption()
+        _pump(6)
+        ov._dual_show_result(_E1, "汤姆在片中饰演最有权力的人。", True)
+        _pump(4)
+        ov._dual_show_result(fuller, "汤姆在片中饰演最有权力的人，他还补充说。", True)
+        _pump(6)
+        assert len(ov._dual_src_items) == 1, \
+            f"dual 同一句留了两行：{[i['text'][:30] for i in ov._dual_src_items]}"
+        assert ov._dual_src_items[0]["text"] == fuller
+    finally:
+        ov.deleteLater()
+check("echo: 同一句的两次转写就地覆盖（更长者胜出）", t_final_merge_up_keeps_one_row)
+
+
+def t_fragment_row_absorbed_by_fuller_row():
+    """v2.23.2 实机残留的第一大形状：**碎片行 + 后面的整句行**（150s 真新闻
+    `08 | Kenya will... host the World's` ↔ `09 | …Kenya will host the World
+    Athletics Championships. a first for…`）。
+
+    它抓不住的根因是 `ECHO_MAX_GROW` 护栏——整句比碎片长得多，护栏本意是"更完整
+    的版本绝不能当回声丢掉"。可这条路的处置是**就地覆盖、长者胜出**，"新版长得多"
+    恰恰就是该合的形状，所以给 `strong_overlap` 开一个只此一家使用的 `allow_grow`
+    口子：旧版≥4 词且 ≥80% 按序嵌在新版里 → 同一句。
+    反向护栏必须一起锁死：只做"丢弃"的 `recent_echo` 不许开这个口子。"""
+    frag = "Kenya will... host the World's"
+    full = ("in this podcast. Kenya will host the World Athletics Championships, "
+            "a first for an African nation.")
+    ov = CaptionOverlay()
+    ov.show()
+    _pump(6)
+    try:
+        # 前提：碎片行与整句行既非前缀也非逐词连续包含（否则 grow 没用武之地）
+        from app.ui.caption_overlay import contains_words, _words, strong_overlap
+        assert not contains_words(_words(frag), _words(full))
+        assert not strong_overlap(frag, full), "不开 grow 时这对仍该判两句"
+        # ① 列表：整句就地吸收碎片行
+        ov.show_caption("These are our main stories for today.", "以下是今天的要闻。", True)
+        _pump(4)
+        ov.show_caption(frag, "肯尼亚将举办世界……", True)
+        _pump(4)
+        assert len(ov._rows) == 2, [r["src_text"][:24] for r in ov._rows]
+        ov.show_caption(full, "肯尼亚将举办世界田径锦标赛，这是非洲国家首次。", True)
+        _pump(6)
+        rows = [r["src_text"] for r in ov._rows]
+        assert len(ov._rows) == 2, f"碎片行没被整句吸收：{[x[:24] for x in rows]}"
+        assert rows[1] == full, rows[1]
+        # ② 反向护栏：丢弃型调用方绝不开 grow（否则更完整的真转写会整条消失）
+        from app.ui.caption_overlay import recent_echo
+        assert not recent_echo(full, [frag]), \
+            "recent_echo 沾了 grow＝宁多一行重复的契约被推翻"
+        # ③ dual 同一契约
+        ov.set_layout_mode("dual")
+        ov.clear_caption()
+        _pump(6)
+        ov._dual_show_result(frag, "肯尼亚将举办世界……", True)
+        _pump(4)
+        ov._dual_show_result(full, "肯尼亚将举办世界田径锦标赛，这是非洲国家首次。", True)
+        _pump(6)
+        assert len(ov._dual_src_items) == 1, \
+            [i["text"][:24] for i in ov._dual_src_items]
+        assert ov._dual_src_items[0]["text"] == full
+    finally:
+        ov.deleteLater()
+check("echo: 碎片行被整句就地吸收（grow 只此一家）", t_fragment_row_absorbed_by_fuller_row)
+
+
+def t_short_draft_opens_no_row():
+    """v2.23.2 长度闸：短到只有半截的**流式草稿**没有开新行的资格。
+
+    实机 150s 真新闻（v2.23.1 基线 40 行）里那些垃圾行——`The.` / `of our` /
+    `targeting.` / `so that...` / `while officials`——全是滑窗草稿开的：预览通道
+    每 0.9 秒转写一次 4 秒窗口，窗口边界切在句中时就会吐出半截短语，而它既不是
+    一句话、也永远等不到属于自己的终版。判据改判"谁有资格开行"之后，这类短语
+    本拍作废；真新句（≥4 词且与最近 5 行零重叠）照旧当拍开行，实时性不丢。"""
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    _pump(6)
+    try:
+        ov._dual_show_result("Ukraine and Russia continue fighting.",
+                             "俄乌继续交战。", True)
+        _pump(4)
+        assert len(ov._dual_src_items) == 1
+        for junk in ("The.", "of our", "targeting.", "so that...", "while officials"):
+            ov.update_partial(junk)
+            _pump(3)
+            assert len(ov._dual_src_items) == 1, \
+                "草稿垃圾短语开了一行：%r（现有 %d 行）" % (
+                    junk, len(ov._dual_src_items))
+        # 4 词但不足 12 字符（短句真话的边界）——同样不许草稿抢开行
+        ov.update_partial("Yes yes ok.")
+        _pump(3)
+        assert len(ov._dual_src_items) == 1
+        # 反向上限：真新句（够长、与最近 5 行零重叠）必须当拍就开，
+        # 否则这道闸就是在拖慢实时性
+        ov.update_partial("Oil prices fell sharply across European markets today")
+        _pump(4)
+        assert len(ov._dual_src_items) == 2, \
+            [i["text"][:30] for i in ov._dual_src_items]
+    finally:
+        ov.deleteLater()
+check("draft: 半截草稿没有开新行的资格", t_short_draft_opens_no_row)
+
+
+_S1 = "Ukraine says it supports de-escalation, but only if Russia shows it\u2019s ready."
+_S2 = "Ukraine says it supports de-escalation, but only if Russia shows it\u2019s ready to end the war."
+_S3 = _S2 + " The Kremlin has said it welcomed the US proposal."
+_S2B = _S2 + " and the secretary added that the review would finish soon."
+
+
+def t_draft_cross_sentence_no_growth():
+    """v2.23.2（实机第三次跑抓到）：草稿拍"旧文本 + 追加一整句新话"必然被
+    `_dual_same_sentence` 判成同一句——短的那句 100% 按序嵌在长的那句里。
+    于是**一行吞掉四句话**（实机样本 570 字符一行），那四句各自的终版又各开
+    一行，一行重复成四行。
+
+    边界判据只看一件事：追加部分以大写开头 **且** 已上屏文本正好停在句末标点。
+    两个方向都必须锁：① 越界的一拍不许接长（把判据拆掉这把锁必须红）；
+    ② 同一句真在长（接续小写）时照旧接——否则这道闸是在废掉实时生长。"""
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("dual")
+    _pump(6)
+    try:
+        ov.update_partial(_S1)
+        _pump(4)
+        assert len(ov._dual_src_items) == 1, [i["text"] for i in ov._dual_src_items]
+        assert ov._dual_src_items[0]["text"] == _S1
+        ov.update_partial(_S2)          # 同一句在长（不是前缀，走 LCS）
+        _pump(4)
+        assert ov._dual_src_items[0]["text"] == _S2, ov._dual_src_items[0]["text"]
+        # ① 越界：前缀 + 句末标点 + 大写开头 → 本拍既不接长也不另起
+        ov.update_partial(_S3)
+        _pump(4)
+        assert len(ov._dual_src_items) == 1, \
+            f"越界草稿另起了一行：{[i['text'][:28] for i in ov._dual_src_items]}"
+        assert ov._dual_src_items[0]["text"] == _S2, \
+            "草稿把下一句接进了同一行（越界判据失效）"
+        # ② 接续小写 → 同一句照常长
+        ov.update_partial(_S2B)
+        _pump(4)
+        assert ov._dual_src_items[0]["text"] == _S2B, ov._dual_src_items[0]["text"]
+        # ③ 被压掉的那句真话由终版补上
+        ov.show_pending_result("The Kremlin has said it welcomed the US proposal.",
+                               "克里姆林宫表示欢迎美方的提议。")
+        _pump(6)
+        assert len(ov._dual_src_items) == 2, \
+            [i["text"][:28] for i in ov._dual_src_items]
+        assert ov._dual_src_items[-1]["text"].startswith("The Kremlin")
+    finally:
+        ov.deleteLater()
+check("draft: 草稿越过句子边界不许把上一句接长", t_draft_cross_sentence_no_growth)
 
 
 report = "\n".join(RESULTS)

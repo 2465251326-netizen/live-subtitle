@@ -633,6 +633,32 @@ class CaptionOverlay(QWidget):
             return
         self._add_row(source_text, ui_text("⟳ 翻译中…"), True)   # v2.20.3：此刻原文已经出来了，在等的是翻译——写"识别中"会让人以为卡在识别
 
+    def _merge_final_into_row(self, source_text, target_text):
+        """终版落列表行前的"同一句就地覆盖"处置。
+
+        返回 True = 本条已处置完（覆盖某行 / 作废），调用方**不得**再新开一行。
+        覆盖方向只有一条规矩：**更长（更完整）的那版胜出**，屏上永远不留两行。
+        """
+        t = (source_text or "").strip()
+        if not t:
+            return False
+        for it in reversed(self._rows[-ECHO_WINDOW:]):
+            if not strong_overlap(it.get("src_text") or "", t, allow_grow=True):
+                continue
+            have = (it.get("src_text") or "").strip()
+            if len(t) < len(have):
+                return True          # 屏上那行更全，本条作废
+            it["pending"] = False
+            it["spec"] = False
+            it["src_text"], it["tgt_text"] = source_text, target_text or ""
+            it["src"].setText(source_text)
+            it["src"].setVisible(bool(source_text) and self._show_source)
+            it["tgt"].setText(target_text or "")
+            self._relayout()
+            self._schedule_relayout()
+            return True
+        return False
+
     def show_pending_result(self, source_text, target_text, show_source=True,
                             merged_from=None):
         """译文就绪：补齐**原文匹配**的占位行；无匹配则新建完成行（迟到旧句
@@ -645,10 +671,10 @@ class CaptionOverlay(QWidget):
         self._show_source = bool(show_source)
         self._merge_pending(merged_from)
         r = self._find_pending(source_text)
-        if r is None and self._recent_echo(source_text):
-            # v2.23.0（§38 F9）：这一句屏上已经有了（那一行带着自己的原文与译文），
-            # 再补一行就是"同一句两行、两份措辞不同的译文"。`_last_result` 也不
-            # 许改指向它——「复制最近一句 / 纠正」该指向那行干净的终版。
+        if r is None and self._merge_final_into_row(source_text, target_text):
+            # v2.23.0（§38 F9）+ v2.23.2：这一句屏上已经有了——就地覆盖或作废，
+            # 绝不并排留两行；`_last_result` 也不改指向（「复制最近一句 / 纠正」
+            # 该停在原处）。
             return
         self._last_result = (source_text or "", target_text or "")
         if r is not None:
@@ -714,7 +740,8 @@ class CaptionOverlay(QWidget):
         if not t:
             return
         cur = self._dual_cur_src().strip()
-        if cur and self._dual_same_sentence(cur, t, not self._dual_cur_open):
+        if cur and self._dual_same_sentence(cur, t, not self._dual_cur_open) \
+                and not self._crossed_sentence_boundary(cur, t):
             # 同一句（还在生长，或终版之后 whisper 又转了一遍的尾重复）：
             # 只刷新**最新一行**的原文，该行译文状态一律不动
             # （v2.19.1 的"不闪白""不重置终版"两条契约）
@@ -728,6 +755,11 @@ class CaptionOverlay(QWidget):
             # （用户实拍），并且留下一拍~两拍的"新句原文 + 上一句终版译文"
             # 错配窗口（v2.19.1 元凶）。
             # 回声（滑窗把前面某一句重播）由 `_dual_new_sentence` 那道闸统一拦掉。
+            # v2.23.2：草稿另起一行还要过"有没有资格开行"这道闸——实机 150s
+            # 真新闻里那些碎片行（"The." / "of our" / "so that..."）与半句重播行
+            # 全是草稿开的，终版才是这句的权威文本。
+            if not self._draft_may_open_row(t):
+                return
             self._dual_new_sentence(t)
         self._sync_dual_visibility()
         self._schedule_relayout()
@@ -768,8 +800,8 @@ class CaptionOverlay(QWidget):
         if self.is_dual():
             self._dual_show_result(source_text, target_text, show_source)
             return
-        if self._recent_echo(source_text):
-            return          # v2.23.0（§38 F9）：旧话重播不再补一行
+        if self._merge_final_into_row(source_text, target_text):
+            return          # v2.23.2：同一句的两次转写就地覆盖，不补第二行
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
         self._add_row(source_text or "", target_text or "", False)
@@ -918,6 +950,63 @@ class CaptionOverlay(QWidget):
                 return True
         return False
 
+    @staticmethod
+    def _crossed_sentence_boundary(cur, t):
+        """流式草稿这一拍是不是**越过句子边界接上了另一句**（v2.23.2）。
+
+        `_dual_same_sentence` 量的其实是"短的那句有没有按序嵌在长的那句里"，
+        于是"旧文本 + 追加一整句新话"的草稿拍必然判同一句（包含率 1.0）。实机
+        样本里最丑的一行就是这么长出来的：一行吞下四句话（403 字符），随后那
+        四句各自的终版又各开一行——一行重复成四行。补一条边界判据：追加部分以
+        大写开头、且已上屏文本正好停在句末标点 → 这不是同一句在长，是下一句
+        接了上来（本拍不生长，交给 `_draft_may_open_row` 与终版处置）。
+
+        误判代价有限：`…the U.S. Embassy…` 这类句中缩写加大写会让本拍被压掉，
+        那一行停在标点前，最多晚 1~3 拍由终版补齐——文字不会丢。"""
+        if not t.startswith(cur):
+            return False
+        head = cur.rstrip()
+        tail = t[len(cur):].strip()
+        if not head or not tail or head[-1] not in ".!?":
+            return False
+        return tail[0].isupper()
+
+    def _draft_may_open_row(self, text):
+        """流式草稿有没有资格**另起一行**（v2.23.2，实机 150s 真新闻 40 行取证）。
+
+        草稿是滑窗对同一段音频的"当前猜测"，天然会反复覆盖已上屏的文字，而且
+        每次覆盖的措辞还差一两个词（实机样本：`The foreign minister... Andrei
+        Sibiyan,` 与 `The foreign minister, Andrei Sibiya, said Ukraine was primed
+        for a ceasefire.`）——这类形态**不可能**靠文本相似度判干净，两轮调阈值都
+        还有漏网。所以改判"谁有资格开行"：
+
+        - 另起一行是**终版**（正式片段/译文落地）的权力；草稿只负责把当前行
+          长出来。草稿拍若与最近 5 行有实质重叠（逐词包含，或 LCS ≥0.6），
+          或短到 4 词以下（实机那些 "The." / "of our" / "so that..."），一律
+          本拍作废——最多晚一拍看到，不再留下永久重复行。
+        - 代价：句子刚收口、下一句的终版还没到的那 1~4 秒里，面板不预先长新句。
+          真新句（与最近 5 行零重叠且 ≥4 词）照常立即开行，实时性不丢。"""
+        t = (text or "").strip()
+        if len(t) < ECHO_MIN_CHARS:
+            return False
+        if len(_words(t)) < 4:
+            return False
+        # 判据与终版路径同源（`strong_overlap`），但**对草稿更严一档**：再加一条
+        # "与最近某行词序重合 ≥60% 就不许开行"。理由是权力不同——终版是这句的
+        # 权威文本，误判会吞掉一句真话（所以它必须要求开头同源 + LCS≥0.85）；
+        # 草稿只是一次猜测，压掉一拍最多晚 0.9 秒看到，而放过一拍就是屏上
+        # 一行永久重复（实机样本：专名被转成两种拼写时 LCS 只有 0.80~0.83，
+        # 走终版判据抓不住）。
+        recent = [it.get("text") or "" for it in self._dual_src_items][-ECHO_WINDOW:]
+        tw = _words(t)
+        for s in recent:
+            if strong_overlap(s, t, allow_grow=True):
+                return False
+            sw = _words(s)
+            if len(sw) >= 4 and len(tw) >= 4 and _lcs_overlap(sw, tw) >= 0.6:
+                return False
+        return True
+
     def _recent_srcs(self):
         """最近若干行里**已经定稿**的原文。
 
@@ -994,7 +1083,24 @@ class CaptionOverlay(QWidget):
         t = self._dual_tgt.text().strip()
         return bool(t) and not bool(self._dual_tgt.property("empty"))
 
-    def _dual_row_for(self, src_text=""):
+    def _recent_overlap_index(self, text):
+        """最近若干行里与 `text` 强重叠的那一行的行号（无则 None）。
+
+        含**已收口**的行——终版有权改写上一行：实机样本里最常见的一种重复是
+        "草稿把这句长了半截 → 收口 → 下一段又给出同一句的更完整版本"，此时
+        屏上留两行就是用户抱怨的"同一句两行、两份译文"，而正确做法是让权威
+        的终版**就地覆盖**那一行（更长的版本胜出，内容一个字都不丢）。
+
+        这条路开 `allow_grow`：这里的处置是"长者胜出"，"新版长得多"恰恰是
+        该合的形状（碎片行 + 整句行），不存在吞掉真话的风险。"""
+        t = (text or "").strip()
+        items = self._dual_src_items
+        for i in range(len(items) - 1, max(-1, len(items) - 1 - ECHO_WINDOW), -1):
+            if strong_overlap(items[i].get("text") or "", t, allow_grow=True):
+                return i
+        return None
+
+    def _dual_row_for(self, src_text="", merge_closed=False):
         """定位 `src_text` 该写进**哪一行**，返回行号（-1 = 这一拍是旧话的重播，
         不该开新行、也不该写进别的行，调用方直接作废这一拍）。
 
@@ -1015,8 +1121,19 @@ class CaptionOverlay(QWidget):
                 if self._dual_same_sentence(self._dual_src_items[i]["text"], key):
                     return i
         if self._dual_src is None or self._dual_slot_has_content():
-            if key and self._recent_echo(key):
-                return -1
+            if key:
+                # 终版（merge_closed=True）：与最近某一行强重叠 → **就地覆盖那一行**，
+                # 让更完整的权威版本胜出，而不是并排留两行（实机最常见的那种重复）。
+                # 已有的那行更长 → 这条终版是更差的版本，作废（不许覆盖掉更多字）。
+                # 草稿：没有开新行的资格，本拍作废。
+                k = self._recent_overlap_index(key)
+                if k is not None:
+                    if not merge_closed:
+                        return -1
+                    have = (self._dual_src_items[k].get("text") or "").strip()
+                    return k if len(key) >= len(have) else -1
+                if self._recent_echo(key):
+                    return -1
             self._dual_new_slot(key)
         elif key:
             self._dual_set_src(key)
@@ -1254,19 +1371,14 @@ class CaptionOverlay(QWidget):
         # （真机：收口行 + 半句草稿行 + 整句终版又开一行，草稿行成孤儿）。
         na = [w.strip(".,!?;:\"'()") for w in ta]
         nb = [w.strip(".,!?;:\"'()") for w in tb]
-        prev = [0] * (len(na) + 1)
-        for w in nb:
-            row = [0]
-            for k, v in enumerate(na):
-                row.append(prev[k] + 1 if w == v else max(prev[k + 1], row[k]))
-            prev = row
         # 0.85 是实测校准出来的：真回声（同一段被重播）稳定在 1.0；近义改写的
         # 两句 0.44；而 "Sentence number 0 arrives live" vs "…number 1 arrives
         # live" 这种**只差一个数字的最小对**是 0.80——再松就会把下一句吞掉。
         # 代价：带结巴的回声（真机那条 "…on the sport on the sports desk"，词级
         # 统计与最小对无法区分，实测 0.82）仍会多出一行重复。**宁多一行重复，
         # 不吞一句真话**——丢句子比重复更难被发现。
-        return prev[-1] / min(len(na), len(nb)) >= 0.85
+        # 有序 LCS 占比的唯一实现见模块级 `_lcs_overlap`（跨行回声判据共用）。
+        return _lcs_overlap(na, nb) >= 0.85
 
     def _dual_set_src(self, text):
         """写当前句原文，并同步累积条目里的簿记文本（高度/有无内容判据都读它）。"""
@@ -1337,7 +1449,7 @@ class CaptionOverlay(QWidget):
         # 完成使命。旧实现只在 `_add_row`（列表路径）复位，dual 走不到
         # 那里 → 清空后三行小抄反复重弹，违反"每份配置只弹一次"。
         self._hint_guide = False
-        idx = self._dual_row_for(source_text or "")
+        idx = self._dual_row_for(source_text or "", merge_closed=True)
         if idx < 0:
             # v2.23.0（§38 F9）：这一句的终版是前几行某一句的重播——那行已经有
             # 自己的原文与译文，重开一行就是用户实拍里"同一句两行、两份译文"。
@@ -2383,31 +2495,121 @@ class CaptionOverlay(QWidget):
 # ---------- v2.23.0（§38 F9）：回声判据的共用出口 ----------
 # 滑窗预览会把**已经收口那一句**连着尾巴再转写一遍（用户实拍：同一句冒出两行、
 # 还各带一份措辞不同的译文）。旧判据只跟"最新一行"比，隔一行就漏。
-# 面板行与主窗卡片列表都要问同一句"这是不是前几条里哪一条的重播"，所以判据
-# 只留一份实现（阈值改一处两边同步）——`CaptionOverlay._dual_same_sentence`：
-# 有序 LCS ≥0.85 + 最小对否决。
-ECHO_WINDOW = 5       # 往回看几条（≈ 预览窗口能追到的最远重播）
+# 面板行与主窗卡片列表都要问同一句"这是不是前几条里哪一条的重播"，所以有序
+# LCS 占比只有 `_lcs_overlap` 一份实现（阈值改一处两边同步），
+# `CaptionOverlay._dual_same_sentence` 与下面的 `recent_echo` 都用它。
+ECHO_WINDOW = 5       # 往回看几条（≈ 预览滑窗能追到的最远重播）
 ECHO_MIN_CHARS = 12   # 短句不去重：说话人把 "Great." 说两遍是真话，不是滑窗重播
 ECHO_MAX_GROW = 1.4   # 比旧条长出 40% 以上就不算重播（那是更完整的版本，不是复读尾巴）
+
+
+def _words(text):
+    """分词并剥掉附着标点（与 `_dual_same_sentence` 内部同一口径）。"""
+    return [w.strip(".,!?;:\"'()") for w in (text or "").lower().split()]
+
+
+def contains_words(short, long):
+    """`short` 的全部词是否**逐词连续**出现在 `long` 里（实机样本里"半句重播"
+    就是这个形状：新行以旧行的中段开头，或旧行整段嵌在新行里）。"""
+    if len(short) < 3 or len(short) > len(long):
+        return False
+    for i in range(len(long) - len(short) + 1):
+        if long[i:i + len(short)] == short:
+            return True
+    return False
+
+
+def _lcs_overlap(a_words, b_words):
+    """**有序** LCS 占较短一句的比例——"短的那句是否被长的那句按序包含"。
+
+    唯一实现：`CaptionOverlay._dual_same_sentence` 与跨行回声判据共用。
+    不用词集合：集合判据会把近义改写的两句误并（"president met PM in Warsaw"
+    与 "PM met president in Berlin" 词集几乎相同、词序完全不同）。"""
+    if not a_words or not b_words:
+        return 0.0
+    prev = [0] * (len(a_words) + 1)
+    for w in b_words:
+        row = [0]
+        for k, v in enumerate(a_words):
+            row.append(prev[k] + 1 if w == v else max(prev[k + 1], row[k]))
+        prev = row
+    return prev[-1] / min(len(a_words), len(b_words))
+
+
+def _equal_middle_swap(a_words, b_words):
+    """剥掉公共前缀与公共后缀后，两边"中段"是否**一样长**（＝等长替换）。
+
+    `…item 7 of the checklist…` ↔ `…item 8 of the checklist…`：中段 1↔1，
+    其余逐位对齐 —— 这是两句话（v2.20.2 的编号类最小对，实机锁过）。
+    `…he's a man` ↔ `…he's human… humanity's savior.`：中段 2↔3 —— 同一句
+    被重转写时**结尾分叉**，不是两句话。"""
+    n = min(len(a_words), len(b_words))
+    if n < 3 or abs(len(a_words) - len(b_words)) > 2:
+        return False
+    p = 0
+    while p < n and a_words[p] == b_words[p]:
+        p += 1
+    s = 0
+    while s < (n - p) and a_words[len(a_words) - 1 - s] == b_words[len(b_words) - 1 - s]:
+        s += 1
+    ma = len(a_words) - p - s
+    mb = len(b_words) - p - s
+    return 0 < ma == mb <= max(1, n // 6)
+
+
+def tail_head_overlap(a_words, b_words):
+    """a 的后缀 = b 的前缀（或反向）的最长词数——滑窗错位重播的结构信号。
+
+    实机样本：上一行的尾巴正好是下一行的开头（`…in attacks on` ↔
+    `in attacks on energy infrastructure…`），两行说的是同一句话，只是窗口
+    挪了半句。两句真话之间几乎不会出现这么长的首尾重合，所以门槛取
+    `max(4, 0.6 × 较短一句)`。"""
+    n = min(len(a_words), len(b_words))
+    for k in range(n, 0, -1):
+        if a_words[len(a_words) - k:] == b_words[:k]:
+            return k
+        if b_words[len(b_words) - k:] == a_words[:k]:
+            return k
+    return 0
+
+
+def strong_overlap(old_text, new_text, allow_grow=False):
+    """两段字幕是不是"同一句话的两次转写"（跨行判据的唯一口径）。
+
+    `allow_grow`：新版比旧版长得多（>1.4 倍）时还算不算同一句。只有**处置是
+    "就地覆盖、长的那版胜出"** 的调用方才许开这个口子——实机样本里最常见的
+    一种残留就是"5 词的碎片行 + 后面 25 词的整句行"（碎片行的词几乎全部按序
+    嵌在整句里）。只做"抑制/丢弃"的调用方（`recent_echo`、主窗送译前闸）**不许**
+    开：那条路会把更完整的真转写整个吞掉，正是"宁多一行重复，不吞一句真话"。"""
+    o, n = (old_text or "").strip(), (new_text or "").strip()
+    if len(n) < ECHO_MIN_CHARS or not o:
+        return False
+    ow, nw = _words(o), _words(n)
+    if len(nw) < 4:
+        return False
+    if contains_words(nw, ow) or contains_words(ow, nw):
+        return True
+    k = tail_head_overlap(ow, nw)
+    if k >= max(4, int(0.6 * min(len(ow), len(nw)))):
+        return True
+    if len(n) > len(o) * ECHO_MAX_GROW:
+        if not allow_grow or len(ow) < 4:
+            return False
+        # 旧版基本被新版按序包住（≥80% 的词）＝它就是这句的碎片版本
+        return _lcs_overlap(ow, nw) >= 0.8
+    if len(ow) < 3 or len(nw) < 3 or ow[:3] != nw[:3]:
+        return False
+    if _equal_middle_swap(ow, nw):
+        return False
+    return _lcs_overlap(ow, nw) >= 0.85
 
 
 def recent_echo(text, settled_sources):
     """`text` 是不是最近 `ECHO_WINDOW` 条**已定稿**字幕里某一条的重播。
 
-    只比"已定稿"的：未收口那条路本来就会按原文找回去（`_find_pending` /
-    `_dual_row_for`），把未收口的也算进来会让一句真话的终版被误当回声丢掉。
-
-    `ECHO_MAX_GROW` 是"宁多一行重复，不吞一句真话"的护栏：whisper 带上下文
-    重转有时会把同一句转得**更完整**（"Hello there." → "Hello there, welcome
-    to the show."），那种必须上屏，不能当复读丢掉。"""
-    t = (text or "").strip()
-    if len(t) < ECHO_MIN_CHARS:
-        return False
+    判据只有 `strong_overlap` 一份口径（逐词包含 / 尾首错位 / 开头同源 + 有序
+    LCS ≥0.85，并排除等长替换）。只比"已定稿"的：未收口那条路本来就会按原文
+    找回去（`_find_pending` / `_dual_row_for`），把未收口的也算进来会让一句
+    真话的终版被误当回声丢掉。"""
     src = [s.strip() for s in (settled_sources or []) if (s or "").strip()]
-    for s in src[-ECHO_WINDOW:]:
-        if len(t) > len(s) * ECHO_MAX_GROW:
-            continue
-        # head3=False：跨行判据不许用"前 3 词同源"快判（见其文档）
-        if CaptionOverlay._dual_same_sentence(s, t, True, head3=False):
-            return True
-    return False
+    return any(strong_overlap(s, text) for s in src[-ECHO_WINDOW:])
