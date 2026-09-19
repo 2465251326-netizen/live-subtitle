@@ -2487,7 +2487,10 @@ class MainWindow(QMainWindow):
         # 留痕：静默丢弃正是 §26.4-2 那类"永久失效零日志"的老毛病，记一条。
         if recent_echo(text, self._recent_card_sources()):
             from app import log as app_log
-            app_log.log("asr.echo_skipped", text=str(text)[:60])
+            # 只记长度，不记正文：本模块 docstring 承诺"不记录字幕正文"，而
+            # README 让用户把 app.log 贴到公开 Issues（会议内容、病历、私聊
+            # 朗读都在里面）。脱敏只兜 URL/查询串/凭据，兜不住裸 text 字段。
+            app_log.log("asr.echo_skipped", chars=len(str(text or "")))
             return
         # v2.2.3：连续流模式下原文是否入流由 overlay 自行按 show_source 决定
         # （"只显示译文"时原文不入流）

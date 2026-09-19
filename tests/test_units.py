@@ -2294,6 +2294,33 @@ def test_config_dict_coercion_keeps_valid_entries():
     assert Config._coerce("mishear_map", {"a": 1}) == {}
 
 
+def test_log_calls_never_pass_caption_fields():
+    """v2.23.1 静态锁：日志调用的字段名里不许出现"字幕正文"类字段。
+
+    `_redact` 只兜三种形态：URL、查询串 `q=`、代理凭据。它兜不住裸写的
+    `log("x", text=<字幕>)`。本轮加回声去重时就顺手写了
+    `app_log.log("asr.echo_skipped", text=str(text)[:60])`，把识别正文写进
+    app.log——而 README 让用户把这份日志贴到公开 Issues，字幕里可能有会议
+    内容、病历、私聊朗读。判据结论与长度可以记，正文不行。"""
+    import ast
+    root = Path(__file__).resolve().parents[1]
+    banned = {"text", "src", "src_text", "source_text", "translated", "target_text",
+              "caption", "subtitle", "combined", "piece", "pieces", "draft"}
+    hits = []
+    for p in sorted((root / "app").rglob("*.py")):
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            name = getattr(n.func, "attr", None) or getattr(n.func, "id", None)
+            if name not in ("log", "exception", "info", "warning", "error"):
+                continue
+            for kw in n.keywords:
+                if kw.arg in banned:
+                    hits.append(f"{p.relative_to(root)}:{n.lineno} {name}({kw.arg}=…)")
+    assert not hits, "日志调用把字幕正文写进字段了：" + _NL.join(hits[:10])
+
+
 def test_log_redacts_proxy_credentials():
     """v2.20.4：脱敏要覆盖"代理账号口令"，且崩溃兜底日志同一条路。
 

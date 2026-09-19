@@ -1895,5 +1895,29 @@ HANDOFF 未提交，`git status` 与 `git rev-parse HEAD origin/main` 核对无�
    有一道 `_active_translate() is not None` 的闸，没给假线程桩就永不被调用。
    空桩会让锁"绿得很假"。
 
+### 38.4 v2.23.0 发布记录 + 它自己带进来的隐私回归（v2.23.1 修）
+
+`50d4ca6`（判据 + 五把锁）→ `e6fd30f` release → tag **v2.23.0** →
+run **35429002609** `success`，07:19:23Z 起 **5m40s**。四条标记（子代理取回后自己
+`gh run view --log` 复核过原文）：`Version check OK: tag v2.23.0 == …`、
+`UNIT: 111 tests PASS`、`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`、
+`EXE is running OK (PID 5732)`。Release `draft=false pre=false`，双资产
+`LiveSubtitle-Setup-2.23.0.exe` **91,440,067 B**、
+`LiveSubtitle-2.23.0-portable.zip` **136,412,019 B**。
+
+**但那条留痕日志写错了**：`app_log.log("asr.echo_skipped", text=str(text)[:60])`
+把识别正文前 60 字符落进 `app.log`。`app/log.py` 的 docstring 明写"不记录字幕正文"，
+README 又让用户把这份日志贴到公开 Issues——字幕里可能有会议内容、病历、私聊朗读。
+`_redact` 只兜 URL / 查询串 `q=` / 代理凭据三类**形态**，兜不住一个裸写的 `text=` 字段。
+
+v2.23.0 已经发布，按 §34/§36 的既定做法**不回移 tag、不覆盖资产**，改发补丁号：
+v2.23.1 把字段换成 `chars=`（只记长度），并补第 **112** 道锁——AST 扫 `app/` 全部
+日志调用，字段名命中 `text/src/src_text/translated/caption/subtitle/combined/piece/draft`
+即构建失败。反证：把那行泄漏写回去，锁当场点到 `app/ui/main_window.py:2493 log(text=…)`。
+
+**给自己记一条**：以后每新加一行日志，先回答"这条会不会被用户贴到公网"。这类问题
+不该靠记性，该靠静态锁——所以这轮的补丁真正的产出不是那一行改动，是第 112 道锁。
+
+
 
 

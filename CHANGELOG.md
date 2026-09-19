@@ -2,6 +2,15 @@
 
 最新版本说明见 [Releases](https://github.com/2465251326-netizen/live-subtitle/releases)；本文件保留完整历史（v1.6 起）。
 
+### v2.23.1
+
+**修 v2.23.0 自己带进来的隐私回归：回声去重的日志把字幕正文写进了 app.log**
+
+- **问题**：v2.23.0 为回声去重留的那条痕迹写的是 `app_log.log("asr.echo_skipped", text=str(text)[:60])`——把识别正文的前 60 字符落盘。而 `app/log.py` 的 docstring 明写"不记录字幕正文"，README 又让用户把 `app.log` 贴到公开 Issues；字幕里可能有会议内容、病历、私聊朗读。`_redact` 只兜 URL / 查询串 `q=` / 代理凭据三类形态，兜不住一个裸写的 `text=` 字段。
+- **修复**：改成只记长度（`chars=`）。判据结论与计数可以留痕，正文不行。
+- **新增·第 112 道锁**：AST 扫 `app/` 全部日志调用，字段名命中 `text/src/src_text/translated/caption/subtitle/…` 即构建失败。反证：把那行泄漏写回去，锁当场点到 `app/ui/main_window.py:2493 log(text=…)`。
+- **教训记档**：新加一条日志时，"这条会不会被用户贴到公网"是必答项；静态锁比人脑可靠。
+
 ### v2.23.0
 
 **修"有时候会重复翻译"（用户实拍：同一句两行、两份措辞不同的译文）**
