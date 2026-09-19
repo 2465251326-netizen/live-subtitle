@@ -471,7 +471,10 @@ class MainWindow(QMainWindow):
         self.settings_button = QPushButton(ui_text("设置"))
         self.settings_button.setObjectName("GhostButton")
         self.settings_button.setCursor(Qt.PointingHandCursor)
-        self.settings_button.setFixedWidth(64)
+        # 64px 是按「设置」两个字定的**死宽**，英文 "Settings" 要 ~104px，
+        # 实测被裁成 "etting"（v2.21.2 巡检）。改成下限：中文观感不变，
+        # 英文按内容自己长——带文字的按钮不该钉死宽度。
+        self.settings_button.setMinimumWidth(64)
         self.settings_button.setToolTip(ui_text("打开设置窗口"))
         self.settings_button.clicked.connect(self._open_settings)
         header.addWidget(self.settings_button)

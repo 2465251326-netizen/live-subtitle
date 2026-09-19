@@ -2479,6 +2479,32 @@ def test_i18n_symbols_imported_where_used():
     assert not offenders, ("用了 i18n 符号却没导入:" + _NL + _NL.join(offenders))
 
 
+def test_ui_no_fixed_width_on_text_buttons():
+    """带文字的 QPushButton 不许钉死宽度（v2.21.2 巡检）。
+
+    宽度是按中文调的：`settings_button.setFixedWidth(64)` 装得下「设置」，
+    英文 "Settings" 要 ~76px，实测被裁成 "etting"；设置页另有 8 处同类
+    （Refresh / Manage / Check for updates -> 等）。这类问题用 fontMetrics
+    离线量不可靠（QSS 按 objectName 设字号，量出来全是假阳性），所以从源头
+    禁止：要限宽请用 setMinimumWidth，让按钮按当前语言自己长。
+    """
+    import re
+    root = Path(__file__).resolve().parents[1]
+    pat = re.compile(r"(\w+)\.setFixedWidth\s*\(\s*\d+\s*\)")
+    offenders = []
+    for rel in ("app/ui/main_window.py", "app/ui/settings_dialog.py",
+                "app/ui/caption_overlay.py", "app/ui/first_run.py"):
+        for i, line in enumerate((root / rel).read_text(encoding="utf-8").splitlines(), 1):
+            if "setFixedWidth" not in line or line.lstrip().startswith("#"):
+                continue
+            for m in pat.finditer(line):
+                var = m.group(1)
+                if "button" in var.lower() or var.endswith("_btn"):
+                    offenders.append(rel + ":" + str(i) + "  " + var)
+    assert not offenders, ("带文字的按钮用了 setFixedWidth（英文会被裁）:" + _NL
+                           + _NL.join(offenders))
+
+
 def test_i18n_ui_language_registered():
     """配置锁：ui_language 必须存在、默认 zh、且只放中英两档（不做小语种）。"""
     from app.config import DEFAULTS

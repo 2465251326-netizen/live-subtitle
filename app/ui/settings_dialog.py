@@ -822,10 +822,14 @@ class SettingsDialog(QDialog):
 
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
-        self.nav.setFixedWidth(174)
         for t in (ui_text("🎤 音频输入"), ui_text("🧠 语音识别"), ui_text("🌐 翻译"), ui_text("🖥 显示"), ui_text("⚙ 通用"),
                   ui_text("ℹ 版本与更新")):
             self.nav.addItem(_nav_item(t))
+        # 174px 是照中文页名定的死宽；英文页名更长（实测 "ℹ Version and updates"
+        # 需 273px），钉死就会裁成 "Version and upda…"。按当前语言最宽项来定，
+        # 中文态算出来仍是 174，观感不变。
+        _nav_w = max(174, self.nav.sizeHintForColumn(0) + 2 * self.nav.frameWidth() + 20)
+        self.nav.setFixedWidth(_nav_w)
 
         # 建议6：导航列顶部搜索——输入关键词直接跳转对应页
         self.search_edit = QLineEdit()
@@ -840,7 +844,7 @@ class SettingsDialog(QDialog):
         self.search_hint.hide()
         nav_wrap = QWidget()
         nav_wrap.setObjectName("NavWrap")
-        nav_wrap.setFixedWidth(190)
+        nav_wrap.setFixedWidth(_nav_w + 16)   # 跟着导航列一起长，别把 8px 内边距吃掉
         nav_box = QVBoxLayout(nav_wrap)
         nav_box.setContentsMargins(8, 8, 8, 8)
         nav_box.setSpacing(6)
@@ -1021,7 +1025,7 @@ class SettingsDialog(QDialog):
         device_row.setSpacing(6)
         device_row.addWidget(self.device_combo)
         self.refresh_button = QPushButton(ui_text("刷新"))
-        self.refresh_button.setFixedWidth(64)
+        self.refresh_button.setMinimumWidth(64)
         self.refresh_button.clicked.connect(self._load_devices)
         device_row.addWidget(self.refresh_button)
         wrap = QWidget()
@@ -1061,7 +1065,7 @@ class SettingsDialog(QDialog):
         model_row.setSpacing(6)
         model_row.addWidget(self.model_combo, 1)
         self.model_manage_button = QPushButton(ui_text("管理"))
-        self.model_manage_button.setFixedWidth(64)
+        self.model_manage_button.setMinimumWidth(64)
         self.model_manage_button.clicked.connect(self._manage_models)
         model_row.addWidget(self.model_manage_button)
         model_wrap = QWidget()
@@ -1076,7 +1080,7 @@ class SettingsDialog(QDialog):
         self._std_rows(page, "asr", ui_text("语言与计算"),
                        keys=("asr_language", "asr_accuracy", "asr_device"))
         self.gpu_check_button = QPushButton(ui_text("检测 GPU 环境"))
-        self.gpu_check_button.setFixedWidth(140)
+        self.gpu_check_button.setMinimumWidth(140)
         self.gpu_check_button.clicked.connect(self._show_gpu_guidance)
         self._row(page, ui_text("GPU / CUDA 配置"),
                   ui_text("一键检测显卡、驱动与 CUDA 可用性，附配置教程与注意事项。"),
@@ -1157,7 +1161,7 @@ class SettingsDialog(QDialog):
         self.proxy_url_edit = QLineEdit()
         self.proxy_url_edit.setPlaceholderText(ui_text("例如 http://127.0.0.1:10808"))
         self.proxy_test_button = QPushButton(ui_text("测试 Google 通道"))
-        self.proxy_test_button.setFixedWidth(140)
+        self.proxy_test_button.setMinimumWidth(140)
         proxy_row = QHBoxLayout()
         proxy_row.setSpacing(6)
         proxy_row.addWidget(self.proxy_url_edit, 1)
@@ -1788,7 +1792,7 @@ class SettingsDialog(QDialog):
         self.app_update_title = QLabel(f"{ui_text('当前 v')}{APP_VERSION}")
         self.app_update_title.setObjectName("SettingTitle")
         self.app_update_btn = QPushButton(ui_text("检查新版本 →"))
-        self.app_update_btn.setFixedWidth(130)
+        self.app_update_btn.setMinimumWidth(130)
         app_row = self._about_row(ui_text("软件更新"), ui_text("检查 GitHub Releases 上的最新版本"), self.app_update_btn)
         page._inner_layout.addLayout(app_row)
         self.app_update_status = QLabel("")
@@ -1798,7 +1802,7 @@ class SettingsDialog(QDialog):
 
         self._section(page, ui_text("识别模型"))
         self.model_update_btn = QPushButton(ui_text("检查更新 →"))
-        self.model_update_btn.setFixedWidth(130)
+        self.model_update_btn.setMinimumWidth(130)
         model_row = self._about_row(ui_text("识别模型"), ui_text("检查 HuggingFace 上模型是否有新版本"), self.model_update_btn)
         page._inner_layout.addLayout(model_row)
         self.model_update_status = QLabel("")
@@ -1808,7 +1812,7 @@ class SettingsDialog(QDialog):
 
         self._section(page, ui_text("离线语言包"))
         self.pack_update_btn = QPushButton(ui_text("检查更新 →"))
-        self.pack_update_btn.setFixedWidth(130)
+        self.pack_update_btn.setMinimumWidth(130)
         pack_row = self._about_row(ui_text("离线语言包"), ui_text("检查 Argos 语言包索引中的最新版本"), self.pack_update_btn)
         page._inner_layout.addLayout(pack_row)
         self.pack_update_status = QLabel("")
@@ -1845,7 +1849,7 @@ class SettingsDialog(QDialog):
 
     def _about_link(self, page, title, desc, url):
         btn = QPushButton(ui_text("打开 →"))
-        btn.setFixedWidth(130)
+        btn.setMinimumWidth(130)
         btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
         row = self._about_row(title, desc, btn)
         page._inner_layout.addLayout(row)
