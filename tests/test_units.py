@@ -2438,6 +2438,16 @@ def test_i18n_no_bare_ampersand_in_english():
     assert not bad, str(len(bad)) + " 条英文值含裸 &（Qt 按钮会吃掉）:" + _NL + _NL.join(bad[:8])
 
 
+def test_i18n_every_language_name_is_translated():
+    """语言名是数据表（config.LANGUAGES），源码里没有 ui_text 字面量可扫，
+    完整性锁看不见它——单独锁：每个语言显示名都必须有英文，否则英文态的设置页
+    「目标语言」下拉会半中半英（本轮实测就是这样）。"""
+    from app.config import LANGUAGES
+    from app.locales.en import CATALOG
+    missing = sorted(c + " = " + n for c, n in LANGUAGES.items() if n not in CATALOG)
+    assert not missing, "语言名缺英文:" + _NL + _NL.join(missing[:20])
+
+
 def test_i18n_ui_language_registered():
     """配置锁：ui_language 必须存在、默认 zh、且只放中英两档（不做小语种）。"""
     from app.config import DEFAULTS

@@ -239,7 +239,7 @@ _STD_ROW_ITEMS = {
                 (ui_text("自动（安全档 = 优先 CPU 稳定运行）"), "auto")],
     "engine": [(ui_text("自动探测（推荐）"), "auto"), (ui_text("Google 免费接口（在线）"), "google"),
                (ui_text("MyMemory（在线备援）"), "mymemory"), (ui_text("Argos 离线语言包"), "argos")],
-    "target": [(LANGUAGES.get(code, code), code) for code in TARGET_LANGS],
+    "target": [(ui_text(LANGUAGES.get(code, code)), code) for code in TARGET_LANGS],
     # v2.6.0（R4）：离线质量档——用户裁决默认高质量
     "offline_quality": [(ui_text("高质量（推荐，译文更连贯）"), "high"),
                         (ui_text("快速（更低延迟，机翻味更重）"), "fast")],
@@ -889,6 +889,13 @@ class SettingsDialog(QDialog):
         spec.setToolTip("" if ok else
                         ui_text("当前不会生效：推测式增量翻译需要同时开启「低延迟模式」与"
                         "「翻译攒句合并」——没有攒句过程，就没有可推测的中间态。"))
+
+    def _lang_name(self, code, fallback=None):
+        """语言显示名的唯一出口。config.LANGUAGES 的值刻意留在源码里不包
+        ui_text（那是数据表，不是界面字面量），在这里统一翻译——
+        完整性由 test_i18n_every_language_name_is_translated 锁住。"""
+        name = str(LANGUAGES.get(code, fallback if fallback is not None else code) or "")
+        return ui_text(name)
 
     def _on_nav_changed(self, index):
         self.pages.setCurrentIndex(index)
@@ -2436,7 +2443,7 @@ class SettingsDialog(QDialog):
             return
         tgt = self.target_combo.currentData() or "zh-CN"
         argos_tgt = "zh" if tgt.startswith("zh") else tgt
-        tgt_name = LANGUAGES.get(tgt, argos_tgt)
+        tgt_name = self._lang_name(tgt, argos_tgt)
         # v2.19.4：zh-TW 在离线包里被折成 "zh"（Argos 只有简体方向），按钮却写
         # 「下载所选 → 繁体中文 语言包」，装回来的其实是简体中文包——同页另一条
         # 说明本来就写着"暂缺繁体中文"（红线：文案不许与实际不符）。
@@ -2455,7 +2462,7 @@ class SettingsDialog(QDialog):
             seen.add(argos_src)
             if (argos_src, argos_tgt) in installed:
                 continue
-            self.argos_combo.addItem(LANGUAGES.get(code, argos_src), argos_src)
+            self.argos_combo.addItem(self._lang_name(code, argos_src), argos_src)
         if self.argos_combo.count() == 0:
             self.argos_combo.addItem(ui_text("该目标语言的方向均已安装"), None)
             self.argos_download_button.setEnabled(False)
@@ -2483,7 +2490,7 @@ class SettingsDialog(QDialog):
         except Exception:
             sizes = []
         for fc, tc, mb in sizes:
-            name = f"{LANGUAGES.get(fc, fc)} → {LANGUAGES.get(tc, tc)}"
+            name = f"{self._lang_name(fc)} → {self._lang_name(tc)}"
             item = QListWidgetItem(f"{name}  ·  {mb:.0f} MB")
             item.setData(Qt.UserRole, (fc, tc))
             lst.addItem(item)
@@ -2534,10 +2541,10 @@ class SettingsDialog(QDialog):
         if (code, argos_tgt) in set(ArgosEngine.installed_pairs()):
             QMessageBox.information(
                 self, ui_text("无需重复下载"),
-                f"{LANGUAGES.get(code, code)} → {LANGUAGES.get(tgt, argos_tgt)}{ui_text(' 方向的语言包已安装。')}")
+                f"{self._lang_name(code)} → {self._lang_name(tgt, argos_tgt)}{ui_text(' 方向的语言包已安装。')}")
             self._refresh_argos_section()
             return
-        tgt_name = LANGUAGES.get(tgt, argos_tgt)
+        tgt_name = self._lang_name(tgt, argos_tgt)
         self.argos_download_button.setEnabled(False)
         self.argos_combo.setEnabled(False)
         self.argos_progress.setValue(0)
