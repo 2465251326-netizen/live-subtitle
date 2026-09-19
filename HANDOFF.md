@@ -1432,3 +1432,131 @@ commit `e7bdffd` → tag `v2.20.5` → run **35412278750** `success`，01:19:08Z
 
 33.2 与 33.5 的未修清单**依旧未复验**，下轮仍从 33.5 生命周期线开始（先复现探针，再动手）。
 
+
+## 三十五、会话快照（2026-09-19 上午 界面语言 i18n · v2.21.0 → v2.21.1）
+
+用户："给项目添加语言选择界面，不要搞小语种，我指的是界面语言（请放在通用里）"。
+一个下拉框的活，实际动了 9 个模块、724 处包装、613 条翻译、8 道锁、一次致命回归与热修复。
+
+### 35.1 架构决定（改之前先想清楚的三件事）
+
+1. **中文原文即 key**，不造 key 表。800 余条文案一直在改，`ui_text("攒句合并")`
+   在源码里就能读懂；漏译时缺的是词典一行，不是一个查不到的 key。
+2. **默认 `ui_language="zh"` 时 `ui_text()` 恒等返回**。这是整个改造的安全底座：
+   既有的 236 项按中文断言的测试因此仍然是"没改坏任何东西"的证明。
+   破了这条，所有界面测试同时失去意义——已单独锁死。
+3. **重启生效，不假装即时切换**。界面文字在启动时一次性载入（`caption_overlay`
+   的 `LANGS`/`FONTS` 是类属性，导入即求值），所以 `main.py` 必须在**任何 app.ui
+   导入之前**定语言。保存后状态行写"已保存 · 界面语言需重启 LiveSubtitle 后生效"，
+   不写"已应用"。
+
+词典由 codemod 扫出的字面量**按索引**回填生成，key 从不经过人手誊写——杜绝
+"词典里的中文和源码差一个标点"这类查都查不动的错配。
+
+### 35.2 真正的难点：四处在"读中文内容"做决策
+
+不是翻译，是这些一旦切英文就**静默失效**的判断（不报错，只是不再工作）：
+
+| 位置 | 原来 | 现在 |
+|------|------|------|
+| `_on_pipeline_error` | `"采集" in msg or "音频" in msg` 决定**要不要拆管线** | 采集线程错误按定义即音频类，`_on_capture_error` 显式传 `audio=True` |
+| `_on_asr_status` | `"识别积压" in text` | `AsrThread.backlog` 信号 |
+| `_on_translate_status` | `"已恢复" in text and "切回" in text` | `TranslateThread.primary_recovered` 信号 |
+| 卡片态 | `target_label.text() == "[翻译失败]"` 等三标记 | 标记不参与翻译，比较统一走 `_is_untranslated()` / `_is_one_of()` |
+
+两个新信号都**先于**状态文本 emit——它们都是排队投递，顺序反了标志就来不及置位
+（与改造前"同一槽内先置标志再刷状态"的时序保持一致）。
+`_set_engine_status` 尾部那条文本探针因此可证冗余（上面三条 if/elif 已穷举有警告
+的情形），直接收横幅。
+
+另有 7 条串**同时**是显示文字和 dict 键（`_quick_labels` 的"字幕面板/热键/…"），
+只译一边立刻 KeyError。已拆成 ASCII 键 + 可译显示文案。
+
+### 35.3 八道锁（全部放在 CI 会跑的 test_units）
+
+完整性（每个 `ui_text`/`ui_fmt` 字面量必须有英文）、占位符两侧一致、英文值不得残留
+汉字与全角标点、英文值不得含裸 `&`、默认 zh 必须恒等返回、每个语言名必须有英文、
+`ui_language` 只许中英两档、**用了 i18n 符号却没导入即失败**。
+放 test_units 而非 integration 的理由：CI 只跑单元+smoke，这样任何人漏配英文是
+构建失败，不是靠人眼扫。
+
+### 35.4 v2.21.0 致命回归与热修复（本轮最贵的一课）
+
+CI 冒烟测挂 `captions=0`，tag 与 main 两个 run 同样复现，**因此 v2.21.0 从未产出安装包**。
+
+根因：`app/asr/engine.py` 用了 `ui_fmt()` 却只 import 了 `ui_text`。而
+`AsrThread.run()` 外层正是 v2.0.1 为"线程静默死亡"加的兜底 `try`——`NameError`
+被吞掉，不发 `error_occurred`、不写日志。症状：点了开始翻译，一条字幕都没有，
+界面看起来一切正常。**兜底 try 防的就是静默死亡，这次它把死亡藏得更深。**
+
+为什么 243 项测试全绿仍漏掉：单元与集成套件都不真跑 ASR 线程（不加载模型、不喂音频），
+这条路径只有 CI 冒烟测覆盖。
+
+定位方法（记下来，下次直接用）：
+1. `git worktree add /tmp/ls_base <旧提交>` 建隔离副本，不碰工作树；
+2. 用 `HF_HOME=<真实缓存>` + 隔离 `LIVETRANSLATE_HOME` 跑 `scripts/smoke_test.py`，
+   零下载、可本地复现（本轮实测：改前 captions=3 PASS，97f9bb2 起 FAIL）；
+3. 二分锁定到具体提交后，写探针把 `status_changed` / `error_occurred` / `text_ready` /
+   `result_ready` 四路全打印——一眼看出 `asr_thread isRunning: False`；
+4. 静态扫"用了符号没导入"，当场抓到，且已固化成第 8 道锁。
+
+修复后本地与 CI 冒烟测均恢复 `captions=3 PASS`；英文模式下 ASR 存活、状态行
+"Ready, listening... (CPU mode)"、面板 "Running · System audio"、出 3 条字幕。
+
+### 35.5 codemod 的坑（一次性脚本，但坑是通用的）
+
+- **col_offset 是 UTF-8 字节偏移**，不是字符偏移；按行切会错。改成整文件字节 +
+  绝对偏移替换，跨行隐式拼接也能安全整段包起来（不合并字面量、不吃行内注释）。
+- 每个编辑点先 `ast.literal_eval(切片) == node.value` 自证偏移，切错就跳过并报告。
+- 改完做**值守恒**校验：所有中文字面量的多重集必须与改前完全一致。
+- **产物必须兼容 Python 3.11**（CI 用 3.11）：f-string 替换域里不许出现反斜杠，
+  所以带 `
+` 的片段一律跳过交人改，别生成 3.12+ 才合法的代码。
+- **import 插入位置**：这些文件第 1 行就是模块 docstring，"插到第 2 行"会把 import
+  塞进 docstring 内部——`py_compile` 照样过，一 import 就 NameError。必须按 AST
+  找 docstring 结束行。这个坑本轮真实踩到（caption_overlay / preview 两个文件）。
+- **`tr` 这个名字在本仓库不可用**：`main_window.py` 里有 11 处
+  `tr = self._active_translate()`，同名函数会被遮蔽成 QThread。故入口叫 `ui_text`。
+- 差点把 `ui_text` 包到 `_quick_labels` 的 dict 键上：分类器"跳过下标键"与"包装
+  显示文字"两条规则同时生效，就会一边译一边不译 → KeyError。**对称性**比覆盖率重要。
+
+### 35.6 双语真机截图抓到、静态看不到的两处
+
+- 英文按钮 `Save & apply` 实际渲染成 `Save  apply`——Qt 把 `&` 当助记符吃掉。
+- 面板状态行写死"超 10 字符截 9 字"，中文够用、英文只剩 `Stopped · …`。
+  改为按 `_cap_status_width` 已算出的像素上限做 `elidedText`。
+- 另记一个探针假象：悬浮面板会压在设置页左上角，看上去像"标题被裁切"的布局 bug，
+  其实是另一个窗口盖在上面。抓设置页前先 `overlay.hide()`。
+
+### 35.7 发布记录
+
+- `v2.20.5` run **35412278750** success（7m46s），双资产 91,380,923 B + 136,342,841 B。
+- `v2.21.0` run **35416621302** **failure**（`SMOKE FAIL captions=0`），失败在打包之前
+  → **该 tag 没有任何 Release 资产**。按用户决定不回移 tag，改发 v2.21.1。
+- `v2.21.1` = 修复 + 第 8 道锁。main 上验证 run **35417857916** success
+  （`UNIT: 109 tests PASS`、`SMOKE PASS (captions=3, ...)`）。
+  tag 构建 run **35418087781** `success`，03:16:37Z→03:22:37Z（**6m00s**），两个 job
+  （build-and-test / Publish GitHub Release）均成功。四条标记逐条自验：
+  `Version check OK: tag v2.21.1 == setup.iss / config.py / version_info.txt`、
+  `UNIT: 109 tests PASS`、`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`、
+  `EXE is running OK (PID 6808)`；全日志 `SMOKE FAIL` 计数 **0**。
+  Release 双资产：Setup **91,429,987 B**、portable.zip **136,401,527 B**
+  （较 v2.20.5 分别 +49 KB / +57 KB，即词典与 i18n 本身的大小）；
+  `draft=false pre=false`，已被标为 **Latest**。
+  ⚠ 子代理报的结论我全部自己用 `gh run view --log` / `gh release view` 复量过一遍
+  ——按 §34.3 那条债，记档里的数字只允许是跑出来的。
+
+### 35.8 遗留（下轮起点）
+
+1. **33.2 与 33.5 的未修清单依旧未复验**，生命周期线那条 P0（退出时 `terminate()`
+   孤儿线程 → SIGSEGV + 4~8.5s 退出冻结）仍排在最前。
+2. 界面语言只做了中英两档，`app/locales/en.py` 的 613 条**未经母语者审校**，
+   术语一致性靠 GLOSSARY + 人眼；真机英文长句在定宽控件里可能仍偏挤。
+3. `ui_language` 登记为 `("internal","hidden")` 是权宜：它其实有 UI 控件，
+   只是生效方式是"重启整个程序"，既非 pipeline 也非 instant。若将来加
+   "重启型"设置项，需要一个正经的第三档。
+4. 首启用向导仍会把用户主动选的 `small` 覆盖成硬件推荐档（见 33.3）；
+   `HANDOFF.md` 是否继续随仓库公开（见 34.5）——两件都还等用户定。
+5. 一次性脚本未入库（在 `%TEMP%`）：`i18n_codemod2.py`、`unwrapped.py`、
+   `fix_import_pos.py`、`probe_pipeline.py`、`i18n_shots.py`。若将来还要扩语言，
+   值得把"扫字面量→生成待译清单→按索引回填"这条链固化成 `scripts/` 下的工具。
