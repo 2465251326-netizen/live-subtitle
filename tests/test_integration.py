@@ -3645,6 +3645,38 @@ def t_settings_fields():
     assert dlg.apply_button.isDefault() is False and dlg.cancel_button.isDefault() is False
 check("settings: 字段表完整 + 恢复默认不含 internal", t_settings_fields)
 
+
+def t_settings_spec_gate():
+    """v2.20.5：「推测式增量翻译」的三重闸必须在界面上如实反映。
+
+    主窗 `_spec_enabled()` 要求 ①本开关 ②低延迟模式 ③攒句合并 同时成立（外加
+    仅离线引擎）。设置页此前只呈现第 ① 项：用户关掉低延迟后这一项照样亮着、
+    照样打着勾，实际一条推测译文都不产生——界面与介绍一起骗人。"""
+    w = MainWindow()
+    old_ll = w.config.get("low_latency_mode")
+    old_gp = w.config.get("translate_grouping")
+    try:
+        w.config.set("low_latency_mode", False)
+        w.config.set("translate_grouping", True)
+        w._open_settings()
+        dlg = w._settings_dlg
+        assert dlg.spec_translate_check.isEnabled() is False,             "低延迟关闭时「推测式增量翻译」仍可选，用户会以为它生效"
+        assert "低延迟" in dlg.spec_translate_check.toolTip()
+        dlg.low_latency_check.setChecked(True)
+        assert dlg.spec_translate_check.isEnabled() is True, "条件满足后没恢复可用"
+        dlg.grouping_check.setChecked(False)
+        assert dlg.spec_translate_check.isEnabled() is False, "攒句关闭时也该置灰"
+        dlg._reset_defaults(confirm=False)      # 出厂两项都开 → 必须恢复可用
+        assert dlg.spec_translate_check.isEnabled() is True
+        dlg.deleteLater()
+    finally:
+        w.config.set("low_latency_mode", old_ll)
+        w.config.set("translate_grouping", old_gp)
+        w.deleteLater()
+
+
+check("settings: 推测式翻译三重闸在界面上如实置灰（v2.20.5）", t_settings_spec_gate)
+
 def t_std_rows_coverage():
     # v2.3.0：声明式标准行表——键/属性/回显/暂存语义全覆盖
     from app.ui.settings_dialog import SettingsDialog, _STD_ROWS, _FIELD_SPECS

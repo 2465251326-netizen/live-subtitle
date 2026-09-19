@@ -303,7 +303,7 @@ _STD_ROWS = [
               "译文在同一张字幕卡／同一面板行上原地生长覆盖。连续语流中译文不再干等攒句"
               "（实测这类等待约占端到端延迟 87%、中位 4.1 秒），上屏提前约一个分段周期。"
               "中间版译文可能先显示半句、稍后被完整整句覆盖；停止时若仍是半句会保留并标注"
-              "「译文可能不完整」。「仅离线 Argos 引擎生效」——在线引擎有额度与限流"
+              "「译文可能不完整」。另需同时开启「低延迟模式」与「翻译攒句合并」（不满足时本项自动置灰）；且「仅离线 Argos 引擎生效」——在线引擎有额度与限流"
               "（MyMemory 每天约 5000 字符免费额度），逐片加发中间版会成倍消耗，故一律保持整句翻译。",
      "opts": {}},
     {"key": "translate_grouping", "attr": "grouping_check", "page": "asr", "section": "语言与计算",
@@ -857,6 +857,32 @@ class SettingsDialog(QDialog):
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         self.nav.setCurrentRow(0)
         self._build_search_index()
+        self._wire_spec_gate()
+
+    def _wire_spec_gate(self):
+        """v2.20.4：把「推测式增量翻译」的真实闸门条件反映到控件上。
+
+        主窗 `_spec_enabled()` 是三重闸：①本开关 ②低延迟模式 ③攒句合并（外加
+        "仅离线引擎"）。设置页此前只呈现第 ① 重——用户关掉低延迟后，这一项照样
+        亮着、照样打着勾，实际一条推测译文都不会产生。界面在骗人，介绍也跟着骗人
+        （说明文字只写了"仅离线 Argos 引擎生效"）。"""
+        for attr in ("low_latency_check", "grouping_check"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.toggled.connect(self._sync_spec_gate)
+        self._sync_spec_gate()
+
+    def _sync_spec_gate(self, *_a):
+        spec = getattr(self, "spec_translate_check", None)
+        ll = getattr(self, "low_latency_check", None)
+        gp = getattr(self, "grouping_check", None)
+        if spec is None or ll is None or gp is None:
+            return
+        ok = bool(ll.isChecked()) and bool(gp.isChecked())
+        spec.setEnabled(ok)
+        spec.setToolTip("" if ok else
+                        "当前不会生效：推测式增量翻译需要同时开启「低延迟模式」与"
+                        "「翻译攒句合并」——没有攒句过程，就没有可推测的中间态。")
 
     def _on_nav_changed(self, index):
         self.pages.setCurrentIndex(index)
@@ -2126,6 +2152,8 @@ class SettingsDialog(QDialog):
         self.hotkey_overlay_edit.setKeySequence(str(values.get("hotkey_overlay", c.get("hotkey_overlay") or "")))
         for spec in _STD_ROWS:
             self._std_set(spec, values)
+        # v2.20.4：回显/恢复默认之后重算一次"推测式"的置灰状态
+        self._sync_spec_gate()
 
     def _confirm_discard(self):
         if not self._staged:
