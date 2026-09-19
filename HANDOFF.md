@@ -1643,3 +1643,180 @@ Release `draft=false pre=false`，双资产：Setup **91,431,858 B**、portable.
 
 `ovaudit/`（D 线 86 次工具调用）、`ls_probe/`（C 线 99 次）、`ls_audit/`（A 线）。
 本轮自己的：`ux_overflow.py`（度量口径两次修正）、若干双语截图脚本。
+
+## 三十七、会话快照（2026-09-19 第六轮巡检：**字幕悬浮窗的识别与翻译体验**）
+
+同一句任务第六次下达，这次点名只看悬浮窗这一扇面。取证方式：四支一次性探针
+（`%TEMP%/ls_ux6/probe_{a,b,c,d}*.py`，临时配置根 + `HF_HUB_OFFLINE=1`，零下载、
+不碰用户 config）+ 用户实测尺寸（宽 697 / 字号 22 / dual / 不透明 100）真实渲染
+`widget.grab()` 截图。**下面每条都有探针输出或截图，不是读码推测。**
+
+### 37.1 记录：八组已复现缺陷（按对体验的伤害排序）
+
+**F1 面板状态行被工具条挤到零宽——所有状态反馈事实上不可见（P0）**
+`status_lbl` 是 `QSizePolicy.Ignored` 且与 8 颗按钮同一行。实测按钮 sizeHint 合计
+中文 598px、英文 658px（含间距）：
+
+| 面板宽 | 中文剩余/状态行实宽 | 英文剩余/状态行实宽 |
+|---|---|---|
+| 560 | −68 / **0** | −128 / **0** |
+| 697（用户实际值） | 69 / **67** | 9 / **7** |
+| 900 | 272 / 270 | 212 / 210 |
+
+`_cap_status_width` 的预算写死 `width−240`（240 是照中文按钮估的），697 面板算出
+457px 预算，而控件只有 67px → v2.21.1 那版"按像素省略"省略到 457，剩下的是
+**没有省略号的硬裁**；英文态截图里状态位只剩 7px，一个字母都放不下。结论：
+"翻译失败/系统静音/信号弱/已停止"这四类面板唯一的诊断出口，在用户当前宽度下
+中文能看见 4~5 个字、英文等于没有。
+
+**F2 加载/下载模型期间面板说的是反话（P0）**
+`start_pipeline` 末尾确实调了 `update_overlay_status()`（第一版记录说"要等第一条
+字幕才刷新"，不准确，已按代码改口），但那时 `_asr_ready` 还是 False、模型还在加载，
+面板却已经写"运行中 · 系统声音"+ 把手"⏸ 暂停"；`_on_model_ready` 反过来**不**回灌
+面板。用户配 large-v3-turbo：加载十几秒、首次下载数分钟，这段时间面板报的是
+"已经在跑了"，而主窗那边下载进度条才走到 5%。再叠一层 F1（这行字只有 67px/7px），
+面板在这段时间实际是零信息。同类：`_no_segment_hint`（就绪 25 秒仍零字幕的排查指引）
+末尾调的正是 `update_overlay_status()`，而它在"运行中且已就绪"分支什么都不写——
+这条最该被看见的指引从来没上面板。
+
+**F3 占位行永不收口（P1，三处入口）**
+- `_drop_translation`（队列满 / 翻译线程已死 / 停止后残组）只把主窗卡片置终态，
+  面板行照旧 `⟳ 翻译中…`（探针 A1：卡片已 `[翻译失败]`，面板仍 pending=True）；
+- `stop_pipeline` 从不碰 `overlay._rows` / dual 两栏（A2：停止后两行 pending=True；
+  A6：dual 留下一张 `empty=False` 的 "…" 卡且 `closed=False`），下一场第一句进来时
+  上一场的 ⟳ 还在屏上（A7 实证新会话另起一行、旧 ⟳ 永久留着）；
+- 面板隐藏期间到达的终版译文被 `if self.overlay.isVisible()` 整条丢弃（C2：隐藏前
+  上屏的占位行，重新显示后仍是 `⟳ 翻译中…`，此后没有任何路径会再补它）。
+（对照：真实翻译报错路径 A5 是**正确**的——行收口成 `[google 翻译失败]`、状态行变橙。）
+
+**F4 流式草稿通道不过质量闸门（P1）**
+`StreamPreview._transcribe` 直接 `" ".join(seg.text)`，而正式通道有 `has_content`
++ 幻觉概率判据（`engine.py:725/729`）。实测把四条噪声文本喂 `_on_partial_preview`，
+全部并进 dual 原文行并留在屏上：`You are a video! ♪ ♪ ♪ KRAVZO KRAVZO KRAVZO
+谢谢观看 谢谢观看`（其中 `♪ ♪ ♪` 是正式通道必滤的纯符号段）。这份垃圾还会
+`tr.submit(cur, lang, spec=True)` 送推测翻译 → 译文区跟着长垃圾；没有终版到达时
+该行永不收口、也无人清除。
+
+**F5 非音频管线错误后面板继续写"运行中"（P1）**
+AsrThread 只有两处 `error_occurred`（模型加载失败 / 引擎启动失败），两处都在
+`run()` 里 emit 后返回——线程必死。但 `_on_pipeline_error` 的非音频分支不置
+`running=False`：探针 B5 实测 `running True`、面板"运行中 · 系统声音"、把手"⏸ 暂停"，
+而主窗横幅已经在报 `Model load failed: CUDA out of memory`。这是 §36.3-1 那条的
+面板侧后果：面板是唯一常驻窗口（主窗通常在托盘），它说的是反话。
+
+**F6 dual 回看被下一句顶掉，且没有任何回程（P2）**
+探针 B1：内容 max=177，用户上滚到 value=38（`_dual_follow["tgt"]` 正确变 False），
+下一句 `_dual_new_sentence` 无条件把 follow 重置为 True → 位置跳到 216，**正在读的
+那行被拽走 178px**；同时 `↓ 最新` 按钮在 dual 分支被 `_relayout` 恒 `hide()`、
+未读计数恒 0（列表模式两者都有）。dual 的回看事实上等于不可能。
+
+**F7 40 条上限淘汰把正在读的那行抽走（P2）**
+`MAX_ROWS=40` / `MAX_DUAL_LINES=40`，`pop(0)` 后不补滚动位置。探针 C1：回读时来新句，
+最早一行 Line 06 → Line 07，像素位置上同一处换成了下一句。
+
+**F8 同一件"在等翻译"有三种说法（P2）**
+列表占位 `⟳ 翻译中…`、dual 新句占位裸一个 `…`、精简条 `_update_mini` 写
+`⟳ 识别中…`（此刻原文早已上屏，在等的明明是翻译）。在线引擎不走推测式翻译
+（`_spec_enabled` 三闸含"仅离线引擎"），dual 用户每句都要盯 2~4 秒那个灰点，
+无从判断是在翻译还是卡死了。
+
+### 37.2 修完的记录：F1~F8 全部落地，七把新锁 + 三把重写锁
+
+改动集中在 `caption_overlay.py`（状态行、`finalize_pending`、dual 跟底契约、淘汰补位、
+占位文案）、`main_window.py`（`update_overlay_status` 分档重写 + 四处回灌）、
+`asr/preview.py` + `asr/engine.py`（质量闸共用）。
+
+- **F1**：`status_lbl` 从 `bl.addWidget(..., 1)` 改成 `outer.addWidget(...)` 独占一行，
+  工具条补 `bl.addStretch(1)` 维持"头部四颗 + 尾部四颗"的原观感；`_status_budget()`
+  成为省略预算的唯一口径（= 行自己的宽度），空状态 `setVisible(False)` 整行收起，
+  显隐翻转即重排一次。dual 分支的高度记账补上 `+26`（行高 20 + 一条 spacing 6），
+  实测：无状态行 body 449px，有状态行 423px，最新那张译文卡仍完整可见。
+  字号走 `setFont(12px)` 而不是 QSS `font-size`——QSS 不写回 `widget.font()`，
+  而 `set_status` 用 `fontMetrics()` 量宽度，两边不一致就"量 16px 画 12px"（v2.11.0
+  dual 区踩过的同一个坑，本轮差点再踩一次）。
+- **F2**：`update_overlay_status` 重写成分档：致命错误 > 静音 > 信号弱 > 已停止 >
+  积压 > **加载中 / 下载中（带百分比，与主窗同一个 `_dl_pct`）** > 常规运行（写空串
+  = 收起该行）。`_on_model_ready` 补回灌；`_no_segment_hint` 直接写面板那一行。
+  常规"运行中 · 系统声音"不再上面板：把手已经是绿色 ⏸、字幕在长，这句没有可行动
+  信息，却要占 26px 正文高度。
+- **F3**：新增 `CaptionOverlay.finalize_pending(reason, source_text=None)`——列表行与
+  dual 卡片一起收口，`spec` 且文本非占位的行**保住那半句推测译**转正式态。三个入口：
+  `stop_pipeline`、`_drop_translation`（按原文只收那一句，攒句前片逐个补）、
+  `_on_translated` 去掉 `isVisible()` 闸门（草稿那两路的闸门原样保留）。
+- **F4**：`hallucination_ok(avg_logprob, no_speech_prob)` 从 `engine.py` 的内联表达式
+  提成函数，`preview.py` 与正式通道共用；`StreamPreview` 多一个 `hallucination_filter`
+  构造参数，主窗把同一个配置项喂进去。锁里断言 `prev.hallucination_ok is eng.hallucination_ok`
+  ——阈值写两份必然漂移。
+- **F5**：`_on_pipeline_error` 非音频分支置 `_fatal_warn` 并回灌面板（`stop_pipeline`
+  与 `start_pipeline` 各自复位）。**没有**顺手 `stop_pipeline()`：那会牵动排水链与
+  卡片终态化时序，属生命周期改造，仍留在待办（见 37.3）。
+- **F6**：`_dual_new_sentence` 不再重置 `_dual_follow`；`_count_unread` 与
+  `_sync_jump_btn` 统一两种布局（dual 也计未读、也出 ↓）；`_on_jump_clicked` 是 ↓ 的
+  双布局出口（dual 分支恢复两栏跟底 + 滚到底 + 清计数）。
+- **F7**：`_shift_scroll(sb, delta, active)`——删视口上方内容后下一拍补回高度，
+  只在"用户没在跟底"时补；`_add_row` 与 `_dual_trim` 各调一处（dual 两栏分别补，
+  栏内容高度不同）。
+- **F8**：dual 新句占位与精简条统一为 `ui_text("⟳ 翻译中…")`；`PLACEHOLDERS` 类常量
+  是"还在等译文"的唯一判据（`_is_placeholder` 认当前语言下的两种写法）。
+
+**方法论：三条锁的"空锁"陷阱，都是靠注入违规当场抓出来的**
+1. 双语跟底锁第一版被判红，原因不是代码错而是**前提没建立**：新句让面板长高、内容
+   全装得下 → 滚动条 max 归 0 → "本来就在底部"，回看语义无从谈起。改成先
+   `set_user_height(200)` 钉住高度，并加 `assert sb.maximum() > 0` 把前提写成断言。
+2. `finalize_pending` 只收口指定句那条锁，最初两句测试文案挑得太像
+   （"Sentence one is waiting…" / "Sentence two is also waiting…"），被
+   `_dual_same_sentence` 的有序 LCS 判据（0.857 ≥ 0.85）认成同一句并合并 → 只剩一行，
+   锁变成空转。换成两句真正不相干的新闻句。
+3. 预览闸门锁里 `_Model.transcribe` 第一次返回的是元组列表，`seg.text` 直接
+   AttributeError——测试自己写错也算一种"红"，但必须确认红在断言上而不是红在崩。
+   最终六项注入一次跑完，红的正是对应那六把锁（`grep FAIL` 逐条对号）。
+
+**F4 的真音频复核（GPU + large-v3-turbo + 仓库自带 24.3s 合成音轨，滑动窗口逐拍对比）**
+24 拍里 22 拍过滤前后完全一致，2 拍受影响——都是同一句"中文插播配英文语言锁定"的
+边缘段（`avg_logprob` 实测 -1.24 / -1.23 / -1.09 三次不同，阈值正好压在 -1.2）。
+顺带量到一件此前没记过的事：**同一窗口连转三次结果可以不同**（beam=1 + float16 GPU
+的抖动），所以草稿本来就会跳；闸门滤掉的只是一拍（0.9s 后下一拍通常就过），而正式
+通道对同一段用的是**完全相同**的判据——两轨一致正是这次改动的目的。关掉
+「幻觉抑制」设置项即两轨同时回到旧行为（`hallucination_filter=False` 只保留
+`has_content` 那道无条件闸）。
+
+### 37.3 本轮仍没动的（按风险排序）
+
+1. **F5 的生命周期那一半**：识别线程致命退出后 `running` 仍 True、采集线程继续烧、
+   音量条继续跳。本轮只把面板的话改正，没有 `stop_pipeline()`——要改的是排水链与
+   卡片终态化时序（`_on_asr_finished` 里判 `running` 再停），得配真机长会话验证。
+2. **列表模式没有流式草稿**：`update_partial` 是 dual 专属，列表用户看到的原文每 2~4s
+   跳一段。这是设计（`_stream_preview_enabled` 三重闸含"仅 dual"），但两种布局的
+   "实时感"差距由此而来，要不要抹平是产品决策不是缺陷。
+3. **预览通道只在 cuda 下启用**：CPU 用户 dual 布局也拿不到流式原文（0.9s 一拍的重
+   识别会拖垮正式识别，实测结论），同样属设计取舍。
+4. §36.3 剩下的英文运行时泄漏（A2/A4/A5/A6 四类 + A9/A10 十处全角标点）与 C 线六条
+   未复验项，本轮未触碰。
+
+### 37.4 发布记录
+
+`b9f7d5a`（八组修复 + 锁）→ `7821b14` release 提交 → tag **v2.22.0** →
+run **35425397140** `success`，05:59:37Z 起 **6m46s**（分支 main 的那次 push 构建
+35425395480 也 success，4m3s）。四条标记逐条从 `gh run view --log` 里 grep 出来，
+未采信任何转述：
+
+- `Version check OK: tag v2.22.0 == setup.iss / config.py / version_info.txt`
+- `UNIT: 111 tests PASS`
+- `SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`
+- `EXE is running OK (PID 5592)`
+
+Release `draft=false pre=false`，created 05:59:30Z / published 06:06:21Z，双资产：
+`LiveSubtitle-Setup-2.22.0.exe` **91,438,426 B**、
+`LiveSubtitle-2.22.0-portable.zip` **136,409,606 B**（均 `state=uploaded`）。
+
+本轮累计锁数：单元 **111**、集成 **150**（v2.21.2 时是 111 / 143）。
+
+本地复核（发版前）：`scripts/smoke_test.py` 用隔离 home + 真实 HF 缓存跑通
+`SMOKE PASS (captions=3, overlay=True, staged=True, applied=True)`；
+六项违规注入一次跑完，红的正是对应那六把锁。
+
+**本轮发版途中遇到一次停电**：推送与打 tag 已完成、CI 已在远端跑完，本地只剩
+HANDOFF 未提交，`git status` 与 `git rev-parse HEAD origin/main` 核对无丢失。
+停电后的第一件事是 `gh run list` 看远端终态，而不是重跑或重推——避免重复构建。
+
+
