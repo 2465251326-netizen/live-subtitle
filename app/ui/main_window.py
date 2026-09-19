@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import Config
-from app.i18n import ui_text
+from app.i18n import ui_text, ui_fmt
 from app.audio.capture import CaptureThread
 from app.asr.engine import AsrThread
 from app.asr.preview import StreamPreview
@@ -130,7 +130,9 @@ class CaptionCard(QFrame):
             self.target_label.setText(translated)
         else:
             self.target_label.setText(ui_text(TEXT_FAILED))
-        note = f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'}{ui_text(' · 引擎: ')}{engine}"
+        note = ui_fmt("{time} · {det} · 引擎: {eng}",
+                      time=datetime.now().strftime('%H:%M:%S'),
+                      det=detected or '?', eng=engine)
         self.meta_label.setText(note)
         self.source_label.setStyleSheet("")   # v2.3.17（P22）撤下占位弱化色
         self.source_label.setVisible(show_source)
@@ -147,8 +149,9 @@ class CaptionCard(QFrame):
         self.source_label.setStyleSheet("")
         self.source_label.setVisible(show_source)
         self.meta_label.setText(
-            f"{datetime.now().strftime('%H:%M:%S')} · {detected or '?'} · "
-            f"引擎: {engine}{ui_text(' · 攒句中')}")
+            ui_fmt("{time} · {det} · 引擎: {eng} · 攒句中",
+                   time=datetime.now().strftime('%H:%M:%S'),
+                   det=detected or '?', eng=engine))
 
     def finalize_spec(self):
         """v2.7.6（A）：停止/收尾时把推测中间版就地终态化。
@@ -875,16 +878,17 @@ class MainWindow(QMainWindow):
             elif not hotkey.register_overlay(int(self.winId()), oseq):
                 self.tray.showMessage(
                     ui_text("LiveSubtitle 全局热键"),
-                    f"{ui_text('悬浮条显隐热键 ')}{oseq} 注册失败（已被其他程序占用或不被支持），"
-                    "该热键未生效——请在「设置-通用」换一个组合。",
+                    ui_fmt("悬浮条显隐热键 {seq} 注册失败（已被其他程序占用或不被支持），"
+                           "该热键未生效——请在「设置-通用」换一个组合。", seq=oseq),
                     QSystemTrayIcon.Warning, 5000)
         self._update_tray_hotkey_text(seq if ok else "")
-        base = (f"{ui_text('✓ 全局热键 ')}{seq}{ui_text(' 已生效（托盘菜单同步显示）')}" if ok
-                else f"{ui_text('✗ 热键 ')}{seq}{ui_text(' 注册失败：组合不被支持或已被其他程序占用，请在「设置-通用」换一个组合')}")
+        base = (ui_fmt("✓ 全局热键 {seq} 已生效（托盘菜单同步显示）", seq=seq) if ok
+                else ui_fmt("✗ 热键 {seq} 注册失败：组合不被支持或已被其他程序占用，"
+                            "请在「设置-通用」换一个组合", seq=seq))
         # v2.2.7：悬浮条显隐热键注册结果同样透传到设置页状态行
         if oseq and oseq.upper() != seq.upper() and not hotkey.overlay_text():
-            base += (f"\n✗ 悬浮条显隐热键 {oseq} 注册失败：已被其他程序占用"
-                     "或组合不受支持，请换一个组合或清空禁用")
+            base += "\n" + ui_fmt("✗ 悬浮条显隐热键 {seq} 注册失败：已被其他程序占用"
+                                  "或组合不受支持，请换一个组合或清空禁用", seq=oseq)
         # v2.2.11：注册状态变化后同步速览卡（否则启动早期刷新会停留在旧值）
         self._refresh_quick_panel()
         return base
@@ -1408,7 +1412,8 @@ class MainWindow(QMainWindow):
         # v2.4.4（BUG-8）：完成提示路径规范化为 Windows 反斜杠——QFileDialog
         # 返回正斜杠路径，用户复制到资源管理器打不开
         QMessageBox.information(
-            self, ui_text("导出字幕"), f"{ui_text('已导出 ')}{count} 条字幕到：\n{os.path.normpath(path)}")
+            self, ui_text("导出字幕"),
+            ui_fmt("已导出 {n} 条字幕到：\n{path}", n=count, path=os.path.normpath(path)))
 
     def toggle_running(self):
         # v2.0.4：热键连按防抖——界面被 stop_pipeline 短暂阻塞时按下的热键
@@ -1681,11 +1686,12 @@ class MainWindow(QMainWindow):
             if sp > 0.02:
                 t = eta_text((total - mb) / sp)
                 if t:
-                    eta = f"，{sp:.1f}{ui_text('MB/s，剩余约')}{t}"
+                    eta = ui_fmt("，{rate}，剩余约{t}", rate=f"{sp:.1f}MB/s", t=t)
         # v2.2.5：模型下载进度走彩色横幅（下载是当前最重要的事，别挤状态行）
         self._set_engine_status(ui_text("正在下载识别模型…"))
-        self._set_alert(f"{ui_text('⬇ 正在下载识别模型（')}{mb:.0f}/{total}MB，{pct}%{eta}，"
-                        f"仅首次；完成前请保持网络畅通{hint}）…")
+        self._set_alert(ui_fmt("⬇ 正在下载识别模型（{mb}/{total}MB，{pct}%{eta}，"
+                               "仅首次；完成前请保持网络畅通{hint}）…",
+                               mb=f"{mb:.0f}", total=total, pct=pct, eta=eta, hint=hint))
 
     def _set_engine_status(self, text):
         self._engine_status_text = text
@@ -1780,9 +1786,10 @@ class MainWindow(QMainWindow):
         # v2.6.2（P1-6）：停止后/新会话中旧翻译线程的迟到预警不再写入
         if not self.running or not self._session_ok(getattr(self, "_sid_tr", None)):
             return
-        self._engine_fallback_warn = (
-            f"{ui_text('⚠ 在线翻译引擎不可达（')}{engine_desc}）：{reason}。"
-            "译文频繁出错请到「设置-翻译」配置代理，或改用「自动」引擎")
+        self._engine_fallback_warn = ui_fmt(
+            "⚠ 在线翻译引擎不可达（{eng}）：{reason}。"
+            "译文频繁出错请到「设置-翻译」配置代理，或改用「自动」引擎",
+            eng=engine_desc, reason=reason)
         if self.running:
             self._set_alert(self._engine_fallback_warn, error=True)
 

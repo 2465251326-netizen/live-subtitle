@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import LANGUAGES, TARGET_LANGS, APP_VERSION, DEFAULTS
-from app.i18n import ui_text
+from app.i18n import ui_text, ui_fmt
 
 from app.translate.translator import ArgosEngine, _cache
 from app.translate.offline_pack import cleanup_temp_files
@@ -1390,9 +1390,12 @@ class SettingsDialog(QDialog):
             u = storage.usage_summary()
             total = u["hf_mb"] + u["argos_mb"] + u["cache_mb"]
             free = storage.disk_free_mb(u["root"])
-            self.storage_hint.setText(
-                f"{ui_text('当前：')}{u['root']}{ui_text('（模型 ')}{u['hf_mb']:.0f}{ui_text(' MB · 语言包 ')}{u['argos_mb']:.0f} MB · "
-                f"缓存 {u['cache_mb']:.1f}{ui_text(' MB · 共 ')}{total:.0f}{ui_text(' MB；该盘剩余 ')}{free / 1024:.1f} GB）")
+            self.storage_hint.setText(ui_fmt(
+                "当前：{root}（模型 {hf} MB · 语言包 {argos} MB · 缓存 {cache} MB · "
+                "共 {total} MB；该盘剩余 {free} GB）",
+                root=u["root"], hf=f"{u['hf_mb']:.0f}", argos=f"{u['argos_mb']:.0f}",
+                cache=f"{u['cache_mb']:.1f}", total=f"{total:.0f}",
+                free=f"{free / 1024:.1f}"))
         except Exception as e:
             self.storage_hint.setText(f"{ui_text('占用统计失败：')}{e}")
 
@@ -1422,8 +1425,9 @@ class SettingsDialog(QDialog):
             return
         box = QMessageBox(self)
         box.setWindowTitle(ui_text("迁移数据"))
-        box.setText(f"将把识别模型、语言包与缓存整体迁移到：\n{new}\n\n"
-                    "迁移期间请勿关闭程序（模型可能数 GB，视磁盘速度需数分钟）。")
+        box.setText(ui_fmt("将把识别模型、语言包与缓存整体迁移到：\n{dest}\n\n"
+                           "迁移期间请勿关闭程序（模型可能数 GB，视磁盘速度需数分钟）。",
+                           dest=new))
         b_go = box.addButton(ui_text("开始迁移"), QMessageBox.AcceptRole)
         box.addButton(ui_text("取消"), QMessageBox.RejectRole)
         box.exec()
@@ -1448,14 +1452,15 @@ class SettingsDialog(QDialog):
         self._refresh_storage_hint()
         QMessageBox.information(
             self, ui_text("迁移完成"),
-            f"数据已迁移到：\n{new_root}\n\n重启程序后所有组件将完全使用新位置。")
+            ui_fmt("数据已迁移到：\n{dest}\n\n重启程序后所有组件将完全使用新位置。",
+                   dest=new_root))
 
     def _on_storage_failed(self, msg):
         self._remove_storage_progress()
         self.storage_change_button.setEnabled(True)
         QMessageBox.warning(self, ui_text("迁移失败"),
-                            f"{msg}\n\n已完成部分已尝试搬回原位置；"
-                            "如仍提示空间不足，请更换目标盘或清理后重试。")
+                            ui_fmt("{msg}\n\n已完成部分已尝试搬回原位置；"
+                                   "如仍提示空间不足，请更换目标盘或清理后重试。", msg=msg))
 
     def _remove_storage_progress(self):
         bar = getattr(self, "_storage_progress", None)
@@ -1646,13 +1651,19 @@ class SettingsDialog(QDialog):
                          "cpu": ui_text("已装 CPU 版（缺运行时）"),
                          "missing": ui_text("未安装"),
                          "unknown": ui_text("未知")}.get(torch_state, ui_text("未知"))
-            summary.setText(
-                f"{ui_text('NVIDIA 显卡：')}{info['nvidia_gpu'] or ui_text('未检测到')}\n"
-                f"驱动版本：{info['driver'] or '—'}\n"
-                f"显存：{f'{vram} MB' if vram else '—'}\n"
-                f"CUDA 可用设备数：{info['cuda_devices']}\n"
-                f"CUDA 运行时（PyTorch）：{state_txt}\n"
-                f"运行形态：{ui_text('打包版（内置 CPU 推理）') if info['frozen'] else ui_text('源码运行')}")
+            summary.setText(ui_fmt(
+                "NVIDIA 显卡：{gpu}\n"
+                "驱动版本：{driver}\n"
+                "显存：{vram}\n"
+                "CUDA 可用设备数：{ndev}\n"
+                "CUDA 运行时（PyTorch）：{torch}\n"
+                "运行形态：{form}",
+                gpu=info['nvidia_gpu'] or ui_text("未检测到"),
+                driver=info['driver'] or '—',
+                vram=(ui_fmt("{v} MB", v=vram) if vram else '—'),
+                ndev=info['cuda_devices'],
+                torch=state_txt,
+                form=ui_text("打包版（内置 CPU 推理）") if info['frozen'] else ui_text("源码运行")))
             from app import gpu as gpu_mod
             body.setText(gpu_mod.guidance_text(info))
             # v2.1.2：按钮显示条件修正——此前 cuda_devices==0 才显示，而
@@ -1715,11 +1726,11 @@ class SettingsDialog(QDialog):
                                     "请重启 LiveSubtitle，然后在「计算方式」选择「强制 GPU」。"))
         else:
             QMessageBox.warning(self, ui_text("安装失败"),
-                                f"{msg}\n\n可稍后重试，或手动执行：\n"
-                                "Python ≤ 3.13：pip install torch --index-url "
-                                "https://download.pytorch.org/whl/cu121\n"
-                                "Python ≥ 3.14：pip install nvidia-cublas-cu12==12.1.3.1 "
-                                "nvidia-cudnn-cu12==9.1.1.17 --no-deps")
+                                ui_fmt("{msg}\n\n可稍后重试，或手动执行：\n"
+                                       "Python ≤ 3.13：pip install torch --index-url "
+                                       "https://download.pytorch.org/whl/cu121\n"
+                                       "Python ≥ 3.14：pip install nvidia-cublas-cu12==12.1.3.1 "
+                                       "nvidia-cudnn-cu12==9.1.1.17 --no-deps", msg=msg))
 
     # ---------- GPU / CUDA 引导结束 ----------
 
@@ -2241,11 +2252,13 @@ class SettingsDialog(QDialog):
         self.proxy_test_button.setEnabled(True)
         if ok:
             self.proxy_status_label.setText(
-                f"{ui_text('✓ Google 免费翻译通道可达（')}{detail}{ui_text(' · 出口：')}{net.describe()}）")
+                ui_fmt("✓ Google 免费翻译通道可达（{detail} · 出口：{egress}）",
+                       detail=detail, egress=net.describe()))
         else:
             self.proxy_status_label.setText(
-                f"{ui_text('✗ Google 通道不可达（')}{detail}{ui_text(' · 出口：')}{net.describe()}）。"
-                "不影响 MyMemory / Argos 备援通道。")
+                ui_fmt("✗ Google 通道不可达（{detail} · 出口：{egress}）。"
+                       "不影响 MyMemory / Argos 备援通道。",
+                       detail=detail, egress=net.describe()))
 
     def _apply_overlay_style(self, *_):
         self._stage("overlay_font_size", int(self.overlay_font_spin.value()))
@@ -2425,11 +2438,12 @@ class SettingsDialog(QDialog):
             self.argos_download_button.setEnabled(False)
         elif not self.argos_download_button.isEnabled():
             self.argos_download_button.setEnabled(True)
-        self.argos_download_button.setText(f"{ui_text('下载所选 → ')}{tgt_name}{ui_text(' 语言包')}")
+        self.argos_download_button.setText(ui_fmt("下载所选 → {name} 语言包", name=tgt_name))
         if installed:
             self.argos_hint.setText(
-                f"{ui_text('已安装 ')}{len(installed)} 个语言包；请下载与「识别语言 → 翻译目标」一致的方向，一次下载永久离线使用。"
-                "注意：离线包为逐句直译，多义词/专有名词易翻错，追求通顺请用「自动」引擎。")
+                ui_fmt("已安装 {n} 个语言包；请下载与「识别语言 → 翻译目标」一致的方向，一次下载永久离线使用。"
+                       "注意：离线包为逐句直译，多义词/专有名词易翻错，追求通顺请用「自动」引擎。",
+                       n=len(installed)))
         else:
             self.argos_hint.setText(
                 ui_text("请下载与「识别语言 → 翻译目标」一致的语言包（约 80MB，一次下载永久离线使用）。"
@@ -2459,7 +2473,8 @@ class SettingsDialog(QDialog):
         name = sel.text().split("·")[0].strip()
         box = QMessageBox(self)
         box.setWindowTitle(ui_text("卸载语言包"))
-        box.setText(f"{ui_text('确定卸载 ')}{name} 语言包吗？\n\n删除后可随时重新下载（约 80MB）。")
+        box.setText(ui_fmt("确定卸载 {name} 语言包吗？\n\n删除后可随时重新下载（约 80MB）。",
+                           name=name))
         b_yes = box.addButton(ui_text("卸载"), QMessageBox.DestructiveRole)
         box.addButton(ui_text("取消"), QMessageBox.RejectRole)
         box.exec()

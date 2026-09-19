@@ -84,6 +84,25 @@ def ui_text(text):
     return text.translate(_PUNCT).strip()
 
 
+def ui_fmt(template, **kw):
+    """整句模板 + 命名占位符。带动态值的界面文案一律走这个，**不要**在 f-string
+    里拼中文片段：
+    1. 英文语序和中文不同（`"已导出 {n} 条"` vs `"Exported {n} captions"`），
+       逐片段翻译必然拼出病句；
+    2. Python 3.11 的 f-string 替换域里不许出现反斜杠，带 \\n 的片段根本没法内联。
+    占位符名两侧必须保持一致（tests 里有锁）。"""
+    out = ui_text(template)
+    try:
+        return out.format(**kw)
+    except (KeyError, IndexError):
+        # 词典把占位符写坏了：宁可回退中文原句，也不抛到界面去
+        _MISSES.add(template)
+        try:
+            return template.format(**kw)
+        except Exception:
+            return template
+
+
 def misses():
     """运行期查到的未收录串——真机切英文跑一轮后打印它来找漏网。"""
     return sorted(_MISSES)

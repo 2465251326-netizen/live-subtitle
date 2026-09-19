@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui.styles import SETTING_QSS
-from app.i18n import ui_text
+from app.i18n import ui_text, ui_fmt
 
 
 MODEL_INFO = [
@@ -124,7 +124,8 @@ class FirstRunWizard(QDialog):
         user_chosen = bool(current) and current != str(DEFAULTS.get("asr_model"))
         target = current if user_chosen else (rec_code or current or "small")
         if rec_code and not user_chosen:
-            d.setText(d.text() + f"\n已根据你的硬件自动推荐：{rec_code}（{rec_reason}）")
+            d.setText(d.text() + ui_fmt("\n已根据你的硬件自动推荐：{code}（{reason}）",
+                                        code=rec_code, reason=rec_reason))
         for code, title, desc in MODEL_INFO:
             label = title + (ui_text("　⭐ 按你的硬件推荐") if code == rec_code else "")
             rb = QRadioButton(f"{label}\n    {desc}")
@@ -150,7 +151,8 @@ class FirstRunWizard(QDialog):
             # v2.20.2：v2.20.1 删掉了「启用字幕面板」勾选与 `overlay_enabled` 键
             # （面板改常驻实时显示），向导这两支文案一直在教一个不存在的控件——
             # 新用户的第一个动作就是去设置页找一个勾不上的东西。
-            ov_line = f"{ui_text('· 字幕面板：打开软件就在，任何界面按 ')}{hk} 显隐；不显示时托盘右键「显隐字幕面板」也能唤回\n"
+            ov_line = ui_fmt("· 字幕面板：打开软件就在，任何界面按 {hk} 显隐；"
+                             "不显示时托盘右键「显隐字幕面板」也能唤回\n", hk=hk)
         else:
             ov_line = (ui_text("· 字幕面板：打开软件即常驻显示；想临时藏一下走托盘右键菜单「显隐字幕面板」，"
                        "显隐组合热键可在「设置-通用」开启并设置；是否压在其他窗口之上，"

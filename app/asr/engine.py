@@ -563,8 +563,9 @@ class AsrThread(QThread):
                     # v2.4.4（BUG-2）：回落必须告知用户（此前只写日志，界面仍显示
                     # GPU，用户无感损失 6~10 倍速度）。走状态通道进主窗状态行
                     self.status_changed.emit(
-                        "⚠ GPU 加载失败已回落 CPU（模型较重时字幕明显滞后）——"
-                        f"原因：{str(e)[:60]}{ui_text('。可在「设置-语音识别」检测 GPU 环境')}")
+                        ui_fmt("⚠ GPU 加载失败已回落 CPU（模型较重时字幕明显滞后）——"
+                               "原因：{err}。可在「设置-语音识别」检测 GPU 环境",
+                               err=str(e)[:60]))
                     app_log.log("asr.cuda_fallback_cpu", model=self.model_size, err=str(e)[:120])
                     return True
                 except Exception:
@@ -605,12 +606,17 @@ class AsrThread(QThread):
                 # 文案必须如实——此前只说"几秒到几十秒"，用户以为卡死
                 if str(self.device) == "cuda":
                     self.status_changed.emit(
-                        f"{ui_text('正在加载 ')}{self.model_size} 模型（GPU 首次初始化约 1 分钟，"
-                        "仅第一次；之后秒开，可在「设置-语音识别」开启启动预热）...")
+                        ui_fmt("正在加载 {size} 模型（GPU 首次初始化约 1 分钟，"
+                               "仅第一次；之后秒开，可在「设置-语音识别」开启启动预热）...",
+                               size=self.model_size))
                 else:
-                    self.status_changed.emit(f"{ui_text('正在加载 ')}{self.model_size}{ui_text(' 模型（本地缓存，CPU 上通常需几秒到几十秒）...')}")
+                    self.status_changed.emit(ui_fmt(
+                        "正在加载 {size} 模型（本地缓存，CPU 上通常需几秒到几十秒）...",
+                        size=self.model_size))
             else:
-                self.status_changed.emit(f"{ui_text('正在准备 ')}{self.model_size}{ui_text(' 模型（首次运行会自动下载，见状态栏进度）...')}")
+                self.status_changed.emit(ui_fmt(
+                    "正在准备 {size} 模型（首次运行会自动下载，见状态栏进度）...",
+                    size=self.model_size))
             if not self._load_model():
                 return
         except Exception as e:
@@ -741,11 +747,11 @@ class AsrThread(QThread):
                         hint = (ui_text("识别语言＝自动检测；若内容语言固定，"
                                 "在设置里手动锁定该语言可减少误听"))
                     else:
-                        hint = (f"{ui_text('当前锁定为「')}{lang}」，与内容不符时"
-                                "请在设置中改为自动检测或换语言")
+                        hint = ui_fmt("当前锁定为「{lang}」，与内容不符时"
+                                      "请在设置中改为自动检测或换语言", lang=lang)
                     self.status_changed.emit(
-                        ui_text("有语音被识别但质量过滤丢弃（可能为音乐/噪声，或识别语言与内容不符——")
-                        + hint + "）")
+                        ui_fmt("有语音被识别但质量过滤丢弃（可能为音乐/噪声，或识别语言与内容不符——{hint}）",
+                               hint=hint))
             else:
                 self._filtered_streak = 0
             if self.language == "auto":
