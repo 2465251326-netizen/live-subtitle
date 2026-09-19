@@ -2,6 +2,15 @@
 
 最新版本说明见 [Releases](https://github.com/2465251326-netizen/live-subtitle/releases)；本文件保留完整历史（v1.6 起）。
 
+### v2.21.1
+
+**修复 v2.21.0 的致命回归：ASR 线程静默死亡，整场零字幕**
+
+- **修复·零字幕**：`app/asr/engine.py` 调用了 `ui_fmt()` 却只导入了 `ui_text`。`AsrThread.run()` 外层是 v2.0.1 加的兜底 `try`，于是这个 `NameError` 被吞掉——不发 `error_occurred`、不写日志、不弹错，症状是"开始翻译后一条字幕都没有，且看起来一切正常"。v2.21.0 的 CI 冒烟测挂在 `captions=0`，因此该版从未产出安装包（Release 无资产）。
+- **为什么 243 项测试全绿仍漏掉**：单元与集成套件都不真跑 ASR 线程（不加载模型、不喂音频），这条路径只有 CI 冒烟测覆盖得到。
+- **新增·第 8 道锁**：AST 扫描 `app/` 全部模块，凡用了 i18n 符号（`ui_text` / `ui_fmt` / `SUPPORTED` 等）却没导入即测试失败。"被兜底 try 吞掉的 NameError"只有静态检查抓得住，故常驻。
+- **实测复核**：本地与 CI 冒烟测均恢复 `captions=3 PASS`；英文模式下 ASR 线程存活，状态行 "Ready, listening... (CPU mode)"、面板 "Running · System audio"，出 3 条字幕。
+
 ### v2.21.0
 
 **界面语言可切换：简体中文 / English（放在「设置-通用」）**
