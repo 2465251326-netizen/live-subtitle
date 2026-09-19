@@ -2448,6 +2448,37 @@ def test_i18n_every_language_name_is_translated():
     assert not missing, "语言名缺英文:" + _NL + _NL.join(missing[:20])
 
 
+def test_i18n_symbols_imported_where_used():
+    """用了 ui_text/ui_fmt 却没 import 的模块，会在运行时抛 NameError。
+
+    这条锁不是洁癖：app/asr/engine.py 曾漏导入 ui_fmt，而 AsrThread.run() 外层
+    是 v2.0.1 加的兜底 try——NameError 被吞掉，线程静默死亡，症状是"整场零字幕、
+    无报错无日志"。单元/集成套件都不真跑 ASR 线程，只有 CI 冒烟测发现得了。
+    所以这层静态检查必须常驻。"""
+    import ast
+    i18n_syms = {"ui_text", "ui_fmt", "SUPPORTED", "set_lang", "get_lang", "install",
+                 "catalog", "reload_catalog", "misses", "clear_misses", "is_english"}
+    root = Path(__file__).resolve().parents[1]
+    offenders = []
+    for path in sorted((root / "app").rglob("*.py")):
+        if path.name == "i18n.py":
+            continue                      # 定义处本身
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported = set()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom) and (n.module or "").endswith("i18n"):
+                imported |= {a.asname or a.name for a in n.names}
+        used = {n.func.id for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id in i18n_syms}
+        used |= {n.id for n in ast.walk(tree)
+                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and n.id == "SUPPORTED"}
+        missing = used - imported
+        if missing:
+            offenders.append(str(path.relative_to(root)) + ": " + ", ".join(sorted(missing)))
+    assert not offenders, ("用了 i18n 符号却没导入:" + _NL + _NL.join(offenders))
+
+
 def test_i18n_ui_language_registered():
     """配置锁：ui_language 必须存在、默认 zh、且只放中英两档（不做小语种）。"""
     from app.config import DEFAULTS

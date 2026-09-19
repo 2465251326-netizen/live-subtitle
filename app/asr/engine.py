@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from app.fixmap import apply_dict
-from app.i18n import ui_text
+from app.i18n import ui_text, ui_fmt
 
 
 
