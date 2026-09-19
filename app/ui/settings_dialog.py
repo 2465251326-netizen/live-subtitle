@@ -418,6 +418,19 @@ _STD_ROWS = [
 ]
 
 
+def _kill_default_buttons(dialog):
+    """扫平一个对话框里所有 QPushButton 的默认位。
+
+    Qt 规则：对话框里**第一个** QPushButton 自动成为默认按钮，按 Enter 就等于点它。
+    逐个记得 `setAutoDefault(False)` 是不可靠的——v2.20.3 给底部三个按钮摘完默认位，
+    默认位就顺移到下一个建出来的按钮上（实测=音频页「刷新」，在搜索框按 Enter 就会
+    重扫设备并改写用户已暂存的设备选择）。所以一律整体扫平。
+    """
+    for b in dialog.findChildren(QPushButton):
+        b.setAutoDefault(False)
+        b.setDefault(False)
+
+
 class _ModelDetailDialog(QDialog):
     """单个识别模型的详情/操作弹窗（v2.0.5）。
 
@@ -471,6 +484,9 @@ class _ModelDetailDialog(QDialog):
         btns.addStretch()
         btns.addWidget(close_btn)
         v.addLayout(btns)
+        # v2.21.2：本窗口第一个建出来的 QPushButton 是「下载模型」，Qt 把它提成
+        # 默认按钮——在详情弹窗里按一次回车就直接开始下载 75MB~1.6GB。
+        _kill_default_buttons(self)
         self._refresh()
 
     def closeEvent(self, event):
@@ -880,9 +896,7 @@ class SettingsDialog(QDialog):
         子对话框同理：「模型详情」里 Enter 会直接开始下载（75MB~1.6GB）。
         所以这里对整个对话框做一次扫平，而不是逐个记得加。
         """
-        for b in self.findChildren(QPushButton):
-            b.setAutoDefault(False)
-            b.setDefault(False)
+        _kill_default_buttons(self)
 
     def _wire_spec_gate(self):
         """v2.20.4：把「推测式增量翻译」的真实闸门条件反映到控件上。
@@ -2090,7 +2104,12 @@ class SettingsDialog(QDialog):
         # 设置页不再有启用开关，显隐只走热键 / 托盘右键菜单 / 面板 ✕
         if "hotkey_enabled" in applied or "hotkey_sequence" in applied \
                 or "hotkey_overlay" in applied:
-            self.main.apply_hotkey_config()
+            # v2.21.2：原来这里直接调 main.apply_hotkey_config() 并**把返回值丢掉**，
+            # 而唯一会把结果写进 hotkey_status 的 `_apply_hotkey()` 全仓零调用点
+            # （实测 `self._apply_hotkey()` 出现 0 次）。后果：热键被别的程序占用、
+            # 注册失败时，那一行永远空白，右下角还写着「已保存并应用」——
+            # 用户的热键已经死了，界面上没有任何一处说。
+            self._apply_hotkey()
         # v2.6.0（R5）：词典/质量档类改动走热更新，管线保持运行——重启管线
         # 意味着模型冷加载近 1 分钟，词典纠错不值得付出这个代价。
         # 若同一批还有真正的重启型键（如换模型），下方照常重启（重启后构造

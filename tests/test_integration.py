@@ -4415,6 +4415,51 @@ def t_hidden_panel_ignores_draft_translation():
 check("panel: 隐藏时迟到草稿译文不得污染已收口卡片", t_hidden_panel_ignores_draft_translation)
 
 
+
+def t_hotkey_failure_is_reported():
+    """v2.21.2：_apply_staged 曾直接调 main.apply_hotkey_config() 并丢掉返回值，
+    而唯一写 hotkey_status 的 _apply_hotkey() 全仓零调用点——热键注册失败时
+    那一行永远空白，右下角还写「已保存并应用」。"""
+    from app import hotkey
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    d = SettingsDialog(w); d.load_from_config(); d.show(); _pump()
+    orig = hotkey.register
+    try:
+        hotkey.register = lambda *a, **k: False
+        d._staged.clear()
+        d._staged["hotkey_sequence"] = "Ctrl+Shift+F12"
+        d._apply_staged(); _pump()
+        txt = d.hotkey_status.text()
+        assert "注册失败" in txt or "未生效" in txt,             "热键注册失败却没有任何反馈，hotkey_status=%r" % txt[:60]
+    finally:
+        hotkey.register = orig
+        w._quitting = True; w._teardown()
+check("settings: 热键注册失败必须如实告知", t_hotkey_failure_is_reported)
+
+
+def t_model_detail_dialog_no_enter_default():
+    """模型详情弹窗第一个按钮是「下载模型」，Qt 提成默认按钮——
+    在弹窗里按一次回车就直接开始下载 75MB~1.6GB。"""
+    from PySide6.QtWidgets import QPushButton
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from app.ui.settings_dialog import _ModelDetailDialog
+    w = MainWindow()
+    md = _ModelDetailDialog(w, "small", "small", False)
+    try:
+        fired = []
+        for b in md.findChildren(QPushButton):
+            b.clicked.connect(lambda _c=None, t=b.text(): fired.append(t))
+        QTest.keyClick(md, Qt.Key_Return)
+        _pump()
+        assert not fired, "在模型详情弹窗按 Enter 触发了按钮: %s" % fired
+    finally:
+        md.deleteLater()
+        w._quitting = True; w._teardown()
+check("settings: 模型详情弹窗按 Enter 不得开始下载", t_model_detail_dialog_no_enter_default)
+
+
 report = "\n".join(RESULTS)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_report.txt"),
           "w", encoding="utf-8") as f:
