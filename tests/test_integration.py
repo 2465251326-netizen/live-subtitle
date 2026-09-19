@@ -634,7 +634,7 @@ def t_overlay_status_row():
     from app import hotkey as hk
     w = MainWindow()
     w.show()
-    lab = w._quick_labels["字幕面板"]
+    lab = w._quick_labels["overlay"]
     w.overlay.hide()
     orig = hk.overlay_text
     try:
@@ -979,12 +979,12 @@ def t_overlay_resident_on_launch():
         assert w.overlay.isVisible(), "常驻实时显示：构造后必须可见"
         ql = getattr(w, "_quick_labels", None)
         if ql:
-            assert str(ql["字幕面板"].text()).startswith("已开启"), \
+            assert str(ql["overlay"].text()).startswith("已开启"), \
                 "仪表盘必须显示'已开启'——先 show 再刷面板的顺序不许反"
         w._toggle_overlay_hotkey()          # 热键 / 托盘「显隐字幕面板」同一路径
         assert not w.overlay.isVisible(), "热键隐藏当次生效"
         if ql:
-            txt = str(ql["字幕面板"].text())
+            txt = str(ql["overlay"].text())
             assert "已关闭" in txt, txt
             # 设置页已无启用勾选，指引不得再指向它
             assert "设置-显示" not in txt, f"指引仍指向已删除的设置页勾选：{txt}"

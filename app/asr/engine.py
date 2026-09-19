@@ -243,6 +243,10 @@ class AsrThread(QThread):
     # 用户视角"字幕无预警跳过一大段内容"。主窗以此建弱化卡留痕，可排查。
     recheck_dropped = Signal(str, float)
     status_changed = Signal(str)
+    # v2.20.6（i18n 前置改造）：积压预警单独发信号。主窗此前用
+    # `"识别积压" in text` 从状态文本里猜，界面语言一切英文这个判断就哑了
+    # ——而它决定的是"要不要常驻显示丢段警告"，不是显示什么字。
+    backlog = Signal()
     model_ready = Signal()
     error_occurred = Signal(str)
 
@@ -411,6 +415,10 @@ class AsrThread(QThread):
                 self._dropped_ever = True
                 if not self._backlog_reported:
                     self._backlog_reported = True
+                    # 顺序要紧：两个信号都是排队投递，backlog 先发才能保证
+                    # _on_asr_status 处理时 _backlog_warn 已置位（与改造前
+                    # "在同一个槽里先置标志再刷状态"的时序一致）
+                    self.backlog.emit()
                     self.status_changed.emit(
                         "识别积压，部分较早语音来不及转写已被跳过："
                         "CPU 跟不上当前模型，建议换 small/tiny（状态栏持续提醒）")
@@ -418,6 +426,7 @@ class AsrThread(QThread):
                 app_log.log("asr.segment_dropped", queue=self.queue_in.qsize())
             elif self.queue_in.qsize() >= self.QUEUE_LIMIT - 2 and not self._backlog_reported:
                 self._backlog_reported = True
+                self.backlog.emit()
                 self.status_changed.emit(
                     "识别积压：转写速度跟不上语音产出，字幕会延迟陆续出现"
                     "（CPU 较慢建议换 small/tiny）")

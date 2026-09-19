@@ -63,6 +63,7 @@ DEFAULTS = {
     # v2.6.0（R6）删除 translate_zh_from_zh：无任何读取点的死配置（zh→zh 回显硬编码于 translator.run）
     "close_action": "ask",             # ask / tray / exit
     "auto_start": False,               # 启动后自动开始翻译
+    "ui_language": "zh",               # 界面语言：zh | en（改后重启生效，见 app/i18n.py）
     "proxy_mode": "system",            # system 跟随系统 | manual 手动 | none 直连
     "proxy_url": "",                   # manual 模式的代理地址，如 http://127.0.0.1:10808
     "hotkey_enabled": True,            # 全局热键开关

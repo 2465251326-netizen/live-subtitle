@@ -208,6 +208,10 @@ _FIELD_SPECS = {
     "overlay_hint_shown":   ("internal", "hidden"),
     "storage_root":         ("internal", "hidden"),
     "wizard_done":          ("internal", "hidden"),
+    # v2.20.6：界面语言。登记成 internal/hidden 只为"不参与自动建行/自动暂存"——
+    # 它生效方式是**重启整个程序**，既不是 pipeline（重跑管线）也不是 instant。
+    # 控件在 _page_general 里手写接线（与 hotkey_* 复合控件同一套路）。
+    "ui_language":          ("internal", "hidden"),
 }
 
 # ---------------------------------------------------------------------------

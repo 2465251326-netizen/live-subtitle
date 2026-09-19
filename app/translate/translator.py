@@ -512,6 +512,9 @@ class TranslateThread(QThread):
     status_changed = Signal(str)
     # v2.3.2（G2）：在线引擎启动即不可达的事前通知（engine_desc, reason）
     engine_fallback = Signal(str, str)
+    # v2.20.6（i18n 前置改造）：主引擎恢复另发一个信号。主窗此前用
+    # `"已恢复" in text and "切回" in text` 从状态文本里猜——界面语言一切英文即失效。
+    primary_recovered = Signal()
     # v2.6.2（P1-4）：停止后排水宽限——等 asr 尾句转写（GPU <1s，CPU 最长
     # 约 10s）经主窗口转发进来，收到即翻；超时退出
     DRAIN_GRACE = 15.0
@@ -671,6 +674,7 @@ class TranslateThread(QThread):
                                    tgt=str(self.target or ""))
         if ok:
             app_log.log("translate.primary_recovered", engine=self._primary_engine)
+            self.primary_recovered.emit()   # 先于状态文本：见信号声明处
             self.status_changed.emit(f"主引擎 {self._primary_engine} 已恢复，自动切回")
             self._active_engine = self._primary_engine
 
