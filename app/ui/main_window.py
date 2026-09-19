@@ -22,7 +22,7 @@ from app.asr.engine import AsrThread
 from app.asr.preview import StreamPreview
 from app.translate.translator import TranslateThread
 from app.ui.styles import DARK_QSS
-from app.ui.caption_overlay import CaptionOverlay
+from app.ui.caption_overlay import CaptionOverlay, recent_echo
 from app import hotkey
 
 DOCS_URL = "https://github.com/2465251326-netizen/live-subtitle#readme"
@@ -1374,6 +1374,18 @@ class MainWindow(QMainWindow):
             tg.stop()
         self._sync_export_actions()  # v2.6.5（R7-L3）：清空后回禁用态
 
+    def _recent_card_sources(self):
+        """最近若干张**已出译文**的卡片原文（v2.23.0 §38 F9 的回声判据输入）。
+
+        占位卡、失败卡、已并入卡都不算——它们那一句还没定稿，把新到的同句
+        当成"旧话重播"丢掉，就会让那一行永远停在 `⟳ …`。"""
+        out = []
+        for i in range(self.scroll_layout.count()):
+            c = self.scroll_layout.itemAt(i).widget()
+            if isinstance(c, CaptionCard) and not c.is_pending() and c.translated_text():
+                out.append(c.source_label.text())
+        return out
+
     def _has_cards(self):
         """v2.4.4（BUG-9）：列表页是否存在字幕卡（layout 里有 stretch 等非卡项，
         不能拿 count() 直接判）。"""
@@ -2468,6 +2480,15 @@ class MainWindow(QMainWindow):
         # v2.2.11：记录本段音频时间轴（会话相对秒 + Whisper 语音时长）；
         # 流式路径直接写上占位卡，一次性路径由 _on_translated 建卡时取快照
         self._last_asr_timing = self._asr_timing(duration)
+        # v2.23.0（§38 F9）：whisper 滑窗把**已经出过字幕那一句**连着复读尾巴
+        # 再转一遍（用户实拍：同一句两行、两份措辞不同的译文）。判据与面板同源
+        # （`caption_overlay.recent_echo`），命中即整段作废——不建卡、不送译、
+        # 不上面板。以前"同不同一句"只跟最新一行比，隔一行就漏。
+        # 留痕：静默丢弃正是 §26.4-2 那类"永久失效零日志"的老毛病，记一条。
+        if recent_echo(text, self._recent_card_sources()):
+            from app import log as app_log
+            app_log.log("asr.echo_skipped", text=str(text)[:60])
+            return
         # v2.2.3：连续流模式下原文是否入流由 overlay 自行按 show_source 决定
         # （"只显示译文"时原文不入流）
         # v2.18.2（D-2）：本方法内**只此一次**面板占位调用。此处曾有第二处调用

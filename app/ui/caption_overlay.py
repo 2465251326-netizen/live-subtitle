@@ -627,7 +627,11 @@ class CaptionOverlay(QWidget):
             return
         # v2.7.5（R-4）：_pending_row 死变量移除——T1 多待决并存后匹配走
         # _find_pending（按原文精确/后缀），单槽指针已无读方
-        self._add_row(source_text, ui_text("⟳ 翻译中…"), True)   # v2.20.3：此刻原文已经出来了，在等的是翻译——写"识别中"会让人# 去查麦克风
+        # v2.23.0（§38 F9）：旧话重播不再开新的一行（同句判据以前只看得到最新
+        # 一行，滑窗把更早那一句连着尾巴重播时就漏了）
+        if self._recent_echo(source_text):
+            return
+        self._add_row(source_text, ui_text("⟳ 翻译中…"), True)   # v2.20.3：此刻原文已经出来了，在等的是翻译——写"识别中"会让人以为卡在识别
 
     def show_pending_result(self, source_text, target_text, show_source=True,
                             merged_from=None):
@@ -639,9 +643,14 @@ class CaptionOverlay(QWidget):
             self._dual_show_result(source_text, target_text, show_source)
             return
         self._show_source = bool(show_source)
-        self._last_result = (source_text or "", target_text or "")
         self._merge_pending(merged_from)
         r = self._find_pending(source_text)
+        if r is None and self._recent_echo(source_text):
+            # v2.23.0（§38 F9）：这一句屏上已经有了（那一行带着自己的原文与译文），
+            # 再补一行就是"同一句两行、两份措辞不同的译文"。`_last_result` 也不
+            # 许改指向它——「复制最近一句 / 纠正」该指向那行干净的终版。
+            return
+        self._last_result = (source_text or "", target_text or "")
         if r is not None:
             r["pending"] = False
             r["spec"] = False    # v2.7.6（A）：整句终版覆盖推测中间版，脱离推测态
@@ -718,6 +727,7 @@ class CaptionOverlay(QWidget):
             # 旧行为是整块覆盖唯一那一对标签，于是"新句一到、上一句就消失"
             # （用户实拍），并且留下一拍~两拍的"新句原文 + 上一句终版译文"
             # 错配窗口（v2.19.1 元凶）。
+            # 回声（滑窗把前面某一句重播）由 `_dual_new_sentence` 那道闸统一拦掉。
             self._dual_new_sentence(t)
         self._sync_dual_visibility()
         self._schedule_relayout()
@@ -742,6 +752,10 @@ class CaptionOverlay(QWidget):
         if (source_text and not self._dual_cur_open
                 and self._dual_same_sentence(self._dual_cur_src(), source_text, True)):
             return
+        # v2.23.0（§38 F9）：原文那侧把回声拍作废了，译文侧不能还把它写进
+        # **当前这一句**的卡片——否则屏上是一行"上一句的英文 + 这一句的中文"
+        if source_text and self._recent_echo(source_text):
+            return
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
         self._dual_tgt.setText(translated)
@@ -754,6 +768,8 @@ class CaptionOverlay(QWidget):
         if self.is_dual():
             self._dual_show_result(source_text, target_text, show_source)
             return
+        if self._recent_echo(source_text):
+            return          # v2.23.0（§38 F9）：旧话重播不再补一行
         self._show_source = bool(show_source)
         self._last_result = (source_text or "", target_text or "")
         self._add_row(source_text or "", target_text or "", False)
@@ -902,6 +918,23 @@ class CaptionOverlay(QWidget):
                 return True
         return False
 
+    def _recent_srcs(self):
+        """最近若干行里**已经定稿**的原文。
+
+        未收口的行不在这里——那条路 `_dual_row_for` / `_find_pending` 本来就会
+        按原文找回去，若把它们也算成"已经说过的旧话"，一句真话的终版会被当成
+        回声丢掉、把那行永久停在 `⟳ 翻译中…`。"""
+        if self.is_dual():
+            pairs = list(zip(self._dual_src_items, self._dual_rows_closed))
+            items = [it.get("text") for it, closed in pairs if closed]
+        else:
+            items = [it.get("src_text") for it in self._rows if not it.get("pending")]
+        return items[-ECHO_WINDOW:]
+
+    def _recent_echo(self, text):
+        """`text` 是不是前几行里某一句的重播（判据见模块级 `recent_echo`）。"""
+        return recent_echo(text, self._recent_srcs())
+
     def _dual_new_slot(self, src_text=""):
         """开一对新条目并把它设为"当前句"。
 
@@ -962,14 +995,18 @@ class CaptionOverlay(QWidget):
         return bool(t) and not bool(self._dual_tgt.property("empty"))
 
     def _dual_row_for(self, src_text=""):
-        """定位 `src_text` 该写进**哪一行**，返回行号。
+        """定位 `src_text` 该写进**哪一行**，返回行号（-1 = 这一拍是旧话的重播，
+        不该开新行、也不该写进别的行，调用方直接作废这一拍）。
 
         为什么必须按原文找而不是永远写最新一行：累积之后，正式片段/终版译文
         可能**迟到**——新句的流式拍已经把下一行开出来了，这时上一句的终版才到，
         写进最新行就等于"A 的译文盖在 B 的原文上"（v2.19.1 花大力气消灭的错配
         窗口，在累积模式下会以更糟的形式复发）。所以：
         ① 从最新往回找**同源且未收口**的行；
-        ② 找不到 → 当前行还空就用它，否则另起一行。"""
+        ② 找不到 → 当前行还空就用它，否则另起一行；
+        ③ v2.23.0（§38 F9）：另起一行之前先问一句"这是不是前几行里哪一句的重播"
+           ——旧判据只跟最新一行比，滑窗把更早那一句连着尾巴再转一遍时就漏了
+           （用户实拍：同一句两行、两份措辞不同的译文）。"""
         key = (src_text or "").strip()
         if key:
             for i in range(len(self._dual_src_items) - 1, -1, -1):
@@ -978,6 +1015,8 @@ class CaptionOverlay(QWidget):
                 if self._dual_same_sentence(self._dual_src_items[i]["text"], key):
                     return i
         if self._dual_src is None or self._dual_slot_has_content():
+            if key and self._recent_echo(key):
+                return -1
             self._dual_new_slot(key)
         elif key:
             self._dual_set_src(key)
@@ -1145,7 +1184,8 @@ class CaptionOverlay(QWidget):
         正在读的那行被下一句当场拽走 178px，而 dual 既没有 ↓ 按钮也没有计数——
         回看事实上不可能。现在暂停态一直保持到用户自己滚回底部或按 ↓，
         与列表模式同一套契约（未读计数 + 回程按钮）。"""
-        self._dual_row_for(src_text)
+        if self._dual_row_for(src_text) < 0:
+            return          # 旧话重播：不另起一行，也不把当前句的译文打回占位
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
         # v2.22.0（§37.1 F8）：占位文案与列表行统一成"⟳ 翻译中…"。裸一个 "…"
@@ -1160,7 +1200,7 @@ class CaptionOverlay(QWidget):
         self._schedule_relayout()
 
     @staticmethod
-    def _dual_same_sentence(a, b, closed_row=False):
+    def _dual_same_sentence(a, b, closed_row=False, head3=True):
         """同句判据（v2.19.1）：流式草稿与随后到达的正式片段是否**同一句**。
         前缀包含关系，或（分词后）前 3 词同源即算同句。
         用途：① 正式片段落在已上屏的同句草稿上时，校准原文而非重置译文区
@@ -1171,7 +1211,13 @@ class CaptionOverlay(QWidget):
         `closed_row`（v2.20.2）：a 是**已收口**的那一行时才做"最小对否决"。
         草稿→终版那一趟纠正（whisper 改一个词）必须继续判同句、就地收口，
         否则又会开出一行重复；而对着已定稿的句子判断"这是新句还是重播"时，
-        只差一个编号/数字的两句必须判成两句。"""
+        只差一个编号/数字的两句必须判成两句。
+
+        `head3`（v2.23.0 §38 F9）：要不要认"前 3 词同源"这条快判。它是为
+        "同一句被重转写"设计的（草稿 vs 终版只差标点/词形），代价是**相邻两句
+        开头相同时会被误判同句**——用在跨行回声去重上就会吞掉一句真话
+        （"The president said…" 之后来 "The president told reporters…"）。
+        所以跨行判据只走"前缀包含 + 有序 LCS ≥0.85"两条硬判据。"""
         a = (a or "").strip()
         b = (b or "").strip()
         if not a or not b:
@@ -1191,7 +1237,7 @@ class CaptionOverlay(QWidget):
             diffs = sum(1 for k in range(n) if ta[k] != tb[k])
             if 0 < diffs <= max(1, n // 6):
                 return False
-        if all(x == y for x, y in zip(ta[:3], tb[:3])):
+        if head3 and all(x == y for x, y in zip(ta[:3], tb[:3])):
             return True
         # v2.20.1：回声判据——b 的词 ≥85% 已在 a 里出现过，算同一句。真机 91s
         # 英语新闻实测：末句收口后预览缓冲重启，下一拍把已上屏那一段又播了一遍
@@ -1269,6 +1315,8 @@ class CaptionOverlay(QWidget):
             return
         self._show_source = bool(show_source)
         idx = self._dual_row_for(source_text or "")
+        if idx < 0:
+            return          # v2.23.0（§38 F9）：旧话重播的推测译不作废就会盖到当前句上
         lab_t = self._dual_tgt_items[idx]["lab"]
         lab_t.setProperty("spec", True)
         lab_t.setProperty("empty", False)
@@ -1285,12 +1333,18 @@ class CaptionOverlay(QWidget):
         v2.20.1：上一句不再被顶掉，两句都留在各自栏里。终版按原文找自己的行，
         因此"新句已先行上屏、上一句终版迟到"时不会写错行。"""
         self._show_source = bool(show_source)
-        self._last_result = (source_text or "", target_text or "")
         # v2.4.4（BUG-7）同一语义在 dual 的补漏：引导小抄一经真实字幕上屏就
         # 完成使命。旧实现只在 `_add_row`（列表路径）复位，dual 走不到
         # 那里 → 清空后三行小抄反复重弹，违反"每份配置只弹一次"。
         self._hint_guide = False
         idx = self._dual_row_for(source_text or "")
+        if idx < 0:
+            # v2.23.0（§38 F9）：这一句的终版是前几行某一句的重播——那行已经有
+            # 自己的原文与译文，重开一行就是用户实拍里"同一句两行、两份译文"。
+            # `_last_result` 也不许改指向它：「复制最近一句 / 纠正」该指向
+            # 那行干净的终版，而不是带复读尾巴的这一版。
+            return
+        self._last_result = (source_text or "", target_text or "")
         self._dual_set_row(idx, src_text=source_text or None)
         lab_t = self._dual_tgt_items[idx]["lab"]
         lab_t.setProperty("spec", False)
@@ -2324,3 +2378,36 @@ class CaptionOverlay(QWidget):
         menu = self._build_menu()
         self._menu_dispatch(menu.exec(event.globalPos()))
         menu.deleteLater()
+
+
+# ---------- v2.23.0（§38 F9）：回声判据的共用出口 ----------
+# 滑窗预览会把**已经收口那一句**连着尾巴再转写一遍（用户实拍：同一句冒出两行、
+# 还各带一份措辞不同的译文）。旧判据只跟"最新一行"比，隔一行就漏。
+# 面板行与主窗卡片列表都要问同一句"这是不是前几条里哪一条的重播"，所以判据
+# 只留一份实现（阈值改一处两边同步）——`CaptionOverlay._dual_same_sentence`：
+# 有序 LCS ≥0.85 + 最小对否决。
+ECHO_WINDOW = 5       # 往回看几条（≈ 预览窗口能追到的最远重播）
+ECHO_MIN_CHARS = 12   # 短句不去重：说话人把 "Great." 说两遍是真话，不是滑窗重播
+ECHO_MAX_GROW = 1.4   # 比旧条长出 40% 以上就不算重播（那是更完整的版本，不是复读尾巴）
+
+
+def recent_echo(text, settled_sources):
+    """`text` 是不是最近 `ECHO_WINDOW` 条**已定稿**字幕里某一条的重播。
+
+    只比"已定稿"的：未收口那条路本来就会按原文找回去（`_find_pending` /
+    `_dual_row_for`），把未收口的也算进来会让一句真话的终版被误当回声丢掉。
+
+    `ECHO_MAX_GROW` 是"宁多一行重复，不吞一句真话"的护栏：whisper 带上下文
+    重转有时会把同一句转得**更完整**（"Hello there." → "Hello there, welcome
+    to the show."），那种必须上屏，不能当复读丢掉。"""
+    t = (text or "").strip()
+    if len(t) < ECHO_MIN_CHARS:
+        return False
+    src = [s.strip() for s in (settled_sources or []) if (s or "").strip()]
+    for s in src[-ECHO_WINDOW:]:
+        if len(t) > len(s) * ECHO_MAX_GROW:
+            continue
+        # head3=False：跨行判据不许用"前 3 词同源"快判（见其文档）
+        if CaptionOverlay._dual_same_sentence(s, t, True, head3=False):
+            return True
+    return False

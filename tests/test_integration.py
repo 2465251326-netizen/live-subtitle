@@ -4767,6 +4767,188 @@ check("panel: 40 行淘汰不抽走正在读的那行（§37.1 F7）",
       t_panel_eviction_keeps_reading_position)
 
 
+# ===================== v2.23.0 第七轮巡检：重复翻译（§38 F9） =====================
+
+_E1 = "Usually when Trump is demolishing something on Air Force One, it's a bucket of KFC."
+_E1T = "通常特朗普在空军一号上拆除某事时,会是一桶KFC."
+_E2 = "Great."
+_E2T = "伟大的。"
+_ECHO = _E1 + " that's a bucket of KFC."
+_ECHOT = "通常特朗普在空军一号上拆除某事时,是一桶KFC,即一桶KFC."
+
+
+def t_dual_echo_beat_opens_no_row():
+    """用户实拍：滑窗预览把**已经收口那一句**连着复读尾巴再转一遍，面板上同一句
+    冒出两行、各带一份措辞不同的译文。旧判据 `_dual_same_sentence(cur, t)` 只跟
+    **最新一行**比（探针实测：与 'Great.' 判不同句、与第一句判同句），隔一行就漏。"""
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual")
+    ov.show()
+    _pump(6)
+    try:
+        ov._dual_show_pending(_E1)
+        ov._dual_show_result(_E1, _E1T, True)
+        ov._dual_show_pending(_E2)
+        ov._dual_show_result(_E2, _E2T, True)
+        _pump(6)
+        assert len(ov._dual_src_items) == 2, "前提：两行都已收口"
+        # 回声拍（隔了一行）——必须整拍作废
+        ov.update_partial(_ECHO)
+        _pump(6)
+        assert len(ov._dual_src_items) == 2, \
+            f"回声拍又开了一行：{[i['text'][:30] for i in ov._dual_src_items]}"
+        assert ov._dual_src_items[0]["text"] == _E1, "回声把旧行文本换成了带复读尾巴的版本"
+        assert ov._dual_tgt_items[0]["lab"].text() == _E1T, "回声改写了旧行已有的译文"
+        # 回声拍的**译文**也不能落到当前句的卡片上
+        ov.update_dual_draft_tgt(_ECHOT, _ECHO)
+        _pump(4)
+        assert ov._dual_tgt_items[-1]["lab"].text() == _E2T, \
+            f"回声的草稿译文写进了当前句：{ov._dual_tgt_items[-1]['lab'].text()!r}"
+        # 真新句照常开行（闸不能把后面所有话都拦掉）
+        ov.update_partial("Oil prices slid sharply on weaker demand data today.")
+        _pump(6)
+        assert len(ov._dual_src_items) == 3, "回声之后的真新句被一起吞掉了"
+        assert ov._dual_src_items[-1]["text"].startswith("Oil prices")
+    finally:
+        ov.deleteLater()
+check("panel: 双语回声拍不再开出重复行（§38 F9）", t_dual_echo_beat_opens_no_row)
+
+
+def t_list_echo_row_suppressed():
+    """列表布局同形：回声终版/一次性上屏都不许补出第二行。"""
+    ov = CaptionOverlay()
+    ov.show()
+    _pump(6)
+    try:
+        ov.show_caption(_E1, _E1T, True)
+        ov.show_caption(_E2, _E2T, True)
+        _pump(4)
+        assert len(ov._rows) == 2
+        ov.show_caption(_ECHO, _ECHOT, True)          # 一次性上屏路径
+        ov.show_pending(_ECHO)                        # 占位路径
+        _pump(4)
+        assert len(ov._rows) == 2, f"列表回声多出一行：{len(ov._rows)}"
+        ov.show_pending_result(_ECHO, _ECHOT, True)   # 终版路径
+        _pump(4)
+        assert len(ov._rows) == 2, "列表回声终版又补了一行"
+        assert ov._rows[-1]["tgt_text"] == _E2T, "_last_result 被回声改指向了带尾巴的版本"
+        assert ov._last_result == (_E2, _E2T), ov._last_result
+    finally:
+        ov.deleteLater()
+check("panel: 列表回声行同样不补开（§38 F9）", t_list_echo_row_suppressed)
+
+
+def t_main_echo_segment_not_carded_not_translated():
+    """主窗侧：回声段不建卡、**也不送译**（用户说的"重复翻译"字面就是又翻了一遍）。"""
+    w = MainWindow()
+    w.show()
+    w.overlay.set_layout_mode("list")
+    _pump()
+    try:
+        w.running = True
+        w._sid_asr = None
+        w._sid_tr = None
+
+        class _Tr:
+            def isRunning(self):
+                return True
+        # `_on_asr_text` 末尾送译前有一道 `_active_translate() is not None` 的闸，
+        # 不给它一个假线程，下面的桩根本不会被调用（锁就会空转）
+        w.translate_thread = _Tr()
+        submitted = []
+        w._submit_for_translation = lambda t, d: submitted.append(t)
+        w._on_asr_text(_E1, "en", 3.0)
+        _pump()
+        w._on_translated(_E1, _E1T, "argos", "en", None)
+        _pump()
+        w._on_asr_text(_E2, "en", 1.0)
+        _pump()
+        w._on_translated(_E2, _E2T, "argos", "en", None)
+        _pump()
+        assert len(submitted) == 2, submitted
+        before = len([1 for i in range(w.scroll_layout.count())
+                      if w.scroll_layout.itemAt(i).widget() is not None
+                      and w.scroll_layout.itemAt(i).widget().__class__.__name__ == "CaptionCard"])
+        w._on_asr_text(_ECHO, "en", 3.0)
+        _pump()
+        after = len([1 for i in range(w.scroll_layout.count())
+                     if w.scroll_layout.itemAt(i).widget() is not None
+                     and w.scroll_layout.itemAt(i).widget().__class__.__name__ == "CaptionCard"])
+        assert after == before, f"回声段又建了一张卡：{before} → {after}"
+        assert submitted == [_E1, _E2], f"回声段被送去翻译了：{submitted}"
+    finally:
+        w.translate_thread = None   # 假线程没有 stop/wait/disconnect，收尾会炸
+        w._quitting = True
+        w._teardown()
+check("main: 回声段不建卡也不送译（§38 F9）", t_main_echo_segment_not_carded_not_translated)
+
+
+def t_echo_guard_three_ways_not_to_swallow():
+    """去重判据的反向护栏——每条都是"吞真话"的真实形态，必须**不**判回声。
+
+    断言逐条收集后一次报出：第一版这条锁在三项判据同时被放松时只红了
+    一处（第一条断言就把后面几条挡住了），那样根本判不出"哪条护栏没人守"。"""
+    from app.ui.caption_overlay import recent_echo
+    settled = [_E1, _E2]
+    bad = []
+    # ① 更完整的版本（whisper 带上下文重转常把句子转长）
+    fuller = _E1 + " and the secretary added that the review would finish by friday."
+    if recent_echo(fuller, settled):
+        bad.append("把更完整的版本当回声吞掉了（ECHO_MAX_GROW 护栏失效）")
+    # ② 短句真重复：说话人把 "Great." 说两遍
+    if recent_echo("Great.", ["Great.", "Something else entirely here."]):
+        bad.append("短句复读被吞——那是真话（ECHO_MIN_CHARS 护栏失效）")
+    # ③ 近义改写不是回声：跨行判据不许用"前 3 词同源"快判
+    para = "Usually when Trump is landing something on Air Force One, it's a huge win."
+    if recent_echo(para, settled):
+        bad.append("近义改写的下一句被当成上一句的重播（head3 快判漏进跨行判据）")
+    # ④ 窗口外的旧话重播不去重（只回看 ECHO_WINDOW 条）
+    long_ago = "The central bank held rates unchanged this morning as expected by traders."
+    many = [long_ago] + [f"Sentence number {i} of the bulletin reads quite distinctly today."
+                         for i in range(8)]
+    if recent_echo(long_ago + " that is what they said", many):
+        bad.append("超出回声窗口的历史句也被吞了")
+    # 同一句若就在窗口内则应当判回声（证明上一条红在"窗口"而不是红在判据）
+    if not recent_echo(long_ago + " that is what they said", many[-3:] + [long_ago]):
+        bad.append("窗口内的真回声没被抓住")
+    # ⑤ 用户实拍那条回声必须命中
+    if not recent_echo(_ECHO, settled):
+        bad.append("用户实拍那条回声没被抓住")
+    assert not bad, "；".join(bad)
+
+
+check("echo: 去重判据的反向护栏（不吞真话）", t_echo_guard_three_ways_not_to_swallow)
+
+
+def t_echo_guard_never_strands_open_row():
+    """回声判据只比**已定稿**的行：未收口那一句不能被当成"旧话"参与去重。
+
+    第一版这条锁是空的——列表/双语两条路在问回声**之前**就先按原文找未收口行
+    （`_find_pending` / `_dual_row_for`），所以端到端怎么放松判据都不会红。
+    改成直接断言判据本身：屏上只有一行未收口的占位时，同句的更长版本必须
+    判"不是回声"，否则那一行会永远停在 `⟳ 翻译中…`。"""
+    ov = CaptionOverlay()
+    ov.show()
+    _pump(6)
+    try:
+        ov.show_pending(_E1)                      # 待决行（未收口）
+        _pump(4)
+        assert ov._rows[0]["pending"] is True
+        assert ov._recent_srcs() == [], f"未收口的行漏进了回声判据输入：{ov._recent_srcs()}"
+        assert not ov._recent_echo(_ECHO), "未收口行被当成旧话 → 它的终版会被当回声吞掉"
+        ov.show_pending_result(_ECHO, _E1T, True)  # 同句的更长终版
+        _pump(4)
+        hit = [r for r in ov._rows if r["src_text"] == _ECHO]
+        assert hit, "回声判据把未收口行的终版也吞了 → 那一行永远停在占位"
+        assert not hit[0]["pending"], hit[0]
+        # 收口之后，同一句的再重播才算"旧话"
+        assert ov._recent_srcs() == [_ECHO], ov._recent_srcs()
+        assert ov._recent_echo(_ECHO + " again and again"), "已定稿行的重播没被认出来"
+    finally:
+        ov.deleteLater()
+check("echo: 未收口行绝不参与回声去重", t_echo_guard_never_strands_open_row)
+
+
 report = "\n".join(RESULTS)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_report.txt"),
           "w", encoding="utf-8") as f:
