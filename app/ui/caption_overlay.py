@@ -689,6 +689,12 @@ class CaptionOverlay(QWidget):
         直接丢弃，不得把已定稿译文刷回淡色。"""
         if self._layout_mode != "dual" or not translated:
             return
+        # v2.21.2：隐藏期间不写译文——`update_partial` 早就有这道闸（v2.20.2 修
+        # 僵尸行时加的），但译文是**另一扇门**进来的。实测：关闭面板后原文行被
+        # 正确忽略，译文却照样写进那一张已收口的卡片，再显示就是"英文上句 +
+        # 中文下句"的永久错配，而且该行簿记为 closed，之后没有任何路径会纠正它。
+        if not self.isVisible():
+            return
         if self._dual_tgt is None:
             return
         if (source_text and not self._dual_cur_open
@@ -1316,7 +1322,12 @@ class CaptionOverlay(QWidget):
                 total = min(chrome + max(body_want, body_min),
                             int(screen_h * 0.68))
             avail = max(46, total - chrome)
-            body_h = max(min(body_min, avail), avail)
+            # v2.21.2：原来写 `max(min(body_min, avail), avail)`——对任意取值恒等于
+            # avail（min 先把 body_min 压到不超过 avail，再和 avail 取大又是 avail），
+            # 于是这个"至少留够 原文30+把手8+译文30"的地板**从来没生效过**。
+            # 实测把面板拖到 110/80 高（底缘拖拽的合法下限就是 80）时
+            # _dual_body 只剩 46px，两栏各 7~8px，字幕在滚但看不见。
+            body_h = max(body_min, avail)
             self._dual_body.setFixedHeight(body_h)
             # 当前句区内部——原文区用户高度（拖 sep 分割线得出）固定生效，
             # 译文区吃剩余（两者各自可滚动，永不互相裁切）。

@@ -38,6 +38,7 @@ CATALOG = {
     " · 已停止 · 译文可能不完整": " · Stopped · translation may be incomplete",
     " · 当前使用": " - in use",
     " · 源语言: ": " · Source language: ",
+    " · 界面语言需重启 LiveSubtitle 后生效": " - restart LiveSubtitle to change the interface language",
     " 个": " item(s)",
     " 个可用语言包；本机已安装 ": " available language packs; installed on this PC: ",
     " 个方向）": " directions)",

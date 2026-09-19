@@ -4290,6 +4290,131 @@ def t_spec_finalize_on_stop():
 check("card: 停止时推测译文保留并标注", t_spec_finalize_on_stop)
 
 
+
+# ============ v2.21.2 UX 巡检回归锁 ============
+
+def _pump(n=25):
+    for _ in range(n):
+        app.processEvents()
+
+
+def t_no_default_button_anywhere():
+    """v2.20.3 只摘了底部三个按钮的默认位，Qt 便把默认位顺移到下一个建出来的
+    QPushButton（实测=音频页「刷新」）：搜索框按 Enter 会重扫设备并改写用户
+    已暂存的 device_index。必须扫全量，而不是逐个记得加。"""
+    from app.ui.settings_dialog import SettingsDialog
+    from PySide6.QtWidgets import QPushButton
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    w = MainWindow()
+    d = SettingsDialog(w)
+    d.load_from_config(); d.show(); _pump()
+    try:
+        bad = [b.text() for b in d.findChildren(QPushButton)
+               if b.isDefault() or b.autoDefault()]
+        assert not bad, "仍有默认按钮（Enter 会误触发）: %s" % bad
+        fired = []
+        for b in d.findChildren(QPushButton):
+            b.clicked.connect(lambda: fired.append(b.text() or b.objectName()))
+        QTest.keyClick(d.search_edit, Qt.Key_Return)
+        _pump()
+        assert not fired, "在搜索框按 Enter 触发了按钮: %s" % fired
+    finally:
+        w._quitting = True; w._teardown()
+check("settings: 对话框任何地方按 Enter 都不该点按钮", t_no_default_button_anywhere)
+
+
+def t_reset_defaults_stages_ui_language():
+    """ui_language 登记为 internal（运行态键不该被清），但界面重绘会把这行拨回默认档。
+    不暂存就是演一场没发生的重置：显示 zh、磁盘仍 en、重开自己翻回 English。"""
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    try:
+        w.config.set("ui_language", "en")
+        d = SettingsDialog(w); d.load_from_config(); d.show(); _pump()
+        assert d.ui_lang_combo.currentData() == "en", d.ui_lang_combo.currentData()
+        d._reset_defaults(confirm=False); _pump()
+        assert d._staged.get("ui_language") == "zh",             "恢复默认没暂存 ui_language，staged=%s" % sorted(d._staged)
+        d._apply_staged(); _pump()
+        assert w.config.get("ui_language") == "zh",             "暂存了却没落盘: %s" % w.config.get("ui_language")
+    finally:
+        w.config.set("ui_language", "zh")
+        w._quitting = True; w._teardown()
+check("settings: 恢复默认必须真的重置界面语言", t_reset_defaults_stages_ui_language)
+
+
+def t_ui_language_hint_survives_batch():
+    """"换英文界面+换引擎"是最常见的批量操作，恰好必带一个管线键；
+    提示语若被"管线已重启"独占，用户以为界面马上变，实际不重启永远中文。"""
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    try:
+        d = SettingsDialog(w); d.load_from_config(); d.show(); _pump()
+        w.running = True
+        d._staged.clear()
+        d._staged.update({"ui_language": "en", "engine": "argos"})
+        d._apply_staged(); _pump()
+        hint = d.dirty_hint.text()
+        assert ("界面语言" in hint and "重启" in hint), "提示语丢了界面语言那句: %r" % hint
+    finally:
+        w._quitting = True; w._teardown()
+check("settings: 界面语言的重启提示不被批量保存吃掉", t_ui_language_hint_survives_batch)
+
+
+def t_panel_side_grouping_resyncs_spec_gate():
+    """sync_overlay_keys 全程 blockSignals，v2.20.5 加的推测式闸门收不到 toggled，
+    于是面板侧关攒句后设置页仍显示「推测式增量翻译」开着可点——同一句谎话。"""
+    from app.ui.settings_dialog import SettingsDialog
+    w = MainWindow()
+    try:
+        d = SettingsDialog(w); d.load_from_config(); d.show(); _pump()
+        assert d.spec_translate_check.isEnabled(), "前置：三闸齐开时应可用"
+        d.sync_overlay_keys({"translate_grouping": False}); _pump()
+        assert not d.grouping_check.isChecked(), "攒句没被同步"
+        assert not d.spec_translate_check.isEnabled(),             "面板侧关攒句后推测式翻译仍亮着（闸门被绕过）"
+    finally:
+        w._quitting = True; w._teardown()
+check("settings: 面板侧改攒句要同步重算推测式闸门", t_panel_side_grouping_resyncs_spec_gate)
+
+
+def t_dual_body_keeps_minimum_height():
+    """原写法 max(min(body_min, avail), avail) 恒等于 avail，那层
+    "原文30+把手8+译文30"的地板从来没落地；拖矮面板时两栏各剩 7px，字幕在滚但看不见。"""
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual"); ov.show(); _pump()
+    try:
+        for h in (80, 110, 160):
+            ov.resize(560, h); _pump()
+            body = ov._dual_body.height()
+            assert body >= 60, "面板高 %d 时 dual 正文只剩 %dpx（地板失效）" % (h, body)
+    finally:
+        ov.close(); ov.deleteLater()
+check("panel: dual 正文保留最小高度", t_dual_body_keeps_minimum_height)
+
+
+def t_hidden_panel_ignores_draft_translation():
+    """update_partial 早有可见性闸，译文是另一扇门进来的：隐藏期间迟到的草稿译文
+    会写进已收口的卡片，再显示就是"英文上句+中文下句"的永久错配，
+    而该行簿记为 closed，之后没有任何路径会纠正。"""
+    ov = CaptionOverlay()
+    ov.set_layout_mode("dual"); ov.show(); _pump()
+    try:
+        ov._dual_show_result("The president signed the agreement.",
+                             "总统今天签署了贸易协定。", True)
+        _pump()
+        ov.close(); _pump()
+        assert not ov.isVisible(), "前置：面板应已隐藏"
+        ov.update_dual_draft_tgt("一夜之间暴雨淹没了沿海公路。",
+                                 "Heavy rain flooded the coastal road")
+        _pump()
+        ov.show(); _pump()
+        tgt = ov._dual_tgt.text()
+        assert "签署" in tgt, "隐藏期间的草稿译文污染了已收口卡片: %r" % tgt[:44]
+    finally:
+        ov.close(); ov.deleteLater()
+check("panel: 隐藏时迟到草稿译文不得污染已收口卡片", t_hidden_panel_ignores_draft_translation)
+
+
 report = "\n".join(RESULTS)
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_report.txt"),
           "w", encoding="utf-8") as f:

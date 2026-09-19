@@ -867,7 +867,22 @@ class SettingsDialog(QDialog):
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         self.nav.setCurrentRow(0)
         self._build_search_index()
+        self._kill_default_buttons()
         self._wire_spec_gate()
+
+    def _kill_default_buttons(self):
+        """Qt 会把对话框里**第一个** QPushButton 提成默认按钮——按 Enter 就等于点它。
+
+        v2.20.3 只给底部三个按钮（恢复默认/取消/保存并应用）摘了默认位，结果默认位
+        顺移到了下一个建出来的 QPushButton 上：实测是音频页的「刷新」，
+        于是在搜索框里按一次 Enter 就会触发设备重扫，而 `_load_devices()` 会改写
+        用户已暂存的设备选择（device_index 变了、device_name 没变 → 一对失配）。
+        子对话框同理：「模型详情」里 Enter 会直接开始下载（75MB~1.6GB）。
+        所以这里对整个对话框做一次扫平，而不是逐个记得加。
+        """
+        for b in self.findChildren(QPushButton):
+            b.setAutoDefault(False)
+            b.setDefault(False)
 
     def _wire_spec_gate(self):
         """v2.20.4：把「推测式增量翻译」的真实闸门条件反映到控件上。
@@ -2097,12 +2112,17 @@ class SettingsDialog(QDialog):
                 self.dirty_hint.setText(ui_text("已保存并应用 · 下次开始翻译时生效"))
         elif hotfix and self.main.running:
             self.dirty_hint.setText(ui_text("已保存并应用 · 词典已即时生效"))
-        elif "ui_language" in applied:
-            # 文案不许承诺做不到的事：这一项保存后界面**不会**立刻变，
-            # 必须重启。说"已应用"就是谎报。
-            self.dirty_hint.setText(ui_text("已保存 · 界面语言需重启 LiveSubtitle 后生效"))
         else:
             self.dirty_hint.setText(ui_text("已保存并应用"))
+        # v2.21.2：界面语言那条实话不能被前面任何一支吃掉——
+        # "换成英文界面 + 换个引擎"是最常见的批量操作，而它恰好必带一个管线键，
+        # 于是提示只剩"管线已重启"，用户以为界面马上会变，实际不重启永远中文。
+        if "ui_language" in applied:
+            hint = self.dirty_hint.text()
+            self.dirty_hint.setText(
+                hint + ui_text(" · 界面语言需重启 LiveSubtitle 后生效")
+                if hint and hint != ui_text("已保存并应用")
+                else ui_text("已保存 · 界面语言需重启 LiveSubtitle 后生效"))
         self.settings_saved.emit()
 
     def _discard_staged(self):
@@ -2154,6 +2174,13 @@ class SettingsDialog(QDialog):
                     self._staged[key] = dict(default or {})
             elif cur != default:
                 self._staged[key] = default
+        # v2.21.2：上面按 group=="internal" 跳过了 ui_language（那是刻意的——
+        # overlay_x/storage_root/wizard_done 这类运行态键不该被"恢复默认"清掉），
+        # 但 `_set_widgets_from(d)` 已经把界面上的「界面语言」下拉拨回了 zh。
+        # 于是行显示"简体中文"、配置仍是"en"、什么都没暂存——点保存也不生效，
+        # 重开对话框这一行还会自己翻回 English。界面在演一场没发生的重置。
+        if self.c.get("ui_language") != d["ui_language"]:
+            self._staged["ui_language"] = d["ui_language"]
         self._text_color = QColor(d["overlay_text_color"])
         self._bg_color = QColor(d["overlay_bg_color"])
         self._update_color_button(self.text_color_button, self._text_color)
@@ -2362,6 +2389,11 @@ class SettingsDialog(QDialog):
                 pass
             finally:
                 w.blockSignals(False)
+        # v2.21.2：上面全程 blockSignals，所以面板侧改「攒句」不会触发
+        # _sync_spec_gate —— 结果设置页的「推测式增量翻译」照样亮着、照样打勾，
+        # 而主窗 _spec_enabled() 已经因为攒句关掉了不再产出推测译文。
+        # 这正是 v2.20.5 修过的那个"界面在骗人"，只是从面板↔设置这条通道绕了过去。
+        self._sync_spec_gate()
 
     def _load_devices(self):
         self.device_combo.blockSignals(True)
