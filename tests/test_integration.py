@@ -1013,9 +1013,11 @@ def t_overlay_dual_layout():
     assert ov._dual_src is None and ov._dual_tgt is None
     assert ov._dual_hint.isVisible()
     # 新句起点：开一对条目，原文上屏 + 译文占位（淡色推测态）
+    # v2.22.0（§37.1 F8）：占位文案与列表行统一为"⟳ 翻译中…"——裸一个 "…"
+    # 在 22px 字号下只是一颗灰点，用户分不清是在翻译还是卡死
     ov.show_pending("The quick brown")
     assert ov._dual_src.text() == "The quick brown"
-    assert ov._dual_tgt.text() == "…"
+    assert ov._dual_tgt.text() == "⟳ 翻译中…"
     assert ov._dual_tgt.property("spec") is True
     assert not ov._dual_hint.isVisible(), "有内容后占位必须让位"
     # 延续片段：整句打字机式生长在**同一条**上（拉丁补空格）
@@ -1367,7 +1369,7 @@ def t_overlay_dual_late_final_targets_own_row():
     assert ov._dual_tgt_items[0]["lab"].text() == "总统以一段简短声明开幕。"
     assert ov._dual_src_items[1]["text"] == B, \
         f"B 行被迟到的 A 终版覆盖：{ov._dual_src_items[1]['text']!r}"
-    assert ov._dual_tgt_items[1]["lab"].text() == "…", \
+    assert ov._dual_tgt_items[1]["lab"].text() == "⟳ 翻译中…", \
         f"B 行译文被 A 的终版顶掉：{ov._dual_tgt_items[1]['lab'].text()!r}"
     assert ov._dual_rows_closed == [True, False], ov._dual_rows_closed
     # B 自己收口后两行都已闭合
@@ -2300,11 +2302,33 @@ def t_overlay_dual_follow_bottom():
     for _ in range(25):
         app.processEvents()
     assert sb.value() <= 4, f"用户回看时被强行拉回底部：value={sb.value()}"
-    # 新句开始 → 恢复跟底（回看语义属于上一句）
+    # 新句开始 → v2.22.0（§37.1 F6）：**不再自动夺回跟底**。v2.18.1 那版"新句
+    # 一到就把两栏 follow 拨回 True"实测把用户正在读的那行拽走 178px，而 dual
+    # 既没有 ↓ 按钮也没有计数——回看事实上不可能。现在暂停一直保持到用户自己
+    # 滚回底部或按 ↓（与列表模式同一套契约）。
+    # 先把面板高度钉住：不钉的话新句让面板长高、内容全装得下，滚动条 max 归 0
+    # = "本来就在底部"，回看语义无从谈起（第一版这条锁就是被这个假象判红的）。
+    ov.set_user_height(200)
+    for _ in range(8):
+        app.processEvents()
+    sb.setValue(0)
+    for _ in range(6):
+        app.processEvents()
+    assert sb.maximum() > 0, "钉高后原文栏必须真的溢出（否则锁是空的）"
+    assert ov._dual_follow["src"] is False, "回看前提没建立"
     ov._dual_show_pending("A brand new sentence begins here now")
     for _ in range(25):
         app.processEvents()
-    assert ov._dual_follow["src"] is True, "新句应恢复跟底"
+    assert ov._dual_follow["src"] is False, "用户回看中的栏不得被新句夺回跟底"
+    assert ov._jump_btn.isVisible(), "暂停跟底时面板必须给出 ↓ 回程"
+    ov._dual_show_result("A brand new sentence begins here now", "全新的一句已经开始了。", True)
+    assert ov._unread >= 1, f"暂停期间完成的句子要计入未读：{ov._unread}"
+    ov._on_jump_clicked()
+    for _ in range(8):
+        app.processEvents()
+    assert ov._dual_follow == {"src": True, "tgt": True}, "按 ↓ 应恢复两栏跟底"
+    assert ov._unread == 0 and not ov._jump_btn.isVisible(), \
+        "回到底部后未读计数与回程按钮一并收起"
     ov.deleteLater()
 check("panel: dual 原文/译文区溢出自动跟底（真机新闻回归）", t_overlay_dual_follow_bottom)
 
@@ -3044,21 +3068,41 @@ def t_panel_height_converges_tgt_only():
 check("panel: 只译文高度收敛（F2）", t_panel_height_converges_tgt_only)
 
 def t_panel_status_label_width_capped():
-    # v2.5.0（F3 回归锁）：窄面板状态行限宽，长错误文案不得溢出压到按钮。
-    # （未 show 的 widget 收不到 Python resizeEvent，限宽挂在 set_status/
-    # _relayout 必经路径，测试走 set_status 断言）
+    # v2.5.0（F3）立，v2.22.0（§37.1 F1）重写。旧布局里状态行是工具条第 5 颗
+    # `Ignored` 策略的控件，而同行 8 颗按钮 sizeHint 合计中文 598px / 英文 658px：
+    # 560 面板分给它 **0px**，用户实测的 697 面板分给中文 67px、英文 **7px**；
+    # 省略预算又按 `面板宽−240` 算（457px），于是屏上留下的是**没有省略号的硬裁**
+    # ——面板唯一的诊断出口事实上从来没被看见过。现在它独占一行，三条都可测：
+    # ① 不再挂在工具条下；② 拿得到面板的绝大部分宽度；③ 省略预算 ≤ 实宽。
     ov = CaptionOverlay()
+    ov.show()
     try:
-        ov.resize(360, 100)
-        ov.set_status("翻译失败 · 检查网络或切换引擎", is_error=True)
-        assert ov.status_lbl.maximumWidth() == 120, ov.status_lbl.maximumWidth()
-        assert ov.status_lbl.width() <= 122, ov.status_lbl.width()
-        ov.resize(700, 100)
-        ov.set_status("运行中", is_error=False)
-        assert ov.status_lbl.maximumWidth() == 460, ov.status_lbl.maximumWidth()
+        for _ in range(4):
+            app.processEvents()
+        assert ov.status_lbl.parent() is ov, "状态行仍被塞在工具条里"
+        assert ov.status_lbl.isHidden(), "空状态不得白占一行正文高度"
+        long_msg = ("翻译连续失败 4 条 · 检查网络/代理节点，或到「设置-翻译」"
+                    "测试通道 / 下载离线语言包")
+        for w in (420, 560, 697):
+            ov.resize(w, ov.height())
+            for _ in range(4):
+                app.processEvents()
+            ov.set_status(long_msg, is_error=True)
+            for _ in range(4):
+                app.processEvents()
+            got = ov.status_lbl.width()
+            assert got >= int(w * 0.6), f"{w}px 面板状态行只有 {got}px（旧值 0~67px）"
+            assert ov.status_lbl.y() >= ov._bar.geometry().bottom(), "状态行不在工具条下方"
+            fm = ov.status_lbl.fontMetrics()
+            assert fm.horizontalAdvance(ov.status_lbl.text()) <= got + 1, \
+                f"省略预算 {ov.status_lbl.maximumWidth()} > 实宽 {got} → 硬裁无省略号"
+            if fm.horizontalAdvance(long_msg) > got:
+                assert ov.status_lbl.text().endswith("…"), "放不下时必须省略号收尾"
+        ov.set_status("")
+        assert ov.status_lbl.isHidden(), "清空状态要把整行收回去"
     finally:
         ov.deleteLater()
-check("panel: 状态行限宽防重叠（F3）", t_panel_status_label_width_capped)
+check("panel: 状态行独占一行、省略预算不超实宽（F1）", t_panel_status_label_width_capped)
 
 def t_panel_mini_bar():
     # v2.5.0：精简条——收起显示最新一句（原文+译文），新句跟随，
@@ -4458,6 +4502,269 @@ def t_model_detail_dialog_no_enter_default():
         md.deleteLater()
         w._quitting = True; w._teardown()
 check("settings: 模型详情弹窗按 Enter 不得开始下载", t_model_detail_dialog_no_enter_default)
+
+
+# ===================== v2.22.0 第六轮巡检：悬浮窗识别与翻译体验（§37.1） =====================
+
+def t_panel_stop_finalizes_placeholder_rows():
+    """F3：停止管线必须收口面板上还没等到译文的行。
+
+    旧实现 `stop_pipeline` 只终态化主窗自己的卡片，从不碰 `overlay._rows`：
+    探针 A2 实测停止后两行仍是 `⟳ 翻译中…` + pending=True，而同一扇窗的工具条
+    已经写"已停止 · 待机中"——上下自相矛盾，且这些占位一路活到下一场。"""
+    w = MainWindow()
+    w.show()
+    w.overlay.show()
+    w.overlay.set_layout_mode("list")
+    w.overlay.clear_caption()
+    _pump()
+    try:
+        w.running = True
+        w.capture_thread = w.asr_thread = w.translate_thread = None
+        w._on_asr_text("The first sentence never got a translation.", "en", 3.0)
+        w._on_asr_text("The second one is still waiting too.", "en", 3.0)
+        _pump()
+        pend_before = [r for r in w.overlay._rows if r["pending"]]
+        assert len(pend_before) == 2, f"前提：应有两行待决，实际 {len(pend_before)}"
+        w.stop_pipeline()
+        _pump()
+        still = [r for r in w.overlay._rows if r["pending"]]
+        assert not still, f"停止后面板仍有 {len(still)} 行挂着待决占位"
+        texts = [r["tgt_text"] for r in w.overlay._rows]
+        assert all("翻译中" not in t for t in texts), texts
+        assert any("未完成翻译" in t for t in texts), f"占位应改写成停止终态：{texts}"
+    finally:
+        w._quitting = True
+        w._teardown()
+check("panel: 停止管线收口面板占位行（§37.1 F3）", t_panel_stop_finalizes_placeholder_rows)
+
+
+def t_panel_drop_finalizes_only_that_row():
+    """F3：翻译被丢弃时，面板只收口**那一句**，别的待决行不动。"""
+    ov = CaptionOverlay()
+    ov.show()
+    _pump(4)
+    try:
+        ov.show_pending("The central bank held rates unchanged this morning.")
+        ov.show_pending("Oil prices slid sharply on weaker demand data.")
+        _pump(4)
+        assert sum(1 for r in ov._rows if r["pending"]) == 2, \
+            f"前提：应有两行待决，实际 {len(ov._rows)}"
+        ov.finalize_pending("翻译队列繁忙，本句已跳过",
+                            "The central bank held rates unchanged this morning.")
+        _pump(4)
+        r0, r1 = ov._rows[0], ov._rows[1]
+        assert not r0["pending"] and r0["tgt_text"] == "翻译队列繁忙，本句已跳过", r0
+        assert r1["pending"] and "翻译中" in r1["tgt_text"], \
+            f"不该被牵连的第二行被动了：{r1['tgt_text']!r}"
+    finally:
+        ov.deleteLater()
+check("panel: finalize_pending 只收口指定句（不误伤其它待决行）",
+      t_panel_drop_finalizes_only_that_row)
+
+
+def t_panel_spec_translation_survives_finalize():
+    """F3 契约的另一半：已有推测译的行收口时**保住那半句**，不盖成失败文案
+    （用户正在看那行字，半句也胜过"未完成翻译"——与主窗卡片 finalize_spec 同源）。"""
+    ov = CaptionOverlay()
+    ov.show()
+    _pump(4)
+    try:
+        ov.show_pending("Inflation slowed for a third month in the euro area.")
+        ov.update_spec_result("Inflation slowed for a third month in the euro area.",
+                              "欧元区通胀连续第三个月放缓", True)
+        _pump(4)
+        assert ov._rows[0]["spec"] is True
+        ov.finalize_pending("已停止 · 该句未完成翻译")
+        _pump(4)
+        r = ov._rows[0]
+        assert r["tgt_text"] == "欧元区通胀连续第三个月放缓", r["tgt_text"]
+        assert not r["pending"] and not r["spec"], r
+    finally:
+        ov.deleteLater()
+check("panel: 收口时保住已生长的推测译", t_panel_spec_translation_survives_finalize)
+
+
+def t_panel_hidden_final_translation_still_lands():
+    """F3：面板隐藏期间到达的**终版**译文不得丢弃。
+
+    旧实现 `if self.overlay.isVisible():` 把整条 `show_pending_result` 闸掉，
+    于是隐藏前上屏的占位行在重新显示后永远停在"⟳ 翻译中…"（探针 C2），
+    此后再没有路径补它。草稿那两路的可见性闸门保留（v2.20.2/v2.21.2 的
+    僵尸行教训），终版是每句一次的权威结果，不在此列。"""
+    w = MainWindow()
+    w.show()
+    w.overlay.show()
+    w.overlay.set_layout_mode("list")
+    w.overlay.clear_caption()
+    _pump()
+    try:
+        w.running = True
+        w._sid_tr = None
+        w._on_asr_text("This one was pending when the panel got hidden.", "en", 3.0)
+        _pump()
+        assert "翻译中" in w.overlay._rows[-1]["tgt_text"]
+        w.overlay.hide()
+        _pump(4)
+        w._on_translated("This one was pending when the panel got hidden.",
+                         "这句在面板隐藏时译好了。", "argos", "en", None)
+        _pump()
+        row = w.overlay._rows[-1]
+        assert not row["pending"], "隐藏期间到达的终版没收口"
+        assert row["tgt_text"] == "这句在面板隐藏时译好了。", row["tgt_text"]
+    finally:
+        w._quitting = True
+        w._teardown()
+check("panel: 隐藏期间到达的终版译文照常落行（§37.1 F3）",
+      t_panel_hidden_final_translation_still_lands)
+
+
+def t_preview_draft_shares_quality_gate():
+    """F4：流式草稿通道必须过与正式识别同一把质量闸。
+
+    `StreamPreview._transcribe` 旧实现是 `" ".join(seg.text)`，什么都不判——
+    探针 B4 实测把 "You are a video! / ♪ ♪ ♪ / KRAVZO…" 这类噪声段整串并进
+    面板原文行，还会被送去推测翻译，没有终版覆盖就永久留在屏上。"""
+    from app.asr.preview import StreamPreview
+
+    class _Seg:
+        def __init__(self, text, lp=0.0, ns=0.0):
+            self.text = text
+            self.avg_logprob = lp
+            self.no_speech_prob = ns
+
+    junk = [("", 0.0, 0.0), ("♪ ♪ ♪", 0.0, 0.0),            # 纯符号：has_content 必滤
+            ("You are a video!", -2.5, 0.0),                 # 低置信度胡言：判据一支
+            ("Please subscribe to my channel", -0.6, 0.9),   # 无语音概率高：判据二支
+            ("The minister said the ceasefire would hold.", -0.2, 0.1)]
+    segs = [_Seg(t, lp, ns) for (t, lp, ns) in junk]
+
+    class _Model:
+        def __init__(self, items):
+            self._items = items
+
+        def transcribe(self, audio, **kw):
+            return iter(self._items), object()
+
+    p = StreamPreview(_Model(segs), "en")
+    out = p._transcribe("x")
+    assert out == "The minister said the ceasefire would hold.", f"草稿闸门失效：{out!r}"
+    # 关掉幻觉抑制仍要过 has_content（与正式通道同一取舍）
+    p2 = StreamPreview(_Model(segs), "en", hallucination_filter=False)
+    got2 = p2._transcribe("x")
+    assert "♪" not in got2, got2
+    assert "You are a video!" in got2 and "subscribe" in got2, got2
+    # 判据只有一份实现：预览模块必须引用 engine 的同一个函数对象
+    import app.asr.engine as eng
+    import app.asr.preview as prev
+    assert prev.hallucination_ok is eng.hallucination_ok, "两处各写一份阈值"
+    assert prev.has_content is eng.has_content
+
+
+check("asr: 流式草稿与正式识别共用质量闸（§37.1 F4）", t_preview_draft_shares_quality_gate)
+
+
+def t_panel_status_line_reports_every_phase():
+    """F1/F2/F5：状态行按阶段说实话，而且常规运行态不再占正文高度。
+
+    旧实现两个毛病叠在一起：① 状态行与 8 颗按钮同行，实宽 0~67px（英文 7px），
+    写什么都看不见；② 点「开始翻译」后立刻写"运行中 · 系统声音"，而模型还在
+    加载/下载（十几秒到几分钟），就绪时也不回灌；③ 识别线程因致命错误退出后
+    面板继续写"运行中"。"""
+    w = MainWindow()
+    w.show()
+    _pump()
+    try:
+        ov = w.overlay
+        w.running = False
+        w._muted_warn = w._low_input_warn = False
+        w._backlog_warn = False
+        w._fatal_warn = None
+        w._asr_ready = False
+        w._model_dl_timer = None
+        # ① 停止态
+        w.update_overlay_status()
+        assert "已停止" in ov.status_lbl.text(), ov.status_lbl.text()
+        assert not ov.status_lbl.isHidden(), "有状态词时这一行必须可见"
+        # ② 加载中 / 下载中
+        w.running = True
+        w.update_overlay_status()
+        assert "正在加载识别模型" in ov.status_lbl.text(), ov.status_lbl.text()
+        class _T:
+            def isActive(self):
+                return True
+        w._model_dl_timer = _T()
+        w._dl_pct = 42
+        w.update_overlay_status()
+        assert "42%" in ov.status_lbl.text(), ov.status_lbl.text()
+        w._model_dl_timer = None
+        # ③ 就绪且常规运行 → 状态行收起（不占正文高度）
+        w._asr_ready = True
+        w.update_overlay_status()
+        assert ov.status_lbl.isHidden(), f"常规运行不该占一行：{ov.status_lbl.text()!r}"
+        # ④ 致命错误置顶常驻，且把手/状态不得继续谎称运行中
+        w._fatal_warn = "模型加载失败：CUDA out of memory"
+        w.update_overlay_status()
+        assert "out of memory" in ov.status_lbl.text(), ov.status_lbl.text()
+        assert "#fbbf24" in ov.status_lbl.styleSheet()
+        # ⑤ 积压丢段也要上面板（用户看的是面板，主窗常在托盘）
+        w._fatal_warn = None
+        w._backlog_warn = True
+        w.update_overlay_status()
+        assert "识别跟不上" in ov.status_lbl.text(), ov.status_lbl.text()
+        w._backlog_warn = False
+    finally:
+        w._quitting = True
+        w._teardown()
+check("panel: 状态行按阶段说实话（加载/下载/停摆/积压/常规）",
+      t_panel_status_line_reports_every_phase)
+
+
+def t_panel_eviction_keeps_reading_position():
+    """F7：40 行上限淘汰最老一行时，不得把用户正在读的那句往上抽。
+
+    旧实现 `pop(0)` 之后不补滚动位置：探针 C1 实测回读时来新句，同一像素位置上
+    换成了下一句（Line 06 → Line 07）。"""
+    ov = CaptionOverlay()
+    ov.show()
+    ov.set_layout_mode("list")
+    ov.clear_caption()
+    _pump(6)
+    try:
+        ov.set_user_height(260)          # 钉住高度，保证真的出现滚动条
+        for i in range(46):
+            ov.show_caption(f"Transcript line {i:02d} is long enough to wrap onto two rows.",
+                            f"这是第 {i:02d} 行字幕文本，长度足够换行。", True)
+        _pump(20)
+        sb = ov._scroll.verticalScrollBar()
+        assert sb.maximum() > 200, f"前提：列表必须可滚（max={sb.maximum()}）"
+        sb.setValue(int(sb.maximum() * 0.5))
+        _pump(6)
+        ov._follow = False               # 用户回读中
+        mid = int(sb.maximum() * 0.5)
+        sb.setValue(mid)
+        _pump(6)
+        assert not ov._follow, "回读前提没建立（被自动跟底拉回了）"
+
+        def top_text():
+            for it in ov._rows:
+                if it["row"].geometry().bottom() > sb.value():
+                    return it["src_text"]
+            return None
+
+        before = top_text()
+        assert before, "视口顶部没有行，锁是空的"
+        ov.show_caption("A brand new line arrives while the user reads back.",
+                        "用户回读时来了一句新的。", True)
+        ov.show_pending_result("A brand new line arrives while the user reads back.",
+                               "用户回读时来了一句新的。", True)
+        _pump(20)
+        after = top_text()
+        assert before == after, f"淘汰把正在读的那行抽走了：{before!r} → {after!r}"
+    finally:
+        ov.deleteLater()
+check("panel: 40 行淘汰不抽走正在读的那行（§37.1 F7）",
+      t_panel_eviction_keeps_reading_position)
 
 
 report = "\n".join(RESULTS)

@@ -199,6 +199,18 @@ def has_content(text: str) -> bool:
     return any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
+def hallucination_ok(avg_logprob: float, no_speech_prob: float) -> bool:
+    """幻觉抑制判据（v2.22.0 起为**唯一出口**，正式识别与流式预览共用一把闸）。
+
+    音乐/噪声段的常见特征是"高置信度胡言"或"无语音概率高 + 置信度低"，命中
+    其一即丢弃（阈值偏保守，宁可少出一条也不出乱码字幕）。
+
+    为什么必须共用：流式预览通道以前自己什么都不判（`" ".join(seg.text)`），
+    于是正式通道必滤的胡话会照样上到面板的原文行，还会被送去推测翻译
+    （§37.1 F4，实测 "You are a video! ♪ ♪ ♪ KRAVZO…" 整行留在屏上）。"""
+    return avg_logprob >= -1.2 and not (no_speech_prob > 0.8 and avg_logprob < -0.5)
+
+
 # v2.5.4：识别精度三档（用户反馈"速度慢/准确度差"的取舍显式化）——
 # beam/上下文条件是转写质量与速度的最大杠杆：快速档牺牲精度换实时，
 # 高精度档补回上下文条件与宽束（慢 2~4 倍，适合回看/整理字幕场景）
@@ -727,10 +739,8 @@ class AsrThread(QThread):
             segs.append((t, float(getattr(seg, "avg_logprob", 0.0) or 0.0),
                          float(getattr(seg, "no_speech_prob", 0.0) or 0.0)))
         if self.hallucination_filter:
-            # 幻觉抑制：音乐/噪声段常见特征是"高置信度胡言"或"无语音概率高+低置信度"，
-            # 两者命中其一即丢弃（阈值偏保守，宁可少出一条也不出乱码字幕）
-            texts = [t for (t, lp, ns) in segs
-                     if lp >= -1.2 and not (ns > 0.8 and lp < -0.5)]
+            # 幻觉抑制判据见 `hallucination_ok`（与流式预览通道共用同一个出口）
+            texts = [t for (t, lp, ns) in segs if hallucination_ok(lp, ns)]
         else:
             texts = [t for (t, _lp, _ns) in segs]
         if not texts:

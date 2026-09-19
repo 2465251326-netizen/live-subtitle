@@ -99,6 +99,10 @@ class CaptionOverlay(QWidget):
     RESIZE_EDGE = 14   # v2.4.1：右缘调宽命中带（10px 太窄且无光标反馈→普通人找不到）
     MAX_ROWS = 40
     MAX_DUAL_LINES = 40   # v2.20.1：dual 每栏逐句累积的上限（超出删最老，与列表同规格）
+    # v2.22.0（§37.1 F3）：这些文本都表示"这句还在等译文"。收口时要能认出它们，
+    # 否则停止/丢弃之后面板上留的就是一个永远转圈的占位。
+    PLACEHOLDERS = ("⟳ 翻译中…", "…", "⟳ …", "⟳ 识别中…")
+
     LANGS = [("zh-CN", ui_text("中文")), ("en", ui_text("英语")), ("ja", ui_text("日语")), ("ko", ui_text("韩语")),
              ("fr", ui_text("法语")), ("de", ui_text("德语")), ("ru", ui_text("俄语")), ("es", ui_text("西班牙语"))]
     FONTS = [(ui_text("小号"), 16), (ui_text("中号"), 22), (ui_text("大号"), 30), (ui_text("特大"), 40)]
@@ -227,17 +231,18 @@ class CaptionOverlay(QWidget):
         self._font_btn.setMenu(self._build_font_menu())
         bl.addWidget(self._font_btn)
 
-        self.status_lbl = QLabel("")
-        self.status_lbl.setObjectName("PanelStatus")
-        # 状态文字不参与最小宽度（长提示只省略不撑板）——宽度主权归用户
-        self.status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                      QSizePolicy.Policy.Preferred)
-        bl.addWidget(self.status_lbl, 1)
+        # v2.22.0（§37.1 F1）：状态行**不再与按钮同行**。旧布局里它是
+        # `QSizePolicy.Ignored` 的第 5 颗控件，而同行 8 颗按钮的 sizeHint
+        # 合计中文 598px / 英文 658px：560 面板分给它 0px，用户实测的 697
+        # 面板分给中文 67px、英文 **7px**——"翻译失败/系统静音/信号弱/已停止"
+        # 这些面板唯一的诊断出口事实上从来没被看见过。改到工具条下方独占一行
+        # （空态整行隐藏，不占正文高度）。
+        bl.addStretch(1)
 
         self._jump_btn = QToolButton()
         self._jump_btn.setText(ui_text("↓ 最新"))
         self._jump_btn.setToolTip(ui_text("滚动到最新一条字幕"))
-        self._jump_btn.clicked.connect(self._scroll_bottom)
+        self._jump_btn.clicked.connect(self._on_jump_clicked)
         self._jump_btn.hide()
         bl.addWidget(self._jump_btn)
 
@@ -274,6 +279,22 @@ class CaptionOverlay(QWidget):
         self._close_btn.clicked.connect(self._request_close)
         bl.addWidget(self._close_btn)
         outer.addWidget(self._bar)
+
+        # v2.22.0（§37.1 F1）：状态行独占一行，空态整行隐藏（不白占正文高度）。
+        # 有字的时候它吃满面板宽度——中文 697 面板从 67px 变 671px，英文从 7px
+        # 变 671px，"翻译失败 · 检查网络或切换引擎"这类长提示第一次放得下。
+        self.status_lbl = QLabel("")
+        self.status_lbl.setObjectName("PanelStatus")
+        self.status_lbl.setFixedHeight(20)
+        # 字号必须 setFont：QSS 的 font-size 不写回 widget.font()，而 set_status
+        # 的省略预算按 fontMetrics 量——量 16px 画 12px 会白省略掉一截字
+        _sf = QFont()
+        _sf.setPixelSize(12)
+        self.status_lbl.setFont(_sf)
+        self.status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                      QSizePolicy.Policy.Fixed)
+        self.status_lbl.hide()
+        outer.addWidget(self.status_lbl)
 
         # ---------- 历史滚动正文 ----------
         self._scroll = QScrollArea(self)
@@ -442,6 +463,24 @@ class CaptionOverlay(QWidget):
 
     # ---------- 内容 ----------
 
+    @staticmethod
+    def _shift_scroll(sb, delta, active):
+        """删掉视口**上方**的内容后把滚动位置补回来（§37.1 F7）。
+
+        不补的话"淘汰最老一条"会把自己正在读的那句往上顶一格（实测 40 行上限
+        时同一像素位置上换成了下一句）。补的动作必须排在下一拍：删行的当拍
+        滚动条 range 还是旧值，setValue 会被立刻钳回去。"""
+        if not active or delta <= 0:
+            return
+
+        def _go():
+            try:
+                sb.setValue(max(0, sb.value() - int(delta)))
+            except RuntimeError:
+                pass          # 面板已销毁，这一拍不必再补
+
+        QTimer.singleShot(0, _go)
+
     def _add_row(self, src, tgt, pending):
         # v2.4.4（BUG-7）：字幕到来 = 引导完成使命，复位后空状态回退单行占位——
         # 此前 _hint_guide 一经置位永久生效，"清空"后每次都弹三行小抄，
@@ -478,6 +517,9 @@ class CaptionOverlay(QWidget):
         self._rows.append(item)
         while len(self._rows) > self.MAX_ROWS:
             old = self._rows.pop(0)
+            h = old["row"].height() or old["row"].sizeHint().height()
+            self._shift_scroll(self._scroll.verticalScrollBar(),
+                               h + self._rows_lay.spacing(), not self._follow)
             old["row"].setParent(None)
             old["row"].deleteLater()
         if self._collapsed:
@@ -738,6 +780,75 @@ class CaptionOverlay(QWidget):
                              for w in (it["card"], it["lab"])])
         self._sync_dual_visibility()
 
+    @classmethod
+    def _is_placeholder(cls, text):
+        """这串文本是不是"还在等译文"的占位（当前界面语言下的两种写法都认）。"""
+        t = (text or "").strip()
+        if not t:
+            return True
+        return any(t == p or t == ui_text(p) for p in cls.PLACEHOLDERS)
+
+    @staticmethod
+    def _same_src(a, b):
+        """面板行与主窗送来的原文是否同一句（`source_text=None` 表示"全部"）。"""
+        a = (a or "").strip()
+        b = (b or "").strip()
+        if not a or not b:
+            return False
+        if a == b or a.startswith(b) or b.startswith(a):
+            return True
+        ta, tb = a.lower().split()[:3], b.lower().split()[:3]
+        return len(ta) >= 3 and len(tb) >= 3 and ta == tb
+
+    def finalize_pending(self, reason, source_text=None):
+        """把还没等到译文的行/卡片收口成终态（§37.1 F3）。
+
+        调用方是"这句不会再有译文了"的三个事实来源：停止管线、翻译被丢弃
+        （队列满/线程已死）、面板隐藏期间结果被丢。已有推测译的行**保住那
+        半句译文**——用户正在看那行字，半句也胜过失败文案（与主窗卡片的
+        `finalize_spec` 同一条契约）。返回是否真的改动了东西。"""
+        key = (source_text or "").strip()
+        changed = False
+        for it in self._rows:
+            if not it.get("pending"):
+                continue
+            if key and not self._same_src(it.get("src_text"), key):
+                continue
+            keep = (it.get("tgt_text") or "").strip()
+            if it.get("spec") and not self._is_placeholder(keep):
+                it["tgt_text"] = keep          # 保住推测译，转正式态
+            else:
+                it["tgt_text"] = reason
+            it["pending"] = False
+            it["spec"] = False
+            it["tgt"].setText(it["tgt_text"])
+            changed = True
+        if self.is_dual() or self._dual_tgt_items:
+            for i, lab in enumerate([t["lab"] for t in self._dual_tgt_items]):
+                if i >= len(self._dual_rows_closed) or self._dual_rows_closed[i]:
+                    continue
+                src = (self._dual_src_items[i]["text"]
+                       if i < len(self._dual_src_items) else "")
+                if key and not self._same_src(src, key):
+                    continue
+                keep = (lab.text() or "").strip()
+                if not self._is_placeholder(keep) and not bool(lab.property("empty")):
+                    lab.setProperty("spec", False)   # 已有半句推测译 → 就地转正
+                else:
+                    lab.setProperty("spec", True)
+                    lab.setProperty("empty", True)
+                    lab.setText(reason)
+                if i < len(self._dual_rows_closed):
+                    self._dual_rows_closed[i] = True
+                self._tgt_label_font(lab)
+                changed = True
+        if changed:
+            self._sync_dual_visibility()
+            self._update_empty_hint()
+            self._relayout()
+            self._schedule_relayout()
+        return changed
+
     def clear_caption(self):
         # v2.20.2：**两种布局的内容一起清**。旧实现按当前布局分支——在列表布局下按
         # 「清空」只清列表行，dual 两栏的逐句条目原封不动，切回上下双语就看见
@@ -890,11 +1001,20 @@ class CaptionOverlay(QWidget):
                 self._dual_split_watch.remove(w)
 
     def _dual_trim(self):
-        """两栏各自裁到上限，**成对删除**保持行号对齐（超出丢最老）。"""
+        """两栏各自裁到上限，**成对删除**保持行号对齐（超出丢最老）。
+
+        v2.22.0（§37.1 F7）：删的是视口上方的条目，用户暂停跟底在看旧句时要把
+        滚动位置补回来，否则他正在读的那一句会往手上移一格。"""
         while len(self._dual_src_items) > self.MAX_DUAL_LINES:
             it = self._dual_src_items.pop(0)
             t = self._dual_tgt_items.pop(0)
             self._dual_rows_closed.pop(0)
+            sh = it["lab"].height() or it["lab"].sizeHint().height()
+            th = t["card"].height() or t["card"].sizeHint().height()
+            self._shift_scroll(self._dual_src_wrap.verticalScrollBar(), sh + 5,
+                               not self._dual_follow.get("src", True))
+            self._shift_scroll(self._dual_tgt_wrap.verticalScrollBar(), th + 6,
+                               not self._dual_follow.get("tgt", True))
             it["lab"].setParent(None)
             it["lab"].deleteLater()
             t["card"].setParent(None)
@@ -941,10 +1061,15 @@ class CaptionOverlay(QWidget):
             self._relayout()
 
     def _on_dual_wrap_scroll(self, key, v):
-        """v2.18.1：用户在原文/译文区内上滚回看 → 暂停该区自动跟底；滚回底部恢复。"""
+        """v2.18.1：用户在原文/译文区内上滚回看 → 暂停该区自动跟底；滚回底部恢复。
+        v2.22.0（§37.1 F6）：两栏都回到底部即清未读并收起 ↓（与列表同语义）。"""
         wrap = self._dual_src_wrap if key == "src" else self._dual_tgt_wrap
         sb = wrap.verticalScrollBar()
         self._dual_follow[key] = (v >= sb.maximum() - 4)
+        if not self._dual_paused() and self._unread:
+            self._unread = 0
+            self._sync_unread_btn()
+        self._sync_jump_btn()
 
     def _dual_follow_bottom(self):
         """v2.18.1：dual 原文/译文区内容超出可视高度时**自动跟底**。
@@ -1014,17 +1139,24 @@ class CaptionOverlay(QWidget):
 
         v2.20.1：从"整块覆盖当前句"改为**逐句累积**——上一句不再被顶掉。
         调用方已判定"这不是当前句的延伸"，所以 `_dual_row_for` 必然落到
-        "另起一行"分支，当前行/行指针即最新一行。"""
+        "另起一行"分支，当前行/行指针即最新一行。
+        v2.22.0（§37.1 F6）：**不再无条件重置两栏跟底**。v2.18.1 那版"新句一到
+        就把 follow 拨回 True"的语义是"回看只属于过去那句"，代价是用户上滚 139px
+        正在读的那行被下一句当场拽走 178px，而 dual 既没有 ↓ 按钮也没有计数——
+        回看事实上不可能。现在暂停态一直保持到用户自己滚回底部或按 ↓，
+        与列表模式同一套契约（未读计数 + 回程按钮）。"""
         self._dual_row_for(src_text)
-        # v2.18.1：新句开始重新跟底——用户在上半句里上滚回看，不应把下一句
-        # 的最新文字也一起挡住（回看语义属于过去那句）
-        self._dual_follow = {"src": True, "tgt": True}
         self._dual_tgt.setProperty("spec", True)
         self._dual_tgt.setProperty("empty", False)
-        self._dual_tgt.setText("…")
+        # v2.22.0（§37.1 F8）：占位文案与列表行统一成"⟳ 翻译中…"。裸一个 "…"
+        # 在 22px 字号下就是一颗灰点，用户无从判断是在翻译还是卡死；而在线引擎
+        # 不走推测式翻译（`_spec_enabled` 含"仅离线引擎"闸），这个灰点每句要挂
+        # 2~4 秒。
+        self._dual_tgt.setText(ui_text("⟳ 翻译中…"))
         self._restyle_dual_tgt()
         self._sync_dual_visibility()
         self._update_empty_hint()
+        self._sync_jump_btn()
         self._schedule_relayout()
 
     @staticmethod
@@ -1166,6 +1298,7 @@ class CaptionOverlay(QWidget):
         lab_t.setText(target_text or "…")
         self._tgt_label_font(lab_t)
         self._dual_rows_closed[idx] = True
+        self._count_unread()     # v2.22.0（§37.1 F6）：dual 的"完成一句"计数入口
         self._sync_dual_visibility()
         self._update_empty_hint()
         self._schedule_relayout()
@@ -1189,8 +1322,10 @@ class CaptionOverlay(QWidget):
         self._clear_btn.setEnabled(bool(self._rows))
 
     def _count_unread(self):
-        """E：非跟随时每完成一句计数 +1（占位行不算，只数出结果的新句）。"""
-        if not self._follow:
+        """E：非跟随时每完成一句计数 +1（占位行不算，只数出结果的新句）。
+        v2.22.0：dual 也纳入同一套计数——它以前根本没有回程，计数无处可显。"""
+        paused = self._dual_paused() if self.is_dual() else not self._follow
+        if paused:
             self._unread += 1
             self._sync_unread_btn()
 
@@ -1198,16 +1333,20 @@ class CaptionOverlay(QWidget):
         n = self._unread
         self._jump_btn.setText(f"{ui_text('↓ 最新 ')}{n}" if n else ui_text("↓ 最新"))
         self._jump_btn.setStyleSheet("color: #ff8f8f;" if n else "color: #cfd6e4;")
+        self._sync_jump_btn()
 
     def set_status(self, text, is_error=False):
-        # 状态列宽度主权让位：截短 + 限宽（520px 面板实测长文案会盖住 ⋯）
-        self._cap_status_width()
         t = (text or "").strip()
-        # v2.20.6：旧实现写死"超过 10 字符截成 9 字 + …"。中文 10 字信息量足够，
-        # 英文 10 字符只剩 "Stopped · …"（双语真机截图实测）。限宽的本职是
-        # _cap_status_width 算出的像素上限（F3：不得压到 ⋯），按像素省略就能
-        # 两种语言都尽量多留字，不再用与语言挂钩的字符数当闸门。
-        budget = max(40, int(self.status_lbl.maximumWidth()))
+        # v2.22.0（§37.1 F1）：状态行现在独占一行，**没话可说时整行收起**，
+        # 不白占 20+6px 正文高度（常规"运行中"由主窗决定不再往面板写）。
+        was = not self.status_lbl.isHidden()
+        self._cap_status_width()
+        self.status_lbl.setVisible(bool(t))
+        # 省略预算按状态行**自己的可用宽度**算。旧写法拿 `面板宽 − 240` 当预算
+        # （240 是照中文按钮估的同行预留），可同行 8 颗按钮实占 598~658px：
+        # 预算 457、控件实宽 67（英文 7），"按像素省略"于是省略到一个装不下的
+        # 宽度上，屏上留下的是**没有省略号的硬裁**。
+        budget = self._status_budget()
         fm = self.status_lbl.fontMetrics()
         if t and fm.horizontalAdvance(t) > budget:
             t = str(fm.elidedText(t, Qt.ElideRight, budget))
@@ -1218,6 +1357,35 @@ class CaptionOverlay(QWidget):
         self.status_lbl.setToolTip("")
         self.status_lbl.setStyleSheet(
             "color: #fbbf24;" if is_error else "color: rgba(255,255,255,120);")
+        if was != bool(t):
+            self._relayout()
+            self._schedule_relayout()
+
+    def _on_jump_clicked(self):
+        """`↓ 最新` 的两条布局出口：列表滚自己的滚动区，dual 恢复两栏跟底。"""
+        if self.is_dual():
+            self._dual_follow = {"src": True, "tgt": True}
+            for wrap in (self._dual_src_wrap, self._dual_tgt_wrap):
+                s = wrap.verticalScrollBar()
+                s.setValue(s.maximum())
+            self._unread = 0
+            self._sync_unread_btn()
+            self._sync_jump_btn()
+            return
+        self._scroll_bottom()
+
+    def _dual_paused(self):
+        """dual 是否处于"用户上滚暂停跟底"态（任一栏暂停即算）。"""
+        return not (self._dual_follow.get("src", True)
+                    and self._dual_follow.get("tgt", True))
+
+    def _sync_jump_btn(self):
+        """`↓ 最新` 可见性的唯一出口（v2.22.0：dual 此前根本没有回程按钮）。"""
+        if self._collapsed:
+            self._jump_btn.setVisible(False)
+            return
+        self._jump_btn.setVisible(self._dual_paused() if self.is_dual()
+                                  else not self._follow)
 
     # ---------- 尺寸与跟随 ----------
 
@@ -1288,12 +1456,14 @@ class CaptionOverlay(QWidget):
             self._mini.setVisible(False)
             self._scroll.setVisible(False)
             self._dual_body.setVisible(True)
-            self._jump_btn.hide()
+            self._sync_jump_btn()
             # 先解除上一轮 setFixedHeight 的钳制——否则 wordWrap 文本变长时
             # label 被压在旧高度里，终版长译文底部裁切（真机截图实证）
             self._dual_body.setMinimumHeight(0)
             self._dual_body.setMaximumHeight(16777215)
-            chrome = 54 + 12                          # 工具条 + outer margins/spacing
+            # v2.22.0：状态行显隐直接吃正文高度——它现在是自己的一行（20px）
+            # 加一条 spacing（6px），不记账就会把两栏挤掉同样的高度
+            chrome = 54 + 12 + (0 if self.status_lbl.isHidden() else 26)
             # v2.18.1：关原文时原文区与分隔把手**都不该占高**——旧算法恒加
             # sep_h 8 与"三控件"的 24px 边距/间距，导致译文区被饿到 21px
             # （真机实测，用户配置正是「原文 关」）。
@@ -1380,7 +1550,7 @@ class CaptionOverlay(QWidget):
         if self._follow and self._unread:      # E：回到最新处即清零
             self._unread = 0
             self._sync_unread_btn()
-        self._jump_btn.setVisible(not self._follow and not self._collapsed)
+        self._sync_jump_btn()
 
     def _scroll_bottom(self):
         sb = self._scroll.verticalScrollBar()
@@ -1388,7 +1558,7 @@ class CaptionOverlay(QWidget):
         self._follow = True
         self._unread = 0
         self._sync_unread_btn()
-        self._jump_btn.setVisible(False)
+        self._sync_jump_btn()
 
     # ---------- 工具条动作 ----------
 
@@ -1521,7 +1691,7 @@ class CaptionOverlay(QWidget):
                 self._mini_src.setVisible(bool(src))
                 self._mini_tgt.setText(
                     self._dual_tgt.text()
-                    if not self._dual_tgt.property("empty") else ui_text("⟳ 识别中…"))
+                    if not self._dual_tgt.property("empty") else ui_text("⟳ 翻译中…"))
             else:
                 self._mini_src.setVisible(False)
                 self._mini_tgt.setText(ui_text("暂无字幕 · 单击展开"))
@@ -1531,7 +1701,9 @@ class CaptionOverlay(QWidget):
             src = it["src_text"] if self._show_source else ""
             self._mini_src.setText(src)
             self._mini_src.setVisible(bool(src))
-            self._mini_tgt.setText(it["tgt_text"] or ui_text("⟳ 识别中…"))
+            # v2.22.0（§37.1 F8）：这里原本写"⟳ 识别中…"——此刻原文早已上屏，
+            # 在等的是翻译，三种说法（识别中/翻译中/裸省略号）里数它最误导。
+            self._mini_tgt.setText(it["tgt_text"] or ui_text("⟳ 翻译中…"))
         else:
             self._mini_src.setVisible(False)
             self._mini_tgt.setText(ui_text("暂无字幕 · 单击展开"))
@@ -1553,7 +1725,7 @@ class CaptionOverlay(QWidget):
         self._collapsed = bool(on)
         self._sync_bar_texts()
         dual = self.is_dual()
-        self._jump_btn.setVisible(not self._follow and not self._collapsed and not dual)
+        self._sync_jump_btn()
         self._scroll.setVisible(not self._collapsed and not dual)
         self._dual_body.setVisible(not self._collapsed and dual)
         self._mini.setVisible(self._collapsed)
@@ -1693,6 +1865,10 @@ class CaptionOverlay(QWidget):
                （承载的是首启三行小抄）；提到 110 后约 4.6:1。像素锁判的是
                "整行均匀亮像素"，文字占比仅 0.66，不受此改动影响 */
             QLabel#PanelHint {{ color: rgba(255,255,255,110); font-size: 12px; }}
+            /* v2.22.0：状态行的字号走 setFont（见 __init__）——QSS 的 font-size
+               不写回 widget.font()，而 set_status 用 fontMetrics() 算省略预算，
+               两边不一致就会"量的是 16px、画的是 12px"（v2.11.0 dual 区同款坑） */
+            QLabel#PanelStatus {{ padding-left: 10px; }}
             QLabel#PanelSrc {{ font-size: {src_fs}px; color: #98a2b3; }}
             QLabel#PanelTgt {{ font-size: {fs}px; color: {self._text_color.name()}; font-weight: 600; }}
             QLabel#PanelMiniSrc {{ font-size: {max(11, int(fs * 0.62))}px; color: #98a2b3; }}
@@ -1999,13 +2175,15 @@ class CaptionOverlay(QWidget):
         self._bg_alpha = opacity_to_alpha(val)
         self.update()
 
+    def _status_budget(self):
+        """状态行可用像素宽（v2.22.0：它独占一行，宽度只欠外边距与内边距）。"""
+        return max(60, self.width() - 10 - self.RESIZE_EDGE - 10)
+
     def _cap_status_width(self):
-        # v2.5.0（F3）：状态行动态限宽——Ignored 策略下布局可把状态行压没，
-        # 但 QLabel 溢出绘制会压到右侧按钮（360px 宽实测与"翻译失败"文字重叠）。
-        # 限宽 = 面板宽 − 按钮区（约 240px），超长文字被裁剪，全文在 tooltip。
-        # 注意：未 show 的 widget 收不到 Python resizeEvent（实测裸 QWidget 同样），
-        # 故挂在 set_status/_relayout 这两个必经路径上而非 resizeEvent
-        self.status_lbl.setMaximumWidth(max(60, self.width() - 240))
+        # v2.5.0（F3）原意：状态文字溢出绘制不得压到右侧按钮。状态行搬出工具条
+        # 之后，这条限宽变成"不得画出自己那一行"——预算与省略口径统一走
+        # `_status_budget`，不再出现"按 457 省略、控件只有 67"的硬裁。
+        self.status_lbl.setMaximumWidth(self._status_budget())
 
     def _save_final_pos(self):
         if self._on_moved:

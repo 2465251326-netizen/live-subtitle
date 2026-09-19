@@ -945,16 +945,26 @@ class MainWindow(QMainWindow):
                 pass
 
     def update_overlay_status(self):
-        """把运行状态/来源/引擎/模型同步到悬浮条状态行。"""
+        """把运行状态同步到悬浮面板的状态行。
+
+        v2.22.0（§37.1 F1/F2/F5）三条改动：
+        ① 状态行搬出工具条独占一行（以前 8 颗按钮吃掉全部宽度，中文剩 67px、
+           英文剩 7px，这句从来没人看见过）；
+        ② **常规运行态不再写状态行**——"运行中 · 系统声音"没有可行动信息，
+           把手已经是绿色"⏸ 暂停"、字幕在长，占着一行正文高度不值；
+        ③ 加载/下载模型期间**必须有话**：`start_pipeline` 末尾虽然回灌过一次，但那
+           时 `_asr_ready` 还是 False，面板却已经写"运行中 · 系统声音"；
+           `_on_model_ready` 反过来不回灌，于是大模型加载的十几秒（首次下载则数分钟）
+           里面板报的是"已经在跑了"，而主窗下载进度才走到 5%。"""
         if not hasattr(self, "overlay"):
             return
         # v2.20.1：面板「开始 / 停止翻译」把手跟着真态走——热键、托盘、主窗按钮
         # 三条路径都改得动 running，面板自己翻转就会与真态不一致
         self.overlay.set_running(bool(self.running))
+        if getattr(self, "_fatal_warn", None):
+            self.overlay.set_status(self._fatal_warn, is_error=True)
+            return
         if getattr(self, "_muted_warn", False):
-            # v2.20.3：面板状态行只有 10 字符的额度（`set_status` 截断），长句一律
-            # 被腰斩成"系统静音中 · 不会…"这种半截话。这里只放状态词，完整解释在
-            # 主窗状态栏与横幅里。
             self.overlay.set_status(ui_text("系统静音中"), is_error=True)
             return
         if getattr(self, "_low_input_warn", False):
@@ -963,13 +973,27 @@ class MainWindow(QMainWindow):
         if not self.running:
             self.overlay.set_status(ui_text("已停止 · 待机中"))
             return
+        if getattr(self, "_backlog_warn", False):
+            # v2.22.0：积压丢段以前只有主窗横幅（面板用户看不见主窗），而它的
+            # 表现正是"字幕越拖越晚甚至不出"——面板必须说
+            self.overlay.set_status(ui_text("识别跟不上 · 建议换 small/tiny 模型"),
+                                    is_error=True)
+            return
+        if not getattr(self, "_asr_ready", False):
+            dl = getattr(self, "_model_dl_timer", None)
+            if dl is not None and dl.isActive():
+                self.overlay.set_status(
+                    ui_fmt("正在下载识别模型 {pct}%…",
+                           pct=int(getattr(self, "_dl_pct", 0) or 0)))
+            else:
+                self.overlay.set_status(
+                    ui_fmt("正在加载识别模型 {model}…",
+                           model=self.config.get("asr_model")))
+            return
         src = ui_text("麦克风") if self.config.get("source_type") == "microphone" else ui_text("系统声音")
         model = self.config.get("asr_model")
         eng = getattr(self, "_last_engine_name", "") or ui_text("自动")
-        # v2.20.3：面板状态行 `set_status` 只留 10 个字符（长提示截成"运行中 · 系统声…"），
-        # 引擎与模型名**从来没能看见过**——那串长文本是给主窗状态栏写的。面板这里
-        # 只报"在不在跑、听的是哪路声音"，详情归主窗与设置页。
-        self.overlay.set_status(f"{ui_text('运行中 · ')}{src}")
+        self.overlay.set_status("")
         self._engine_status_detail = f"{ui_text('运行中 · ')}{src} · {eng} · {model}{ui_text(' 模型')}"
 
     def set_overlay_caption_error(self, failed):
@@ -1488,6 +1512,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(1)
         self.session_count = 0
         self._last_asr_lang = ""      # v2.18.2（D-3）：会话级语言记忆随新会话清零
+        self._fatal_warn = None       # v2.22.0（§37.1 F5）：上一场的停摆不得演到这一场
+        self._dl_pct = 0
 
         c = self.config
         engine = c.get("engine")
@@ -1586,7 +1612,10 @@ class MainWindow(QMainWindow):
         self._stream_preview = None
         if (bool(c.get("stream_preview")) and str(c.get("asr_device")) == "cuda"
                 and self.capture_thread is not None):
-            self._stream_preview = StreamPreview(None, str(c.get("asr_language") or ""))
+            self._stream_preview = StreamPreview(
+                None, str(c.get("asr_language") or ""),
+                # v2.22.0（§37.1 F4）：草稿与正式识别共用同一把幻觉闸（同一配置项）
+                hallucination_filter=bool(c.get("hallucination_filter")))
             self.capture_thread.raw_chunk.connect(self._stream_preview.feed)
             self._stream_preview.partial_ready.connect(self._on_partial_preview)
         self.capture_thread.segment_ready.connect(self.asr_thread.submit)
@@ -1633,7 +1662,11 @@ class MainWindow(QMainWindow):
             self._set_engine_status(
                 ui_text("模型就绪 25 秒仍无识别结果：请确认所选设备正在播放声音（音量条应有波动），"
                 "系统音量/应用音量未静音，或到「设置-音频输入」更换设备"))
-            self.update_overlay_status()
+            # v2.22.0（§37.1 F2）：这条指引必须同时上面板——用户盯着的是字幕面板，
+            # 主窗通常在托盘或视频后面。以前只 `update_overlay_status()`，而它
+            # 在"运行中且已就绪"分支里什么都不写，面板上等于没发生。
+            self.overlay.set_status(
+                ui_text("25 秒还没有字幕 · 检查该设备是否在放声音"), is_error=True)
 
     def _start_model_download_feedback(self, model_size):
         self._model_dl_model = model_size
@@ -1670,6 +1703,7 @@ class MainWindow(QMainWindow):
                 pass
         total = self._model_dl_total
         pct = min(99, int(mb * 100 / total))
+        self._dl_pct = pct        # v2.22.0：面板状态行要报同一个数（见 update_overlay_status）
         # v2.2.11：慢速探测——连续 20 秒不足 5MB 时提示代理入口（B2）
         import time as _t
         now = _t.monotonic()
@@ -1802,6 +1836,9 @@ class MainWindow(QMainWindow):
         if not self.running or not self._session_ok(getattr(self, "_sid_asr", None)):
             return
         self._asr_ready = True
+        # v2.22.0（§37.1 F2）：就绪即回灌面板——否则"正在加载模型…"那行字会一直
+        # 挂到第一条字幕到达为止，而模型其实早就就绪了
+        self.update_overlay_status()
         # v2.4.4（BUG-2）：就绪即刷新速览卡——加载后才知道实际设备
         # （GPU 回落 CPU 时"识别模型 xxx（GPU）"的谎报由本行纠正）
         self._refresh_quick_panel()
@@ -2193,6 +2230,7 @@ class MainWindow(QMainWindow):
         self._muted_warn = False  # v2.0.1：漏复位曾让悬浮条停止后仍显示"系统静音中"
         self._fail_streak = 0  # v2.0.2：会话结束时清零连续失败计数
         self._backlog_warn = False  # v2.0.8：积压警示随会话结束复位
+        self._fatal_warn = None    # v2.22.0（§37.1 F5）：致命错误态随会话结束复位
         self._set_alert(None)  # v2.2.5：停止时清掉提示横幅
         if getattr(self, "_pending", None):
             # v2.2.0：停止时清空流式占位配对——队列里未及翻译的卡片不再等
@@ -2209,6 +2247,15 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             self._pending.clear()
+        # v2.22.0（§37.1 F3）：面板同一条契约。旧实现只终态化主窗自己的卡，
+        # 从不碰 `overlay._rows` / dual 两栏——停止后面板上留着两三行
+        # "⟳ 翻译中…"和一张 "…" 卡，而工具条已经写"已停止 · 待机中"，
+        # 同一扇窗上下自相矛盾，且这些占位会一路活到下一场（真机探针 A2/A6/A7）。
+        if getattr(self, "overlay", None) is not None:
+            try:
+                self.overlay.finalize_pending(ui_text("已停止 · 该句未完成翻译"))
+            except RuntimeError:
+                pass
         # v2.3.6（P9）：低延迟攒句缓冲随会话清零（未送出的碎片不等迟到译文）
         self._tgroup = []
         if getattr(self, "_tgroup_by_src", None):
@@ -2381,6 +2428,16 @@ class MainWindow(QMainWindow):
             self.engine_status_label.setText(msg)
             self._set_alert(msg, error=True)
             self._stop_model_download_feedback()
+            # v2.22.0（§37.1 F5）：面板也要说实话。识别线程只有两处会走到这里
+            # （模型加载失败 / 引擎启动失败），两处都在 `run()` 里 emit 完就返回
+            # ——线程必死，而 `running` 仍是 True。以前面板对此一无所知（状态行
+            # 只有 67px/7px，探针 B5 实测它继续写"运行中 · 系统声音"），而它是
+            # 用户唯一常驻看着的那扇窗。
+            # 注：这里**不**顺手 `stop_pipeline()`——那会牵动排水链与卡片终态化
+            # 时序，属生命周期改造（§36.3-1 仍待真机长会话验证），本轮只把
+            # "识别已停摆"如实报出来，并把这条错误置顶常驻到下一次开关。
+            self._fatal_warn = msg
+            self.update_overlay_status()
 
     def _on_asr_text(self, text, detected, duration, t_flush=-1.0):
         # v2.6.2（P1-4/P1-6）：会话身份守卫替代 running 守卫——停止后旧
@@ -2784,6 +2841,17 @@ class MainWindow(QMainWindow):
             card = self._take_pending(src_text)
             if card is not None:
                 card.set_failed(reason)
+        # v2.22.0（§37.1 F3）：面板行同一条终态。旧实现只收主窗卡片，被丢弃的
+        # 句子在面板上永远挂着"⟳ 翻译中…"——探针 A1 实测：卡片已经
+        # "[翻译失败]"，面板同一句仍是 pending=True。攒句合并的前片也要一起收
+        # （它们的面板占位行由 `merged_from` 收编，这里只补末片匹配不到的那种）。
+        if getattr(self, "overlay", None) is not None:
+            try:
+                self.overlay.finalize_pending(reason, src_text)
+                for p in (pieces or []):
+                    self.overlay.finalize_pending(reason, p)
+            except RuntimeError:
+                pass
 
     # ---------- v2.3.20（P26）：内置延迟自测 ----------
 
@@ -3022,21 +3090,20 @@ class MainWindow(QMainWindow):
                 f"{ui_text('翻译连续失败 ')}{self._fail_streak}{ui_text(' 条 · ')}{advice}" if self._fail_streak >= 3
                 else ui_text("翻译失败 · 检查网络或切换引擎"),
                 is_error=True)
-        if self.overlay.isVisible():
-            # v2.1.8：三档路由统一由 overlay.show_pending_result 内部分派
-            # （跑马灯=淡入最新句；列表=占位补齐；单条=直接刷新）
-            # v2.7.0（T1）：merged_from=攒句前片名单，面板据此收编对应占位行
-            # v2.7.4（B-8）：source 用合并整句（与主窗卡片一致）——旧实现只给
-            # 末片，面板行显示"半句话的原文配整句译文"，与主窗分叉
-            self.overlay.show_pending_result(
-                combined_src or source_text,
-                translated or ("[" + engine + ui_text(" 翻译失败]")), show_source,
-                merged_from=merged_srcs)
-            # v2.20.0：dual 历史区已删除——终版句就地留在大字区显示，直到下一句
-            # 的流式拍/片段触发**原子换句**（面板侧 _dual_cur_open 收口）。
-            # 数据侧仍要清空：下一拍草稿从零起点续接，否则整句被再拼一遍
-            if self.overlay.is_dual() and not error:
-                self._dual_current = ""
+        # v2.22.0（§37.1 F3）：**不再按可见性闸门**。旧 `if self.overlay.isVisible()`
+        # 让"面板隐藏期间到达的终版译文"整条丢掉——那句在隐藏前已经上了占位行，
+        # 重新显示后它永远停在"⟳ 翻译中…"，此后再没有路径补它（探针 C2）。
+        # 终版是权威结果、每句一次，不像 0.9s 一拍的草稿会把隐藏期间攒成僵尸行
+        # （那两路各自的闸门保留：`update_partial` / `update_dual_draft_tgt`）。
+        self.overlay.show_pending_result(
+            combined_src or source_text,
+            translated or ("[" + engine + ui_text(" 翻译失败]")), show_source,
+            merged_from=merged_srcs)
+        # v2.20.0：dual 历史区已删除——终版句就地留在大字区显示，直到下一句
+        # 的流式拍/片段触发**原子换句**（面板侧 _dual_cur_open 收口）。
+        # 数据侧仍要清空：下一拍草稿从零起点续接，否则整句被再拼一遍
+        if self.overlay.is_dual() and not error:
+            self._dual_current = ""
         if self._follow_bottom():
             sb = self.scroll.verticalScrollBar()
             sb.setValue(sb.maximum())

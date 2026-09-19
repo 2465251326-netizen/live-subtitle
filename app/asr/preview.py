@@ -24,6 +24,8 @@ from collections import deque
 
 from PySide6.QtCore import QThread, Signal
 
+from app.asr.engine import has_content, hallucination_ok
+
 WINDOW_S = 4.0      # 预览窗口：与正式分段等长，草稿覆盖"正在说的这一段"
 INTERVAL_S = 0.9    # 刷新周期：端到端原文延迟 ≈ INTERVAL + 单次推理耗时
 MIN_AUDIO_S = 1.2   # 短于这个不识别（whisper 对超短音频输出噪声）
@@ -47,10 +49,14 @@ class StreamPreview(QThread):
     partial_ready = Signal(str)          # 窗口草稿文本（可能为空串=本轮无话）
     error_occurred = Signal(str)
 
-    def __init__(self, model, language="", parent=None):
+    def __init__(self, model, language="", parent=None, hallucination_filter=True):
         super().__init__(parent)
         self._model = model
         self._lang = normalize_language(language)
+        # v2.22.0（§37.1 F4）：草稿也要过正式通道那把质量闸。预览通道此前
+        # `" ".join(seg.text)` 什么都不判，音乐/噪声段的胡话照样上到面板原文行，
+        # 还会被送去推测翻译；没有终版来覆盖时就永久留在屏上。
+        self._halluc = bool(hallucination_filter)
         self._buf = deque()              # [(np.float32 16k mono, t_mono)]
         self._buf_len = 0.0
         self._stop = False
@@ -155,7 +161,10 @@ class StreamPreview(QThread):
                 return
 
     def _transcribe(self, audio):
-        """最快档转写：beam=1、无时间戳、无条件前文——只为草稿速度。"""
+        """最快档转写：beam=1、无时间戳、无条件前文——只为草稿速度。
+
+        质量闸与正式通道同源（`has_content` + `hallucination_ok`）：整轮都被
+        滤光就发空串，主窗 `_on_partial_preview` 对空串是"本拍不更新"。"""
         if self._model is None:
             return ""
         kwargs = dict(beam_size=1, best_of=1,
@@ -164,4 +173,14 @@ class StreamPreview(QThread):
         if self._lang:
             kwargs["language"] = self._lang
         segments, _info = self._model.transcribe(audio, **kwargs)
-        return " ".join(s.text for s in segments).strip()
+        out = []
+        for seg in segments:
+            t = (seg.text or "").strip()
+            if not has_content(t):
+                continue
+            if self._halluc and not hallucination_ok(
+                    float(getattr(seg, "avg_logprob", 0.0) or 0.0),
+                    float(getattr(seg, "no_speech_prob", 0.0) or 0.0)):
+                continue
+            out.append(t)
+        return " ".join(out).strip()
